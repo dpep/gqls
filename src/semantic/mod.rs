@@ -38,10 +38,17 @@ pub fn search<'a>(
         .as_deref()
         .and_then(|p| cache::load(p, records.len()))
         .unwrap_or_else(|| {
-            eprintln!("gqls: embedding {} records (caching)…", records.len());
+            use rayon::prelude::*;
+            eprintln!("gqls: embedding {} records in parallel (caching)…", records.len());
+            // Each worker thread builds its own embedder/session (the session is
+            // behind a Mutex, so a shared one would serialize). Order-preserving,
+            // so vectors stay index-aligned with `records`.
             let v: Vec<Vec<f32>> = records
-                .iter()
-                .map(|r| compress_matryoshka_vector(&embedder.embed(&record_text(r))))
+                .par_iter()
+                .map_init(
+                    || default_embedder(model),
+                    |emb, r| compress_matryoshka_vector(&emb.embed(&record_text(r))),
+                )
                 .collect();
             if let Some(p) = cache_path.as_deref() {
                 cache::store(p, &v);

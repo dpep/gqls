@@ -34,11 +34,12 @@ ort = { version = "=2.0.0-rc.12", default-features = false, optional = true }
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"], optional = true }
 log = { version = "0.4", optional = true }
+rayon = { version = "1", optional = true }  # parallel cold embed pass
 
 [features]
 default = []
 semantic = [
-  "dep:ort", "dep:tokenizers", "dep:hf-hub", "dep:log",
+  "dep:ort", "dep:tokenizers", "dep:hf-hub", "dep:log", "dep:rayon",
   "ort/std", "ort/ndarray", "ort/tracing",
   "ort/download-binaries", "ort/tls-native", "ort/copy-dylibs", "ort/api-24",
 ]
