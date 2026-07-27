@@ -1,11 +1,14 @@
 [package]
 name = "gqls"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"  # `Option::is_none_or`
-description = "GraphQL schema search — fuzzy and semantic search over the types, fields, args, and directives in a GraphQL schema (SDL file; URL/introspection planned)."
+description = "Fuzzy and semantic search over a GraphQL schema (SDL, introspection JSON, or a live endpoint), plus a field-to-resolver jump."
 license = "MIT"
 repository = "https://github.com/dpep/gqls"
+homepage = "https://github.com/dpep/gqls"
+documentation = "https://github.com/dpep/gqls"
+readme = "README.md"
 keywords = ["graphql", "schema", "search", "cli"]
 categories = ["command-line-utilities"]
 
