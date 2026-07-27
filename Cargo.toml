@@ -1,0 +1,48 @@
+[package]
+name = "gqls"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.82"  # `Option::is_none_or`
+description = "GraphQL schema search — fuzzy and semantic search over the types, fields, args, and directives in a GraphQL schema (SDL file; URL/introspection planned)."
+license = "MIT"
+repository = "https://github.com/dpep/gqls"
+keywords = ["graphql", "schema", "search", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "gqls"
+path = "src/main.rs"
+
+# A lib target is auto-detected from src/lib.rs (crate `gqls`), so another
+# Rust tool can depend on it — notably `rq` (reference-query) for the
+# planned field -> resolver jump.
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+graphql-parser = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+# Semantic search (opt-in via the `semantic` feature): local all-MiniLM-L6-v2
+# through ONNX Runtime, borrowed from ae (~/code/lib/rust/ae) with the same
+# pins so the copied onnx.rs matches the ort API. `semantic` statically
+# downloads ORT at build time; the model is fetched from the HuggingFace Hub
+# on first run, then cached offline (falls back to a hash embedder if it can't).
+ort = { version = "=2.0.0-rc.12", default-features = false, optional = true }
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
+hf-hub = { version = "0.5", default-features = false, features = ["ureq"], optional = true }
+log = { version = "0.4", optional = true }
+
+[features]
+default = []
+semantic = [
+  "dep:ort", "dep:tokenizers", "dep:hf-hub", "dep:log",
+  "ort/std", "ort/ndarray", "ort/tracing",
+  "ort/download-binaries", "ort/tls-native", "ort/copy-dylibs", "ort/api-24",
+]
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

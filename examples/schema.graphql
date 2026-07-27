@@ -1,0 +1,43 @@
+"""A minimal schema for trying gqls: gqls user examples/schema.graphql"""
+type Query {
+  """Look up a user by id."""
+  user(id: ID!): User
+  users(first: Int, after: String): [User!]!
+  search(term: String!): [SearchResult!]!
+}
+
+type Mutation {
+  createUser(input: CreateUserInput!): User!
+  deleteUser(id: ID!): Boolean! @deprecated(reason: "use archiveUser")
+}
+
+"""An account."""
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  role: Role!
+  posts(first: Int): [Post!]!
+}
+
+type Post {
+  id: ID!
+  title: String!
+  author: User!
+}
+
+union SearchResult = User | Post
+
+enum Role {
+  ADMIN
+  MEMBER
+  GUEST
+}
+
+input CreateUserInput {
+  name: String!
+  email: String!
+  role: Role = MEMBER
+}
+
+scalar DateTime

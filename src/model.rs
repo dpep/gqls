@@ -1,0 +1,111 @@
+//! The language-agnostic record model: every type, field, arg, enum value,
+//! and directive in a schema flattens to one [`SchemaRecord`]. Search and
+//! output operate only on these — they never touch a parser or a transport.
+
+use std::str::FromStr;
+
+use serde::Serialize;
+
+/// What a [`SchemaRecord`] describes. Root operation fields get their own
+/// kinds (`Query`/`Mutation`/`Subscription`) so ranking can float them to
+/// the top the way `rq` floats top-level definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Object,
+    Interface,
+    Union,
+    Enum,
+    InputObject,
+    Scalar,
+    Directive,
+    Field,
+    InputField,
+    EnumValue,
+    Query,
+    Mutation,
+    Subscription,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Object => "object",
+            Kind::Interface => "interface",
+            Kind::Union => "union",
+            Kind::Enum => "enum",
+            Kind::InputObject => "input_object",
+            Kind::Scalar => "scalar",
+            Kind::Directive => "directive",
+            Kind::Field => "field",
+            Kind::InputField => "input_field",
+            Kind::EnumValue => "enum_value",
+            Kind::Query => "query",
+            Kind::Mutation => "mutation",
+            Kind::Subscription => "subscription",
+        }
+    }
+
+    /// Static ranking bias by kind — roots and named types outrank leaf
+    /// args. (In `rq` this is the `kind`-weight table in `score.rs`.)
+    pub fn weight(self) -> i64 {
+        match self {
+            Kind::Query | Kind::Mutation | Kind::Subscription => 60,
+            Kind::Object | Kind::Interface | Kind::Union | Kind::Enum | Kind::InputObject
+            | Kind::Scalar => 40,
+            Kind::Directive => 30,
+            Kind::Field | Kind::InputField => 20,
+            Kind::EnumValue => 10,
+        }
+    }
+}
+
+impl FromStr for Kind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "object" | "type" => Kind::Object,
+            "interface" => Kind::Interface,
+            "union" => Kind::Union,
+            "enum" => Kind::Enum,
+            "input" | "input_object" | "inputobject" => Kind::InputObject,
+            "scalar" => Kind::Scalar,
+            "directive" => Kind::Directive,
+            "field" => Kind::Field,
+            "input_field" | "inputfield" => Kind::InputField,
+            "enum_value" | "enumvalue" => Kind::EnumValue,
+            "query" => Kind::Query,
+            "mutation" => Kind::Mutation,
+            "subscription" => Kind::Subscription,
+            other => anyhow::bail!("unknown kind: {other}"),
+        })
+    }
+}
+
+/// One searchable schema entity.
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaRecord {
+    /// Fully-qualified path, e.g. `User.email`, `Query.user`, `@deprecated`.
+    pub path: String,
+    /// The leaf name matched against — `email`, `user`, `User`.
+    pub name: String,
+    pub kind: Kind,
+    /// Enclosing type name for fields/args/enum values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Return/field/arg type, rendered like `[User!]!`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_ref: Option<String>,
+    /// Argument signatures for a field, e.g. `["id: ID!", "first: Int"]`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Deprecation reason, if the entity is `@deprecated`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated: Option<String>,
+    /// Applied directives, rendered like `@auth`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub directives: Vec<String>,
+}
