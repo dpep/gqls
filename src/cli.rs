@@ -1,7 +1,8 @@
 //! clap CLI, dispatch, and output formatting (text / json / ndjson).
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{generate, Shell};
 use serde::Serialize;
 
 use crate::load;
@@ -24,10 +25,10 @@ EXAMPLES:
 #[command(
     name = "gqls",
     version,
-    about = "Fuzzy + semantic search over a GraphQL schema.",
-    long_about = "Search the types, fields, args, and directives in a GraphQL schema from the \
-                  terminal. Input is an SDL file, a local introspection JSON dump, or a live \
-                  http(s) endpoint; with no source, gqls discovers a schema in the current tree. \
+    about = "Search a GraphQL schema — fuzzy, semantic, or straight to the resolver.",
+    long_about = "Find the types, fields, args, and directives in a GraphQL schema from the \
+                  terminal. The source is an SDL file, a local introspection JSON dump, or a live \
+                  http(s) endpoint; with none given, gqls discovers a schema in the current tree. \
                   Fuzzy by default; --semantic ranks by meaning; --resolve jumps to the \
                   graphql-ruby resolver via rq. All modes support -j/--json and -J/--ndjson.",
     after_help = EXAMPLES
@@ -35,7 +36,7 @@ EXAMPLES:
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
     /// and `Type.field` queries match against the qualified path.
-    #[arg(required_unless_present = "clear_cache")]
+    #[arg(required_unless_present_any = ["clear_cache", "completions"])]
     query: Option<String>,
 
     /// Schema source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection
@@ -69,9 +70,9 @@ struct Cli {
     #[arg(long)]
     model: Option<String>,
 
-    /// Re-embed for --semantic even if a cached vector file exists (and
-    /// refresh the cache). Schema edits already invalidate the cache; use this
-    /// to force it (e.g. after a model change).
+    /// Force a re-embed for --semantic, overwriting the cache. Schema edits
+    /// already re-embed on their own; use this for changes the cache can't see
+    /// (e.g. a new model).
     #[arg(long)]
     refresh: bool,
 
@@ -79,8 +80,12 @@ struct Cli {
     #[arg(long)]
     clear_cache: bool,
 
-    /// Resolve the top match to its graphql-ruby resolver/method in code via
-    /// `rq` (must be installed) — find the field, then jump to its definition.
+    /// Print a shell completion script (bash, zsh, fish, ...) to stdout, then exit.
+    #[arg(long, value_name = "SHELL")]
+    completions: Option<Shell>,
+
+    /// Jump the top match to its graphql-ruby resolver/method in code, via
+    /// `rq` (must be installed).
     #[arg(short = 'R', long)]
     resolve: bool,
 
@@ -107,14 +112,21 @@ struct Match<'a> {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
+    if let Some(shell) = cli.completions {
+        let mut cmd = Cli::command();
+        let name = cmd.get_name().to_string();
+        generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
+
     if cli.clear_cache {
-        #[cfg(feature = "semantic")]
+        #[cfg(feature = "_semantic")]
         {
             let n = crate::semantic::clear_cache();
             eprintln!("gqls: cleared {n} cached vector file(s)");
             return Ok(());
         }
-        #[cfg(not(feature = "semantic"))]
+        #[cfg(not(feature = "_semantic"))]
         anyhow::bail!("no embedding cache in this build (built without --features semantic)");
     }
 
@@ -148,14 +160,14 @@ pub fn run() -> Result<()> {
     }
 
     let matches: Vec<Match> = if cli.semantic {
-        #[cfg(feature = "semantic")]
+        #[cfg(feature = "_semantic")]
         {
             crate::semantic::search(query, &records, kind, cli.limit, cli.model.as_deref(), cli.refresh)
                 .into_iter()
                 .map(|(score, record)| Match { record, score })
                 .collect()
         }
-        #[cfg(not(feature = "semantic"))]
+        #[cfg(not(feature = "_semantic"))]
         {
             let _ = (&cli.model, cli.refresh);
             anyhow::bail!(

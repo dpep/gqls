@@ -1,6 +1,6 @@
 [package]
 name = "gqls-cli"  # crates.io name (`gqls` is taken); the binary is still `gqls`
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.82"  # `Option::is_none_or`
 description = "Fuzzy and semantic search over a GraphQL schema (SDL, introspection JSON, or a live endpoint), plus a field-to-resolver jump."
@@ -23,6 +23,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 graphql-parser = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,11 +43,20 @@ rayon = { version = "1", optional = true }  # parallel cold embed pass
 
 [features]
 default = []
-semantic = [
+
+# Internal: the semantic embedding code + deps, minus the ORT linking strategy.
+# Not selected directly — pick `semantic` or `semantic-dynamic` below.
+_semantic = [
   "dep:ort", "dep:tokenizers", "dep:hf-hub", "dep:log", "dep:rayon",
-  "ort/std", "ort/ndarray", "ort/tracing",
-  "ort/download-binaries", "ort/tls-native", "ort/copy-dylibs", "ort/api-24",
+  "ort/std", "ort/ndarray", "ort/tracing", "ort/api-24",
 ]
+# Semantic search with ONNX Runtime downloaded + statically linked at build
+# time — the convenient default: `cargo install gqls-cli --features semantic`.
+semantic = ["_semantic", "ort/download-binaries", "ort/tls-native", "ort/copy-dylibs"]
+# Semantic search with ONNX Runtime dlopen'd from a system install at runtime:
+# smaller binary, no build-time download. Used by the Homebrew formula, which
+# `depends_on "onnxruntime"` (the same keg `ae` uses).
+semantic-dynamic = ["_semantic", "ort/load-dynamic"]
 
 [profile.release]
 strip = true

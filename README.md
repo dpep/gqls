@@ -2,16 +2,13 @@
 
 **Fuzzy and semantic search over a GraphQL schema — from the terminal, for very large graphs.**
 
-[![crates.io](https://img.shields.io/crates/v/gqls.svg)](https://crates.io/crates/gqls)
+[![crates.io](https://img.shields.io/crates/v/gqls-cli.svg)](https://crates.io/crates/gqls-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Point `gqls` at a schema — an SDL file, a local introspection dump, or a live
-endpoint — and find the type, field, argument, or directive you're after by
-approximate name, by meaning, or jump straight to its resolver in code. Built
-for schemas too big to scroll (GitHub's ~68k-line API answers in ~0.15s).
+Point `gqls` at a schema and find the type, field, argument, or directive you're after — by approximate name, by meaning, or jump straight to its resolver in code. It reads an SDL file, a local introspection dump, or a live endpoint, so you skip the part where you `grep` an SDL file, guess the exact spelling, and scroll. Built for schemas too big to scroll: GitHub's ~68k-line API answers in ~0.15s.
 
 ```sh
-gqls user schema.graphql              # fuzzy: usr, usre, User.email all work
+gqls user schema.graphql              # fuzzy: usr, usre, User.email all match
 gqls repository https://api/graphql   # introspect a live endpoint
 gqls 'cancel a subscription' -s       # semantic: rank by meaning
 gqls Query.user -R --code ./app       # jump to the graphql-ruby resolver
@@ -19,15 +16,12 @@ gqls Query.user -R --code ./app       # jump to the graphql-ruby resolver
 
 ## Why
 
-Existing tools don't combine fuzzy/semantic search with big-schema speed from a
-CLI: schema viewers list and filter but don't fuzzy-match, hosted explorers are
-GUIs, and the semantic-search tools are built for agents, not developers. `gqls`
-fills that gap and stays Unix-composable (`-j`/`-J` for JSON/NDJSON everywhere).
+Nothing else combines fuzzy/semantic search with big-schema speed in a CLI. Schema viewers list and filter but don't fuzzy-match, hosted explorers are GUIs, and the semantic-search tools are built for agents, not developers. `gqls` fills that gap and stays Unix-composable — `-j`/`-J` emit JSON/NDJSON everywhere.
 
 ## Install
 
 ```sh
-# Homebrew (fuzzy + introspection + resolver jump)
+# Homebrew (fuzzy + introspection + resolver jump + semantic search)
 brew install dpep/tools/gqls
 
 # Cargo (crate is `gqls-cli`; it installs the `gqls` binary)
@@ -45,12 +39,10 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 - **SDL file** — `gqls user schema.graphql`
 - **Introspection JSON dump** — `gqls user schema.json`
 - **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query)
-- **Auto-discovery** — omit the source and gqls finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`).
+- **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`).
 
 ### Fuzzy search (default)
-Abbreviations (`usr` → `User`), transpositions/typos (`usre` → `User`), and
-qualified `Type.field` queries all work; results rank by match quality with
-root `Query`/`Mutation` fields floated up.
+Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up.
 
 ```sh
 gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
@@ -58,48 +50,40 @@ gqls User.email                  # qualified — boosts the field on User
 ```
 
 ### Semantic search (`-s`, requires `--features semantic`)
-Ranks by meaning using a local `all-MiniLM-L6-v2` model (via ONNX Runtime),
-fetched once from the HuggingFace Hub then cached offline.
+Ranks by meaning using a local `all-MiniLM-L6-v2` model (via ONNX Runtime), fetched once from the HuggingFace Hub, then cached offline. The Homebrew build ships it (against the system `onnxruntime`); the plain `cargo install` needs `--features semantic`.
 
 ```sh
 gqls 'delete a repository' -s https://api/graphql
 ```
 
-Per-record vectors are cached (keyed by schema content + model), so the first
-run on a large schema embeds everything once (parallelized across cores) and
-later runs only embed the query — GitHub's schema: cold ~40s, warm ~0.3s.
-Editing the schema re-embeds automatically; `--refresh` forces it and
-`--clear-cache` wipes the cache.
+Per-record vectors are cached (keyed by schema content + model): the first run on a large schema embeds everything once (parallelized across cores), and later runs only embed the query. GitHub's schema: cold ~40s, warm ~0.3s. Editing the schema re-embeds automatically; `--refresh` forces it, `--clear-cache` wipes the cache.
 
 ### Resolver jump (`-R`, graphql-ruby)
-Find a field, then jump to the resolver/method that implements it, via `rq`:
+Find a field, then jump to the resolver or method that implements it, via `rq`:
 
 ```sh
 $ gqls Query.user schema.graphql -R --code ./app
 app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
 ```
 
-gqls tries graphql-ruby naming conventions (resolver class, type method,
-mutation class) and ranks the candidates.
+`gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates.
 
 ### Output
-Every mode supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record
-per line); status chatter goes to stderr, so JSON pipes cleanly:
+Every mode supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line). Status chatter goes to stderr, so JSON pipes clean:
 
 ```sh
 gqls repository schema.json -J | jq -r '.path'
 ```
 
+Shell completions: `gqls --completions zsh` (or `bash`/`fish`/…).
+
 ## Using with Claude Code
 
-Drop a small skill into `~/.claude/skills/gqls/` (see `claude/gqls-skill.md` in
-this repo) so Claude reaches for `gqls` when navigating a GraphQL schema instead
-of grepping SDL by hand.
+Drop a small skill into `~/.claude/skills/gqls/` (see `claude/gqls-skill.md` in this repo) so Claude reaches for `gqls` when navigating a GraphQL schema instead of grepping SDL by hand.
 
 ## How it works
 
-Layered so the core is one idea — flatten every schema entity to a searchable
-record, and let search/output touch nothing but records:
+Layered so the core is one idea — flatten every schema entity to a searchable record, and let search and output touch nothing but records:
 
 ```
 src/
@@ -111,9 +95,7 @@ src/
   cli.rs          clap + unified text/json/ndjson output
 ```
 
-Two capabilities are **borrowed** from sibling tools rather than reinvented: the
-fuzzy ranking is ported from [`rq`](https://github.com/dpep/rq)'s aligner, and
-the local embedding pipeline is copied from [`ae`](https://github.com/dpep/ae).
+Two capabilities are **borrowed** from sibling tools rather than reinvented: the fuzzy ranking is ported from [`rq`](https://github.com/dpep/rq)'s aligner, and the local embedding pipeline is copied from [`ae`](https://github.com/dpep/ae).
 
 ## License
 

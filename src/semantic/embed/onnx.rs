@@ -182,11 +182,41 @@ fn fetch_from_hub(repo: &str) -> Option<(PathBuf, PathBuf)> {
     Some((model, tokenizer))
 }
 
-/// Placeholder for the load-dynamic ORT strategy (dlopen a system
-/// libonnxruntime, as ae's Homebrew build does). gqls currently statically
-/// links ORT via the `semantic` feature's `download-binaries`, so this is a
-/// no-op. TODO: mirror ae's dylib probing when gqls gets a Homebrew formula.
-fn ensure_ort_dylib() {}
+/// Under the load-dynamic strategy (`semantic-dynamic`, the Homebrew build),
+/// ONNX Runtime is dlopen'd at runtime from `ORT_DYLIB_PATH`. If it isn't set,
+/// probe the usual install locations (the Homebrew keg in particular) so a
+/// packaged gqls works with no env setup. A no-op for the static build.
+fn ensure_ort_dylib() {
+    #[cfg(feature = "semantic-dynamic")]
+    {
+        if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+            return;
+        }
+        let lib = if cfg!(target_os = "macos") {
+            "libonnxruntime.dylib"
+        } else {
+            "libonnxruntime.so"
+        };
+        let mut bases: Vec<PathBuf> = Vec::new();
+        if let Some(prefix) = std::env::var_os("HOMEBREW_PREFIX") {
+            let prefix = PathBuf::from(prefix);
+            bases.push(prefix.join("opt/onnxruntime/lib"));
+            bases.push(prefix.join("lib"));
+        }
+        for p in [
+            "/opt/homebrew/opt/onnxruntime/lib",
+            "/opt/homebrew/lib",
+            "/usr/local/lib",
+            "/usr/lib",
+        ] {
+            bases.push(PathBuf::from(p));
+        }
+        if let Some(dir) = bases.into_iter().find(|d| d.join(lib).is_file()) {
+            // SAFETY: called once at embedder load, before any ORT use.
+            unsafe { std::env::set_var("ORT_DYLIB_PATH", dir.join(lib)) };
+        }
+    }
+}
 
 /// Mean-pool `[1, seq, hidden]` token embeddings, weighted by the attention
 /// mask, into one `hidden`-length vector.

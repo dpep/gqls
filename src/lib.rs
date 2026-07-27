@@ -16,5 +16,5 @@ pub mod model;
 pub mod resolve;
 pub mod search;
 
-#[cfg(feature = "semantic")]
+#[cfg(feature = "_semantic")]
 pub mod semantic;
