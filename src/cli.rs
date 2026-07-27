@@ -35,7 +35,8 @@ EXAMPLES:
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
     /// and `Type.field` queries match against the qualified path.
-    query: String,
+    #[arg(required_unless_present = "clear_cache")]
+    query: Option<String>,
 
     /// Schema source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection
     /// dump, or an http(s) URL (introspected live). If omitted, gqls searches
@@ -117,6 +118,12 @@ pub fn run() -> Result<()> {
         anyhow::bail!("no embedding cache in this build (built without --features semantic)");
     }
 
+    // clap guarantees this is present (required_unless_present = clear_cache).
+    let query = cli
+        .query
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
+
     let output = if cli.json {
         Output::Json
     } else if cli.ndjson {
@@ -137,23 +144,16 @@ pub fn run() -> Result<()> {
     let records = load::load(&source)?;
 
     if cli.resolve {
-        return run_resolve(&cli.query, &records, kind, cli.code.as_deref(), cli.limit, output);
+        return run_resolve(query, &records, kind, cli.code.as_deref(), cli.limit, output);
     }
 
     let matches: Vec<Match> = if cli.semantic {
         #[cfg(feature = "semantic")]
         {
-            crate::semantic::search(
-                &cli.query,
-                &records,
-                kind,
-                cli.limit,
-                cli.model.as_deref(),
-                cli.refresh,
-            )
-            .into_iter()
-            .map(|(score, record)| Match { record, score })
-            .collect()
+            crate::semantic::search(query, &records, kind, cli.limit, cli.model.as_deref(), cli.refresh)
+                .into_iter()
+                .map(|(score, record)| Match { record, score })
+                .collect()
         }
         #[cfg(not(feature = "semantic"))]
         {
@@ -163,7 +163,7 @@ pub fn run() -> Result<()> {
             );
         }
     } else {
-        search::search(&cli.query, &records, kind, cli.limit)
+        search::search(query, &records, kind, cli.limit)
             .into_iter()
             .map(|h| Match {
                 record: h.record,
@@ -172,6 +172,9 @@ pub fn run() -> Result<()> {
             .collect()
     };
 
+    if matches.is_empty() {
+        eprintln!("gqls: no matches for {query:?}");
+    }
     output.write_matches(&matches)
 }
 
@@ -236,6 +239,11 @@ fn run_resolve(
     limit: usize,
     output: Output,
 ) -> Result<()> {
+    if code.is_none() {
+        eprintln!(
+            "gqls: no --code given; resolving against rq's index for the current directory"
+        );
+    }
     let Some(top) = search::search(query, records, kind, 1).into_iter().next() else {
         anyhow::bail!("no schema entity matches {query:?} to resolve");
     };

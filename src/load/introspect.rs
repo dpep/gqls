@@ -18,7 +18,9 @@ pub fn from_url(url: &str) -> Result<Vec<SchemaRecord>> {
         .into_json()
         .with_context(|| format!("parsing introspection response from {url}"))?;
 
-    if let Some(errors) = body.get("errors").filter(|e| !is_empty_array(e)) {
+    // Only a non-empty errors array is a real failure — many servers send
+    // `"errors": null` or `[]` alongside a valid `data`.
+    if let Some(errors) = body.get("errors").filter(|e| !e.is_null() && !is_empty_array(e)) {
         bail!("introspection returned errors: {errors}");
     }
     let schema = body

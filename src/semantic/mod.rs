@@ -52,17 +52,45 @@ pub fn search<'a>(
         }
         None => {
             use rayon::prelude::*;
-            eprintln!("gqls: embedding {} records in parallel (caching)…", records.len());
-            // Each worker thread builds its own embedder/session (the session is
-            // behind a Mutex, so a shared one would serialize). Order-preserving,
-            // so vectors stay index-aligned with `records`.
-            let v: Vec<Vec<f32>> = records
-                .par_iter()
-                .map_init(
-                    || default_embedder(model),
-                    |emb, r| compress_matryoshka_vector(&emb.embed(&record_text(r))),
-                )
-                .collect();
+            use std::io::IsTerminal;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+
+            let total = records.len();
+            eprintln!(
+                "gqls: embedding {total} records (one-time, then cached; a large schema can take ~a minute)…"
+            );
+            let done = AtomicUsize::new(0);
+
+            // Per-worker embedder/session: the session is behind a Mutex, so a
+            // shared one would serialize the parallel pass. The model is a cached
+            // file, so every worker resolves the same kind as the main embedder
+            // above (no mixed onnx/hash vectors). Order-preserving `collect`, so
+            // vectors stay index-aligned with `records`.
+            let v: Vec<Vec<f32>> = std::thread::scope(|scope| {
+                let show_progress = std::io::stderr().is_terminal() && total > 500;
+                if show_progress {
+                    scope.spawn(|| loop {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let d = done.load(Ordering::Relaxed);
+                        eprint!("\rgqls: embedded {d}/{total}…    ");
+                        if d >= total {
+                            eprintln!();
+                            break;
+                        }
+                    });
+                }
+                records
+                    .par_iter()
+                    .map_init(
+                        || default_embedder(model),
+                        |emb, r| {
+                            let out = compress_matryoshka_vector(&emb.embed(&record_text(r)));
+                            done.fetch_add(1, Ordering::Relaxed);
+                            out
+                        },
+                    )
+                    .collect()
+            });
             if let Some(p) = cache_path.as_deref() {
                 cache::store(p, &v);
                 cache::prune(cache::max_files()); // evict least-recently-used

@@ -65,20 +65,24 @@ impl FromStr for Kind {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s.to_lowercase().as_str() {
-            "object" | "type" => Kind::Object,
-            "interface" => Kind::Interface,
-            "union" => Kind::Union,
-            "enum" => Kind::Enum,
-            "input" | "input_object" | "inputobject" => Kind::InputObject,
-            "scalar" => Kind::Scalar,
-            "directive" => Kind::Directive,
-            "field" => Kind::Field,
-            "input_field" | "inputfield" => Kind::InputField,
-            "enum_value" | "enumvalue" => Kind::EnumValue,
-            "query" => Kind::Query,
-            "mutation" => Kind::Mutation,
-            "subscription" => Kind::Subscription,
-            other => anyhow::bail!("unknown kind: {other}"),
+            "object" | "objects" | "type" | "types" => Kind::Object,
+            "interface" | "interfaces" => Kind::Interface,
+            "union" | "unions" => Kind::Union,
+            "enum" | "enums" => Kind::Enum,
+            "input" | "input_object" | "input_objects" | "inputobject" => Kind::InputObject,
+            "scalar" | "scalars" => Kind::Scalar,
+            "directive" | "directives" => Kind::Directive,
+            "field" | "fields" => Kind::Field,
+            "input_field" | "input_fields" | "inputfield" => Kind::InputField,
+            "enum_value" | "enum_values" | "enumvalue" => Kind::EnumValue,
+            "query" | "queries" => Kind::Query,
+            "mutation" | "mutations" => Kind::Mutation,
+            "subscription" | "subscriptions" => Kind::Subscription,
+            other => anyhow::bail!(
+                "unknown kind {other:?} — valid: object, interface, union, enum, \
+                 input_object, scalar, directive, field, input_field, enum_value, \
+                 query, mutation, subscription (plurals ok)"
+            ),
         })
     }
 }

@@ -34,10 +34,11 @@ pub fn path(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) 
     embedder_kind.hash(&mut h);
     model.unwrap_or("").hash(&mut h);
     records.len().hash(&mut h);
+    // Key on exactly what gets embedded (super::record_text), so the key can
+    // never drift from the embedding text — improve the text and the key moves
+    // with it, no silent stale vectors.
     for r in records {
-        r.path.hash(&mut h);
-        r.type_ref.hash(&mut h);
-        r.description.hash(&mut h);
+        super::record_text(r).hash(&mut h);
     }
     Some(cache_dir()?.join(format!("{:016x}.vecs", h.finish())))
 }
@@ -59,7 +60,13 @@ pub fn load(path: &Path, count: usize) -> Option<Vec<Vec<f32>>> {
     let magic = u32::from_le_bytes(buf[0..4].try_into().ok()?);
     let dims = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
     let n = u64::from_le_bytes(buf[8..16].try_into().ok()?) as usize;
-    if magic != MAGIC || dims != MRL_DIMS || n != count || buf.len() != 16 + n * dims * 4 {
+    // Guard the length math against a corrupt/torn `count` — checked so a bogus
+    // value can't wrap and trigger a huge `with_capacity` alloc below.
+    let expected = n
+        .checked_mul(dims)
+        .and_then(|x| x.checked_mul(4))
+        .and_then(|x| x.checked_add(16));
+    if magic != MAGIC || dims != MRL_DIMS || n != count || expected != Some(buf.len()) {
         return None;
     }
     let mut out = Vec::with_capacity(n);

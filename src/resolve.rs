@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::process::Command;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Kind, SchemaRecord};
@@ -112,8 +112,19 @@ fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
     let output = cmd
         .output()
         .map_err(|e| anyhow!("running rq: {e} — is `rq` installed and on PATH?"))?;
-    // rq emits a JSON array of hits, or a `{status}` object on no match.
-    Ok(serde_json::from_slice(&output.stdout).unwrap_or_default())
+    // rq: exit 0 = hits (JSON array), 1 = no match (a `{status}` object) — both
+    // are normal. Any other code is a real rq failure (not a repo, bad flag):
+    // surface it instead of silently reporting "no resolver found".
+    match output.status.code() {
+        Some(0) | Some(1) => Ok(serde_json::from_slice(&output.stdout).unwrap_or_default()),
+        other => {
+            let msg = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "rq failed (exit {other:?}) for {query:?}: {}",
+                msg.lines().next().unwrap_or("").trim()
+            )
+        }
+    }
 }
 
 /// GraphQL `nameWithOwner` → Ruby `name_with_owner`.
