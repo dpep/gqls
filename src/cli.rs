@@ -176,7 +176,7 @@ pub fn run() -> Result<()> {
     let records = load::load(&source)?;
 
     if cli.resolve {
-        return run_resolve(query, &records, kind, cli.code.as_deref(), cli.limit, output);
+        return run_resolve(query, &source, &records, kind, cli.code.as_deref(), cli.limit, output);
     }
 
     let matches: Vec<Match> = if cli.semantic {
@@ -266,6 +266,7 @@ fn print_text(matches: &[Match]) {
 /// Fuzzy-find the field, then hand it to rq to locate its resolver in code.
 fn run_resolve(
     query: &str,
+    source: &str,
     records: &[SchemaRecord],
     kind: Option<Kind>,
     code: Option<&str>,
@@ -281,7 +282,11 @@ fn run_resolve(
         anyhow::bail!("no schema entity matches {query:?} to resolve");
     };
     eprintln!("gqls: resolving {} …", top.record.path);
-    let hits = crate::resolve::resolve(top.record, code, limit.min(10))?;
+    // a local file schema (not a URL) enables package-proximity ranking
+    let schema_path = (!source.starts_with("http://") && !source.starts_with("https://"))
+        .then(|| std::path::Path::new(source))
+        .filter(|p| p.exists());
+    let hits = crate::resolve::resolve(top.record, code, schema_path, limit.min(10))?;
 
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&hits)?),

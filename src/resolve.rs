@@ -8,6 +8,7 @@
 //! by (convention priority, then rq's own confidence) rather than guess one.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Result};
@@ -29,24 +30,86 @@ pub struct RqHit {
     /// not read from rq, but included in serialized output.
     #[serde(default, skip_deserializing)]
     pub via: String,
+    /// Shared leading path components between the schema's package and this
+    /// hit's file — the primary rank key when a file schema is known, so a
+    /// resolver in the schema's own subgraph outranks a same-named one
+    /// elsewhere in the monorepo.
+    #[serde(default, skip_deserializing)]
+    pub proximity: usize,
+    /// Index of the candidate query that surfaced this hit (0 = best).
+    #[serde(skip)]
+    candidate_rank: usize,
 }
 
-/// Resolve `rec` to its code definition(s) via rq, best first.
-pub fn resolve(rec: &SchemaRecord, code_dir: Option<&str>, limit: usize) -> Result<Vec<RqHit>> {
+/// Resolve `rec` to its code definition(s) via rq, best first. `schema_path`,
+/// when a local file, ranks hits by package proximity to the schema — the
+/// resolver in the schema's own subgraph wins over a same-named one elsewhere.
+pub fn resolve(
+    rec: &SchemaRecord,
+    code_dir: Option<&str>,
+    schema_path: Option<&Path>,
+    limit: usize,
+) -> Result<Vec<RqHit>> {
+    // Collect every candidate's hits first (deduped), then rank as a whole —
+    // proximity can only reorder across candidates if we have them all.
     let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for cand in candidates(rec) {
+    let mut hits: Vec<RqHit> = Vec::new();
+    for (idx, cand) in candidates(rec).into_iter().enumerate() {
         for mut hit in run_rq(&cand, code_dir)? {
             if seen.insert(format!("{}:{}", hit.file, hit.line)) {
                 hit.via = cand.clone();
-                out.push(hit);
-                if out.len() >= limit {
-                    return Ok(out);
-                }
+                hit.candidate_rank = idx;
+                hits.push(hit);
             }
         }
     }
-    Ok(out)
+
+    // Package proximity: shared leading path components between the schema's
+    // directory and each hit's file. rq paths are repo-root-relative, so join
+    // them onto the code repo's git toplevel to compare absolute paths.
+    if let Some(schema_dir) = schema_path
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        if let Some(root) = git_toplevel(code_dir).and_then(|r| std::fs::canonicalize(r).ok()) {
+            for h in &mut hits {
+                let file_abs = root.join(&h.file);
+                let hit_dir = file_abs.parent().unwrap_or(&root);
+                h.proximity = shared_prefix(&schema_dir, hit_dir);
+            }
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        b.proximity
+            .cmp(&a.proximity)
+            .then(a.candidate_rank.cmp(&b.candidate_rank))
+            .then(b.confidence.total_cmp(&a.confidence))
+    });
+    hits.truncate(limit);
+    Ok(hits)
+}
+
+/// The git repo root containing `dir` (or gqls's cwd) — rq's file paths are
+/// relative to it.
+fn git_toplevel(dir: Option<&str>) -> Option<PathBuf> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--show-toplevel"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let out = cmd.output().ok()?;
+    out.status
+        .success()
+        .then(|| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+}
+
+/// Count of shared leading path components.
+fn shared_prefix(a: &Path, b: &Path) -> usize {
+    a.components()
+        .zip(b.components())
+        .take_while(|(x, y)| x == y)
+        .count()
 }
 
 /// graphql-ruby query candidates for a record, highest-priority first. Uses
