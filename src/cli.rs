@@ -45,6 +45,15 @@ struct Cli {
     /// HuggingFace `org/name` id. Defaults to all-MiniLM-L6-v2.
     #[arg(long)]
     model: Option<String>,
+
+    /// Resolve the top match to its graphql-ruby resolver/method in code via
+    /// `rq` (must be installed) — find the field, then jump to its definition.
+    #[arg(short = 'R', long)]
+    resolve: bool,
+
+    /// Directory of the server code for --resolve (defaults to rq's index).
+    #[arg(long)]
+    code: Option<String>,
 }
 
 /// A ranked result — from either the fuzzy scorer or the semantic ranker, so
@@ -67,6 +76,10 @@ pub fn run() -> Result<()> {
         None => load::discover()?,
     };
     let records = load::load(&source)?;
+
+    if cli.resolve {
+        return run_resolve(&cli.query, &records, kind, cli.code.as_deref(), cli.limit);
+    }
 
     let matches: Vec<Match> = if cli.semantic {
         #[cfg(feature = "semantic")]
@@ -152,6 +165,31 @@ fn print_text(matches: &[Match]) {
         };
         println!("{path:<width$}{ret}  [{kind}]{dep}", kind = r.kind.as_str());
     }
+}
+
+/// Fuzzy-find the field, then hand it to rq to locate its resolver in code.
+fn run_resolve(
+    query: &str,
+    records: &[SchemaRecord],
+    kind: Option<Kind>,
+    code: Option<&str>,
+    limit: usize,
+) -> Result<()> {
+    let Some(top) = search::search(query, records, kind, 1).into_iter().next() else {
+        anyhow::bail!("no schema entity matches {query:?} to resolve");
+    };
+    eprintln!("gqls: resolving {} …", top.record.path);
+    let hits = crate::resolve::resolve(top.record, code, limit.min(10))?;
+    if hits.is_empty() {
+        eprintln!(
+            "gqls: no code definition found for {} (tried graphql-ruby rq candidates)",
+            top.record.path
+        );
+    }
+    for h in &hits {
+        println!("{}:{}  {}  (via {})", h.file, h.line, h.name, h.via);
+    }
+    Ok(())
 }
 
 /// `Query.user(id: ID!, first: Int)` — path plus a compact arg signature.

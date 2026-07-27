@@ -13,6 +13,7 @@
 pub mod cli;
 pub mod load;
 pub mod model;
+pub mod resolve;
 pub mod search;
 
 #[cfg(feature = "semantic")]
