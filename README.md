@@ -30,11 +30,11 @@ fills that gap and stays Unix-composable (`-j`/`-J` for JSON/NDJSON everywhere).
 # Homebrew (fuzzy + introspection + resolver jump)
 brew install dpep/tools/gqls
 
-# Cargo
-cargo install gqls
+# Cargo (crate is `gqls-cli`; it installs the `gqls` binary)
+cargo install gqls-cli
 
 # Cargo, with semantic search (downloads ONNX Runtime at build time)
-cargo install gqls --features semantic
+cargo install gqls-cli --features semantic
 ```
 
 The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); install it too if you want that.

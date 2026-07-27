@@ -631,7 +631,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gqls"
+name = "gqls-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",

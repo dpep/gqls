@@ -1,5 +1,5 @@
 [package]
-name = "gqls"
+name = "gqls-cli"  # crates.io name (`gqls` is taken); the binary is still `gqls`
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"  # `Option::is_none_or`
@@ -12,13 +12,14 @@ readme = "README.md"
 keywords = ["graphql", "schema", "search", "cli"]
 categories = ["command-line-utilities"]
 
+# Keep the lib named `gqls` even though the crate publishes as `gqls-cli`, so
+# `main.rs` (and any dependent) still says `gqls::…`.
+[lib]
+name = "gqls"
+
 [[bin]]
 name = "gqls"
 path = "src/main.rs"
-
-# A lib target is auto-detected from src/lib.rs (crate `gqls`), so another
-# Rust tool can depend on it — notably `rq` (reference-query) for the
-# planned field -> resolver jump.
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
