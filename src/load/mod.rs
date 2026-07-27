@@ -54,8 +54,11 @@ pub fn discover() -> Result<String> {
     }
 
     found.sort_by(|a, b| {
-        a.tier
-            .cmp(&b.tier)
+        // a `supergraph*` schema wins outright (the composed graph); otherwise
+        // nearest-and-most-canonical by tier, then depth, then path.
+        b.supergraph
+            .cmp(&a.supergraph)
+            .then(a.tier.cmp(&b.tier))
             .then(a.depth.cmp(&b.depth))
             .then(a.path.cmp(&b.path))
     });
@@ -78,6 +81,9 @@ struct Candidate {
     depth: usize,
     /// Lower = more likely to be *the* schema.
     tier: u8,
+    /// A `supergraph*`-named schema — the composed graph in a federated
+    /// monorepo, preferred when several candidates exist.
+    supergraph: bool,
 }
 
 fn walk(dir: &Path, depth: usize, out: &mut Vec<Candidate>) {
@@ -99,7 +105,15 @@ fn walk(dir: &Path, depth: usize, out: &mut Vec<Candidate>) {
             walk(&path, depth + 1, out);
         } else if ft.is_file() {
             if let Some(tier) = classify(&path) {
-                out.push(Candidate { path, depth, tier });
+                let supergraph = path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with("supergraph"));
+                out.push(Candidate {
+                    path,
+                    depth,
+                    tier,
+                    supergraph,
+                });
             }
         }
     }
