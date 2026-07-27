@@ -16,6 +16,8 @@ pub mod sdl;
 pub fn load(source: &str) -> Result<Vec<SchemaRecord>> {
     if source.starts_with("http://") || source.starts_with("https://") {
         introspect::from_url(source)
+    } else if source.ends_with(".json") {
+        introspect::from_json_file(source)
     } else {
         let text =
             std::fs::read_to_string(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
@@ -114,10 +116,26 @@ fn classify(path: &Path) -> Option<u8> {
     if sdl_ext && name.starts_with("schema.") {
         return Some(1);
     }
-    if sdl_ext && sniff_is_schema(path) {
+    if name.ends_with(".json") && sniff_is_introspection(path) {
         return Some(2);
     }
+    if sdl_ext && sniff_is_schema(path) {
+        return Some(3);
+    }
     None
+}
+
+/// Cheap check that a `.json` file is a GraphQL introspection dump — the marker
+/// sits in the first few KB, so we don't read a multi-MB file to reject it.
+fn sniff_is_introspection(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 4096];
+    let n = std::io::BufReader::new(f).read(&mut head).unwrap_or(0);
+    let s = String::from_utf8_lossy(&head[..n]);
+    s.contains("__schema") || s.contains("\"queryType\"")
 }
 
 /// Cheap check that a `.graphql` file is SDL (type definitions) rather than an
