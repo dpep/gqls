@@ -1,81 +1,225 @@
-//! Fuzzy scoring.
+//! Fuzzy scoring — a DP subsequence aligner ported from `rq`
+//! (`~/code/lib/rust/rq/src/search/score.rs`), adapted to `SchemaRecord`.
 //!
-//! This is a compact, dependency-free placeholder. The plan is to replace it
-//! with `rq`'s engine at `~/code/lib/rust/rq/src/search/score.rs` — a real DP
-//! subsequence aligner (`align()`), an additive/explainable set of `Feature`s,
-//! and confidence-by-dominance over the runner-up. The record shape here
-//! (`SchemaRecord`) is deliberately close to rq's `SymbolRow` so that swap is
-//! mostly a matter of adapting the `kind`-weight table.
+//! Match quality dominates (exact > prefix > abbreviation), with a small kind
+//! weight and a qualifier (`Type.field`) parent boost layered on. The aligner
+//! is a real dynamic program — it rewards word-boundary (camelCase / `_`) and
+//! contiguous matches, penalizes gaps, and only spans *adjacent* words — so
+//! abbreviations like `refproc → RefundProcessor` rank the way a human reads.
 
 use crate::model::SchemaRecord;
 
-/// Score `query` against a record, or `None` if it doesn't match at all.
-/// Higher is better.
+/// Score `query` against a record, best-is-higher, or `None` if it doesn't
+/// match at all (not even as a subsequence).
 pub fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
-    let q: Vec<char> = query.to_lowercase().chars().collect();
+    // A qualified query (`Type.field`) names an enclosing type: match the leaf
+    // against the name and reward a matching parent below.
+    let (leaf, qualifier) = parse_qualified(query);
+    let q = leaf.to_ascii_lowercase();
+    let name_lower = rec.name.to_ascii_lowercase();
 
-    // Match the leaf name (the common case: `email`, `user`) OR the qualified
-    // path (`user.email`) — the path at a slight discount so a clean leaf match
-    // wins. Either may match; don't short-circuit on the name.
-    let name = subsequence(&q, &rec.name);
-    let path = subsequence(&q, &rec.path).map(|p| p - 50);
-    let mut best = match (name, path) {
-        (Some(a), Some(b)) => a.max(b),
-        (Some(a), None) | (None, Some(a)) => a,
-        (None, None) => return None,
+    let mut total = 0.0f64;
+
+    // Match quality on the leaf name — the dominant term.
+    let name_matched = if name_lower == q {
+        total += 1000.0;
+        true
+    } else if name_lower.starts_with(&q) {
+        let tail = rec.name.chars().count().saturating_sub(q.chars().count());
+        total += 700.0 - (tail as f64).min(100.0);
+        true
+    } else if let Some(s) = subsequence_score(&q, &rec.name) {
+        total += s.min(600.0);
+        true
+    } else {
+        false
     };
 
-    // Exact / prefix bonuses on the leaf name.
-    let name_lower = rec.name.to_lowercase();
-    let q_str: String = q.iter().collect();
-    if name_lower == q_str {
-        best += 1000;
-    } else if name_lower.starts_with(&q_str) {
-        best += 400;
+    // No name match: fall back to the qualified path (`user.email` vs
+    // `User.email`) — a weaker signal, and required to match at all.
+    if !name_matched {
+        match subsequence_score(&query.to_ascii_lowercase(), &rec.path) {
+            Some(s) => total += (s * 0.5).min(300.0),
+            None => return None,
+        }
     }
 
-    best += rec.kind.weight();
-    Some(best)
+    // Qualifier boost — the user named the enclosing type (`Repository.name`);
+    // reward the field whose parent is that type.
+    if let Some(qual) = qualifier {
+        if let Some(b) = parent_boost(qual, rec.parent.as_deref()) {
+            total += b;
+        }
+    }
+
+    // Kind weight — roots and named types outrank leaf args (a tiebreaker).
+    total += rec.kind.weight() as f64;
+
+    Some(total.round() as i64)
 }
 
-/// Abbreviation-aware subsequence match: every char of `q` (already
-/// lowercased) must appear in `text` in order. Reward matches at word
-/// boundaries (`camelCase`, `_`, `.`, `:`, `/`) and contiguous runs.
-/// Returns `None` unless all of `q` is consumed.
-fn subsequence(q: &[char], text: &str) -> Option<i64> {
-    if q.is_empty() {
-        return Some(0);
+/// Split a query into its leaf name and the optional enclosing type typed
+/// before the last `.`: `User.email` → (`email`, `Some("User")`), a plain
+/// `user` → (`user`, `None`). A leading/trailing `.` is an ordinary query.
+fn parse_qualified(query: &str) -> (&str, Option<&str>) {
+    match query.rfind('.') {
+        Some(i) if i > 0 && i + 1 < query.len() => (&query[i + 1..], Some(&query[..i])),
+        _ => (query, None),
     }
-    let tb: Vec<char> = text.chars().collect();
-    let mut qi = 0;
-    let mut score = 0i64;
-    let mut last: Option<usize> = None;
+}
 
-    for (ti, &c) in tb.iter().enumerate() {
-        if qi >= q.len() {
-            break;
-        }
-        if c.to_ascii_lowercase() == q[qi] {
-            let at_boundary = ti == 0
-                || matches!(tb[ti - 1], '_' | '.' | ':' | '/')
-                || (c.is_ascii_uppercase() && tb[ti - 1].is_ascii_lowercase());
-            score += if at_boundary { 15 } else { 3 };
-            if let Some(l) = last {
-                if l + 1 == ti {
-                    score += 5; // contiguity bonus
-                }
-            }
-            last = Some(ti);
-            qi += 1;
-        }
-    }
-
-    if qi == q.len() {
-        // Prefer shorter, tighter matches.
-        Some(score - (tb.len() as i64) / 4)
+/// Boost a field whose enclosing type matches the query's qualifier. GraphQL
+/// parents are a single type name, so an exact (case-insensitive) match is the
+/// strong signal; a prefix (`repo` → `Repository`) a weaker one.
+fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
+    let parent = parent?;
+    if parent.eq_ignore_ascii_case(qualifier) {
+        Some(300.0)
+    } else if parent.to_ascii_lowercase().starts_with(&qualifier.to_ascii_lowercase()) {
+        Some(150.0)
     } else {
         None
     }
+}
+
+/// Score `query` as a subsequence of `name` (the best alignment's score), or
+/// `None` if it isn't a subsequence.
+fn subsequence_score(query: &str, name: &str) -> Option<f64> {
+    align(query, name).map(|a| a.score)
+}
+
+// --- the aligner, ported verbatim from rq ---
+
+/// Largest gap (chars skipped) allowed between two matched query chars that land
+/// mid-word (not at a word boundary). Boundary jumps are how abbreviations work
+/// and stay unlimited; off-boundary we tolerate a couple of skipped chars.
+const MAX_NONBOUNDARY_GAP: usize = 2;
+
+/// Penalty per skipped char between two matched chars.
+const GAP_PENALTY: f64 = 3.0;
+
+struct Alignment {
+    score: f64,
+}
+
+/// Find the best alignment of `query` as a subsequence of `name`, maximizing
+/// boundary and contiguous matches while penalizing gaps. `None` if `query`
+/// isn't a subsequence. Query separators are ignored, so snake_case matches
+/// CamelCase (`widget_controller → WidgetsController`).
+fn align(query: &str, name: &str) -> Option<Alignment> {
+    let q: Vec<char> = query
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    if q.is_empty() {
+        return None;
+    }
+    // cheap gate: reject non-subsequences with one linear scan before the DP
+    let mut qi = 0;
+    for c in name.chars() {
+        if qi < q.len() && c.to_ascii_lowercase() == q[qi] {
+            qi += 1;
+        }
+    }
+    if qi < q.len() {
+        return None;
+    }
+    let chars: Vec<char> = name.chars().collect();
+    let n = chars.len();
+    let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+    let boundary = boundaries(&chars);
+    let mut bnd_prefix = vec![0usize; n + 1];
+    for i in 0..n {
+        bnd_prefix[i + 1] = bnd_prefix[i] + boundary[i] as usize;
+    }
+
+    // table[qi][i] = best (score, backpointer) for aligning q[0..=qi] with q[qi]
+    // landing on name position `i`.
+    let mut table: Vec<Vec<Option<(f64, usize)>>> = vec![vec![None; n]; q.len()];
+
+    for (i, &c) in lower.iter().enumerate() {
+        if c == q[0] {
+            let mut s = 10.0;
+            if boundary[i] {
+                s += 15.0;
+            }
+            if i == 0 {
+                s += 20.0;
+            }
+            table[0][i] = Some((s, i));
+        }
+    }
+
+    for qi in 1..q.len() {
+        for i in qi..n {
+            if lower[i] != q[qi] {
+                continue;
+            }
+            let base = 10.0 + if boundary[i] { 15.0 } else { 0.0 };
+            let j_start = if boundary[i] {
+                qi - 1
+            } else {
+                (qi - 1).max(i.saturating_sub(MAX_NONBOUNDARY_GAP + 1))
+            };
+            let mut best: Option<(f64, usize)> = None;
+            let prev_row = &table[qi - 1];
+            for (j, cell) in prev_row.iter().enumerate().take(i).skip(j_start) {
+                let Some((pscore, _)) = cell else {
+                    continue;
+                };
+                let trans = if j + 1 == i {
+                    10.0
+                } else {
+                    let gap = i - j - 1;
+                    let crossed_word = bnd_prefix[i] - bnd_prefix[j + 1] > 0;
+                    if boundary[i] {
+                        if crossed_word {
+                            continue;
+                        }
+                    } else if gap > MAX_NONBOUNDARY_GAP || crossed_word {
+                        continue;
+                    }
+                    -(gap as f64) * GAP_PENALTY
+                };
+                let cand = pscore + trans;
+                if best.is_none_or(|(b, _)| cand > b) {
+                    best = Some((cand, j));
+                }
+            }
+            if let Some((bscore, j)) = best {
+                table[qi][i] = Some((bscore + base, j));
+            }
+        }
+    }
+
+    let last = q.len() - 1;
+    let score = (0..n)
+        .filter_map(|i| table[last][i].map(|(s, _)| s))
+        .max_by(|a, b| a.total_cmp(b))?;
+    Some(Alignment {
+        score: score.max(0.0),
+    })
+}
+
+/// Mark word-boundary positions: index 0, anything after `_`/non-alphanumeric,
+/// and camelCase humps (lower→Upper, and the last cap of an ACRONYMWord run).
+fn boundaries(chars: &[char]) -> Vec<bool> {
+    let mut out = vec![false; chars.len()];
+    for i in 0..chars.len() {
+        let c = chars[i];
+        out[i] = if i == 0 {
+            true
+        } else {
+            let prev = chars[i - 1];
+            !prev.is_alphanumeric()
+                || (c.is_uppercase() && prev.is_lowercase())
+                || (c.is_uppercase()
+                    && prev.is_uppercase()
+                    && chars.get(i + 1).is_some_and(|n| n.is_lowercase()))
+        };
+    }
+    out
 }
 
 #[cfg(test)]
@@ -88,7 +232,7 @@ mod tests {
             path: path.into(),
             name: name.into(),
             kind,
-            parent: None,
+            parent: path.rsplit_once('.').map(|(p, _)| p.to_string()),
             type_ref: None,
             args: vec![],
             description: None,
@@ -107,8 +251,9 @@ mod tests {
 
     #[test]
     fn abbreviation_matches_camelcase() {
-        // `cu` should hit the `createUser` boundaries.
         assert!(score("cu", &rec("createUser", "Mutation.createUser", Kind::Mutation)).is_some());
+        // real abbreviation the DP aligner handles well
+        assert!(score("refproc", &rec("refundProcessor", "T.refundProcessor", Kind::Field)).is_some());
     }
 
     #[test]
@@ -117,7 +262,19 @@ mod tests {
     }
 
     #[test]
-    fn qualified_path_query_matches() {
-        assert!(score("user.email", &rec("email", "User.email", Kind::Field)).is_some());
+    fn qualified_path_query_matches_and_boosts_the_right_parent() {
+        // `User.email` — leaf `email` matches; both records share the leaf, but
+        // the `User` qualifier must float the User field above the Account one.
+        let user = score("user.email", &rec("email", "User.email", Kind::Field)).unwrap();
+        let account = score("user.email", &rec("email", "Account.email", Kind::Field)).unwrap();
+        assert!(user > account, "user {user} > account {account}");
+    }
+
+    #[test]
+    fn adjacent_word_rule_rejects_scatter() {
+        // skipping a whole middle word isn't a match
+        assert!(score("rndsvc", &rec("RefundProcessingService", "T.x", Kind::Object)).is_none());
+        // adjacent-word abbreviation still matches
+        assert!(score("refprocsvc", &rec("RefundProcessingService", "T.x", Kind::Object)).is_some());
     }
 }
