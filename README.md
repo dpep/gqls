@@ -8,13 +8,16 @@ gqls user examples/schema.graphql          # fuzzy search
 gqls cu examples/schema.graphql            # abbreviations: `cu` -> createUser
 gqls email examples/schema.graphql -k field # restrict to a kind
 gqls user examples/schema.graphql --json    # machine-readable
+gqls repository schema.json                  # local introspection JSON dump
+gqls repository https://api.example.com/graphql  # live introspection
 gqls user                                    # no path -> auto-discover a schema
 ```
 
-Input is a local `.graphql`/`.graphqls` SDL file today; an introspection
-**URL** is planned (see `src/load/introspect.rs`). With no source argument,
-gqls walks the current directory tree for a schema document (preferring
-`.graphqls`, then `schema.*`, then any SDL-looking `.graphql`).
+Input is a local `.graphql`/`.graphqls` SDL file, a local introspection JSON
+dump (`*.json`), or an http(s) URL (introspected on the fly). With no source
+argument, gqls walks the current directory tree for a schema document
+(preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then
+any SDL-looking `.graphql`).
 
 ## Semantic search
 
@@ -50,12 +53,13 @@ src/
   load/
     mod.rs           load(source) + discover() for the no-arg case
     sdl.rs           parse SDL -> records
-    introspect.rs    URL -> records (stub)
+    introspect.rs    URL / JSON introspection -> records
   search/
     mod.rs           filter -> score -> rank -> truncate
     score.rs         fuzzy scorer (shape borrowed from rq)
   semantic/          embedding search (feature = "semantic")
     mod.rs           embed records + query, rank by cosine
+    cache.rs         on-disk per-record vector cache (schema+embedder keyed)
     embed.rs         Embedder trait + HashEmbedder fallback   (borrowed: ae)
     embed/onnx.rs    all-MiniLM-L6-v2 via ONNX Runtime         (borrowed: ae)
     mrl.rs           Matryoshka truncation + cosine            (borrowed: ae)
@@ -64,9 +68,9 @@ src/
 
 ### Borrowed, not rebuilt
 
-- **Fuzzy ranking** — `search/score.rs` is a compact placeholder shaped to be
-  swapped for `rq`'s `search/score.rs` (DP subsequence aligner + additive,
-  explainable scoring + confidence). `SchemaRecord` mirrors rq's `SymbolRow`.
+- **Fuzzy ranking** — `search/score.rs` ports `rq`'s DP subsequence aligner
+  (boundary/contiguity scoring, adjacent-word rule, gap penalties), adapted to
+  `SchemaRecord` with a `Type.field` qualifier/parent boost.
 - **Semantic search** — `semantic/{embed.rs,embed/onnx.rs,mrl.rs}` are copied
   from `ae` (`~/code/lib/rust/ae`), whose embedding pipeline is generic over
   `&str`. We copy those files; we do **not** depend on `ae`, whose store/CLI
@@ -80,6 +84,6 @@ tool owns the schema; rq owns the code.
 
 ## Status
 
-v0: SDL loading, no-arg discovery, fuzzy search, semantic search (feature), and
-text/JSON output work. URL introspection is a stub; the fuzzy scorer and the
-embedding cache are the next things to deepen.
+Working: SDL / JSON-dump / URL loading, no-arg discovery, the rq-derived fuzzy
+scorer, semantic search with an on-disk embedding cache, and text/JSON/ndjson
+output. The resolver-jump handoff to `rq` is the main remaining idea.

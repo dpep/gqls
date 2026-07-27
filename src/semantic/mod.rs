@@ -10,6 +10,7 @@
 //! follow-up for very large / federated schemas; the embed and rank steps are
 //! kept separable here so that cache drops in cleanly.
 
+mod cache;
 mod embed;
 mod mrl;
 
@@ -29,15 +30,31 @@ pub fn search<'a>(
 ) -> Vec<(f64, &'a SchemaRecord)> {
     let embedder = default_embedder(model);
     eprintln!("gqls: semantic search via {} embeddings", embedder.kind());
-    let query_vec = compress_matryoshka_vector(&embedder.embed(query));
 
+    // Per-record vectors are the expensive part; cache them by schema+embedder
+    // so only the query is embedded on a warm run. Index-aligned with `records`.
+    let cache_path = cache::path(records, embedder.kind(), model);
+    let vectors = cache_path
+        .as_deref()
+        .and_then(|p| cache::load(p, records.len()))
+        .unwrap_or_else(|| {
+            eprintln!("gqls: embedding {} records (caching)…", records.len());
+            let v: Vec<Vec<f32>> = records
+                .iter()
+                .map(|r| compress_matryoshka_vector(&embedder.embed(&record_text(r))))
+                .collect();
+            if let Some(p) = cache_path.as_deref() {
+                cache::store(p, &v);
+            }
+            v
+        });
+
+    let query_vec = compress_matryoshka_vector(&embedder.embed(query));
     let mut hits: Vec<(f64, &SchemaRecord)> = records
         .iter()
-        .filter(|r| kind.is_none_or(|k| r.kind == k))
-        .map(|r| {
-            let vec = compress_matryoshka_vector(&embedder.embed(&record_text(r)));
-            (cosine_similarity(&query_vec, &vec) as f64, r)
-        })
+        .zip(&vectors)
+        .filter(|(r, _)| kind.is_none_or(|k| r.kind == k))
+        .map(|(r, v)| (cosine_similarity(&query_vec, v) as f64, r))
         .collect();
 
     hits.sort_by(|a, b| b.0.total_cmp(&a.0));
