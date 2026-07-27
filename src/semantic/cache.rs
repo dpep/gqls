@@ -7,7 +7,8 @@
 //! changed, different model) simply re-embeds and overwrites.
 //!
 //! Format: `MAGIC u32 | dims u32 | count u64 | count*dims f32`, all
-//! little-endian. Compact (~7.5 MB for GitHub's 30k records) and dependency-free.
+//! little-endian — 256 bytes/record (64 f32), ~2.9 MB for GitHub's 11k records,
+//! and dependency-free.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
