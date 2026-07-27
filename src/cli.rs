@@ -9,6 +9,11 @@ use crate::load;
 use crate::model::{Kind, SchemaRecord};
 use crate::search;
 
+/// The semantic-only flags (-s, --model, --refresh, --clear-cache) are hidden
+/// from --help on builds without the feature, where they'd only error.
+const HIDE_SEMANTIC: bool = !cfg!(feature = "_semantic");
+
+#[cfg(feature = "_semantic")]
 const EXAMPLES: &str = "\
 EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
@@ -16,9 +21,25 @@ EXAMPLES:
   gqls User.email                     qualified Type.field query
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
-  gqls 'cancel a subscription' -s     semantic search (build --features semantic)
+  gqls 'cancel a subscription' -s     semantic search (rank by meaning)
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
+";
+
+#[cfg(not(feature = "_semantic"))]
+const EXAMPLES: &str = "\
+EXAMPLES:
+  gqls user schema.graphql            fuzzy search an SDL file
+  gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
+  gqls User.email                     qualified Type.field query
+  gqls repo schema.json               search a local introspection dump
+  gqls repo https://api/graphql       introspect a live endpoint
+  gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
+  gqls user schema.graphql -j         JSON output (-J for ndjson)
+
+Semantic search (-s, rank by meaning) is not compiled into this build. Enable it:
+  cargo install gqls-cli --features semantic
+  brew install dpep/tools/gqls
 ";
 
 #[derive(Parser)]
@@ -60,24 +81,23 @@ struct Cli {
     #[arg(short = 'J', long)]
     ndjson: bool,
 
-    /// Semantic (embedding) search instead of fuzzy. Requires a build with
-    /// `--features semantic`.
-    #[arg(short, long)]
+    /// Semantic (embedding) search instead of fuzzy — rank by meaning.
+    #[arg(short, long, hide = HIDE_SEMANTIC)]
     semantic: bool,
 
     /// Embedding model for --semantic: a local dir / `.onnx` path, or a
     /// HuggingFace `org/name` id. Defaults to all-MiniLM-L6-v2.
-    #[arg(long)]
+    #[arg(long, hide = HIDE_SEMANTIC)]
     model: Option<String>,
 
     /// Force a re-embed for --semantic, overwriting the cache. Schema edits
     /// already re-embed on their own; use this for changes the cache can't see
     /// (e.g. a new model).
-    #[arg(long)]
+    #[arg(long, hide = HIDE_SEMANTIC)]
     refresh: bool,
 
     /// Delete all cached embedding vector files, then exit.
-    #[arg(long)]
+    #[arg(long, hide = HIDE_SEMANTIC)]
     clear_cache: bool,
 
     /// Print a shell completion script (bash, zsh, fish, ...) to stdout, then exit.
@@ -171,7 +191,8 @@ pub fn run() -> Result<()> {
         {
             let _ = (&cli.model, cli.refresh);
             anyhow::bail!(
-                "this build has no semantic search — rebuild with `cargo build --features semantic`"
+                "this build has no semantic search — install it with \
+                 `cargo install gqls-cli --features semantic` or `brew install dpep/tools/gqls`"
             );
         }
     } else {
