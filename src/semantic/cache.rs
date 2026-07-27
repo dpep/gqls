@@ -20,6 +20,11 @@ use crate::model::SchemaRecord;
 
 const MAGIC: u32 = 0x47_51_4C_31; // "GQL1"
 
+/// Keep at most this many cache files; the oldest (by mtime) are pruned on
+/// write, so switching between a handful of schemas stays cheap and stale
+/// files from edited schemas don't accumulate unbounded.
+const MAX_FILES: usize = 32;
+
 /// Cache file path for this (schema, embedder, model) triple, or `None` if no
 /// cache dir is resolvable.
 pub fn path(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) -> Option<PathBuf> {
@@ -88,4 +93,58 @@ pub fn store(path: &Path, vectors: &[Vec<f32>]) {
         }
     }
     let _ = std::fs::write(path, &buf);
+}
+
+/// Refresh a cache file's mtime on a hit, so an actively-used schema survives
+/// LRU pruning even though its vectors didn't need rewriting.
+pub fn touch(path: &Path) {
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+}
+
+/// Delete all but the `keep` most-recently-used cache files (by mtime).
+pub fn prune(keep: usize) {
+    let Some(dir) = cache_dir() else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "vecs"))
+            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .collect(),
+        Err(_) => return,
+    };
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Number of cache files to keep on a write. Public so the caller prunes with
+/// the module's own policy.
+pub fn max_files() -> usize {
+    MAX_FILES
+}
+
+/// Delete every cache file; returns how many were removed.
+pub fn clear() -> usize {
+    let Some(dir) = cache_dir() else {
+        return 0;
+    };
+    let mut removed = 0;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if e.path().extension().is_some_and(|x| x == "vecs")
+                && std::fs::remove_file(e.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }

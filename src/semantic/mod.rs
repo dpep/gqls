@@ -27,17 +27,30 @@ pub fn search<'a>(
     kind: Option<Kind>,
     limit: usize,
     model: Option<&str>,
+    refresh: bool,
 ) -> Vec<(f64, &'a SchemaRecord)> {
     let embedder = default_embedder(model);
     eprintln!("gqls: semantic search via {} embeddings", embedder.kind());
 
-    // Per-record vectors are the expensive part; cache them by schema+embedder
-    // so only the query is embedded on a warm run. Index-aligned with `records`.
+    // Per-record vectors are the expensive part; cache them keyed by schema
+    // content + embedder + model, so editing the schema (or switching model)
+    // changes the key and re-embeds automatically. `--refresh` forces a miss.
     let cache_path = cache::path(records, embedder.kind(), model);
-    let vectors = cache_path
-        .as_deref()
-        .and_then(|p| cache::load(p, records.len()))
-        .unwrap_or_else(|| {
+    let cached = if refresh {
+        None
+    } else {
+        cache_path
+            .as_deref()
+            .and_then(|p| cache::load(p, records.len()))
+    };
+    let vectors = match cached {
+        Some(v) => {
+            if let Some(p) = cache_path.as_deref() {
+                cache::touch(p); // LRU: mark this schema as recently used
+            }
+            v
+        }
+        None => {
             use rayon::prelude::*;
             eprintln!("gqls: embedding {} records in parallel (caching)…", records.len());
             // Each worker thread builds its own embedder/session (the session is
@@ -52,9 +65,11 @@ pub fn search<'a>(
                 .collect();
             if let Some(p) = cache_path.as_deref() {
                 cache::store(p, &v);
+                cache::prune(cache::max_files()); // evict least-recently-used
             }
             v
-        });
+        }
+    };
 
     let query_vec = compress_matryoshka_vector(&embedder.embed(query));
     let mut hits: Vec<(f64, &SchemaRecord)> = records
@@ -82,4 +97,9 @@ fn record_text(r: &SchemaRecord) -> String {
         s.push_str(t);
     }
     s
+}
+
+/// Delete all cached embedding vector files; returns how many were removed.
+pub fn clear_cache() -> usize {
+    cache::clear()
 }

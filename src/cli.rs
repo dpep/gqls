@@ -8,16 +8,38 @@ use crate::load;
 use crate::model::{Kind, SchemaRecord};
 use crate::search;
 
+const EXAMPLES: &str = "\
+EXAMPLES:
+  gqls user schema.graphql            fuzzy search an SDL file
+  gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
+  gqls User.email                     qualified Type.field query
+  gqls repo schema.json               search a local introspection dump
+  gqls repo https://api/graphql       introspect a live endpoint
+  gqls 'cancel a subscription' -s     semantic search (build --features semantic)
+  gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
+  gqls user schema.graphql -j         JSON output (-J for ndjson)
+";
+
 #[derive(Parser)]
-#[command(name = "gqls", version, about = "Fuzzy + semantic search over a GraphQL schema.")]
+#[command(
+    name = "gqls",
+    version,
+    about = "Fuzzy + semantic search over a GraphQL schema.",
+    long_about = "Search the types, fields, args, and directives in a GraphQL schema from the \
+                  terminal. Input is an SDL file, a local introspection JSON dump, or a live \
+                  http(s) endpoint; with no source, gqls discovers a schema in the current tree. \
+                  Fuzzy by default; --semantic ranks by meaning; --resolve jumps to the \
+                  graphql-ruby resolver via rq. All modes support -j/--json and -J/--ndjson.",
+    after_help = EXAMPLES
+)]
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
     /// and `Type.field` queries match against the qualified path.
     query: String,
 
-    /// Schema source: a path to a `.graphql`/`.graphqls` SDL file, or an
-    /// http(s) URL (introspection — not implemented yet). If omitted, gqls
-    /// searches the current directory tree for a schema.
+    /// Schema source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection
+    /// dump, or an http(s) URL (introspected live). If omitted, gqls searches
+    /// the current directory tree for a schema.
     source: Option<String>,
 
     /// Restrict to a kind (object, field, query, mutation, enum, scalar, ...).
@@ -46,6 +68,16 @@ struct Cli {
     #[arg(long)]
     model: Option<String>,
 
+    /// Re-embed for --semantic even if a cached vector file exists (and
+    /// refresh the cache). Schema edits already invalidate the cache; use this
+    /// to force it (e.g. after a model change).
+    #[arg(long)]
+    refresh: bool,
+
+    /// Delete all cached embedding vector files, then exit.
+    #[arg(long)]
+    clear_cache: bool,
+
     /// Resolve the top match to its graphql-ruby resolver/method in code via
     /// `rq` (must be installed) — find the field, then jump to its definition.
     #[arg(short = 'R', long)]
@@ -54,6 +86,14 @@ struct Cli {
     /// Directory of the server code for --resolve (defaults to rq's index).
     #[arg(long)]
     code: Option<String>,
+}
+
+/// The chosen output format — computed once, honored by every mode.
+#[derive(Clone, Copy)]
+enum Output {
+    Text,
+    Json,
+    Ndjson,
 }
 
 /// A ranked result — from either the fuzzy scorer or the semantic ranker, so
@@ -65,6 +105,25 @@ struct Match<'a> {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.clear_cache {
+        #[cfg(feature = "semantic")]
+        {
+            let n = crate::semantic::clear_cache();
+            eprintln!("gqls: cleared {n} cached vector file(s)");
+            return Ok(());
+        }
+        #[cfg(not(feature = "semantic"))]
+        anyhow::bail!("no embedding cache in this build (built without --features semantic)");
+    }
+
+    let output = if cli.json {
+        Output::Json
+    } else if cli.ndjson {
+        Output::Ndjson
+    } else {
+        Output::Text
+    };
 
     let kind: Option<Kind> = match &cli.kind {
         Some(s) => Some(s.parse()?),
@@ -78,20 +137,27 @@ pub fn run() -> Result<()> {
     let records = load::load(&source)?;
 
     if cli.resolve {
-        return run_resolve(&cli.query, &records, kind, cli.code.as_deref(), cli.limit);
+        return run_resolve(&cli.query, &records, kind, cli.code.as_deref(), cli.limit, output);
     }
 
     let matches: Vec<Match> = if cli.semantic {
         #[cfg(feature = "semantic")]
         {
-            crate::semantic::search(&cli.query, &records, kind, cli.limit, cli.model.as_deref())
-                .into_iter()
-                .map(|(score, record)| Match { record, score })
-                .collect()
+            crate::semantic::search(
+                &cli.query,
+                &records,
+                kind,
+                cli.limit,
+                cli.model.as_deref(),
+                cli.refresh,
+            )
+            .into_iter()
+            .map(|(score, record)| Match { record, score })
+            .collect()
         }
         #[cfg(not(feature = "semantic"))]
         {
-            let _ = &cli.model;
+            let _ = (&cli.model, cli.refresh);
             anyhow::bail!(
                 "this build has no semantic search — rebuild with `cargo build --features semantic`"
             );
@@ -106,40 +172,34 @@ pub fn run() -> Result<()> {
             .collect()
     };
 
-    if cli.json {
-        print_json(&matches, false)?;
-    } else if cli.ndjson {
-        print_json(&matches, true)?;
-    } else {
-        print_text(&matches);
-    }
-    Ok(())
+    output.write_matches(&matches)
 }
 
-#[derive(Serialize)]
-struct Out<'a> {
-    #[serde(flatten)]
-    record: &'a SchemaRecord,
-    score: f64,
-}
-
-fn print_json(matches: &[Match], ndjson: bool) -> Result<()> {
-    let rows: Vec<Out> = matches
-        .iter()
-        .map(|m| Out {
-            record: m.record,
-            score: m.score,
-        })
-        .collect();
-
-    if ndjson {
-        for row in &rows {
-            println!("{}", serde_json::to_string(row)?);
+impl Output {
+    fn write_matches(self, matches: &[Match]) -> Result<()> {
+        #[derive(Serialize)]
+        struct Row<'a> {
+            #[serde(flatten)]
+            record: &'a SchemaRecord,
+            score: f64,
         }
-    } else {
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        let rows = || {
+            matches.iter().map(|m| Row {
+                record: m.record,
+                score: m.score,
+            })
+        };
+        match self {
+            Output::Json => println!("{}", serde_json::to_string_pretty(&rows().collect::<Vec<_>>())?),
+            Output::Ndjson => {
+                for row in rows() {
+                    println!("{}", serde_json::to_string(&row)?);
+                }
+            }
+            Output::Text => print_text(matches),
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn print_text(matches: &[Match]) {
@@ -174,20 +234,32 @@ fn run_resolve(
     kind: Option<Kind>,
     code: Option<&str>,
     limit: usize,
+    output: Output,
 ) -> Result<()> {
     let Some(top) = search::search(query, records, kind, 1).into_iter().next() else {
         anyhow::bail!("no schema entity matches {query:?} to resolve");
     };
     eprintln!("gqls: resolving {} …", top.record.path);
     let hits = crate::resolve::resolve(top.record, code, limit.min(10))?;
-    if hits.is_empty() {
-        eprintln!(
-            "gqls: no code definition found for {} (tried graphql-ruby rq candidates)",
-            top.record.path
-        );
-    }
-    for h in &hits {
-        println!("{}:{}  {}  (via {})", h.file, h.line, h.name, h.via);
+
+    match output {
+        Output::Json => println!("{}", serde_json::to_string_pretty(&hits)?),
+        Output::Ndjson => {
+            for h in &hits {
+                println!("{}", serde_json::to_string(h)?);
+            }
+        }
+        Output::Text => {
+            if hits.is_empty() {
+                eprintln!(
+                    "gqls: no code definition found for {} (tried graphql-ruby rq candidates)",
+                    top.record.path
+                );
+            }
+            for h in &hits {
+                println!("{}:{}  {}  (via {})", h.file, h.line, h.name, h.via);
+            }
+        }
     }
     Ok(())
 }

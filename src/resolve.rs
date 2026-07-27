@@ -11,12 +11,12 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::model::{Kind, SchemaRecord};
 
 /// One code definition rq found, plus the candidate query that surfaced it.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RqHit {
     pub name: String,
     pub file: String,
@@ -25,7 +25,9 @@ pub struct RqHit {
     pub kind: String,
     #[serde(default)]
     pub confidence: f64,
-    #[serde(skip)]
+    /// The graphql-ruby candidate query that surfaced this hit — set by gqls,
+    /// not read from rq, but included in serialized output.
+    #[serde(default, skip_deserializing)]
     pub via: String,
 }
 
