@@ -31,6 +31,12 @@ pub fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     } else if let Some(s) = subsequence_score(&q, &rec.name) {
         total += s.min(600.0);
         true
+    } else if let Some(d) = typo_distance(&q, &name_lower) {
+        // a transposition / single typo (`usre` -> `User`) isn't a clean
+        // subsequence; match it, but rank below a real match, penalized by
+        // edit distance.
+        total += (260.0 - 70.0 * d as f64).max(80.0);
+        true
     } else {
         false
     };
@@ -86,6 +92,48 @@ fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
 /// `None` if it isn't a subsequence.
 fn subsequence_score(query: &str, name: &str) -> Option<f64> {
     align(query, name).map(|a| a.score)
+}
+
+/// Edit distance between the (lowercased) query and name for the typo tier, or
+/// `None` if it exceeds a small budget. Catches transposed/typo'd queries
+/// (`usre` → `user`) that aren't a clean subsequence. Skipped for very short
+/// queries, where a tiny edit distance would match almost anything.
+fn typo_distance(q: &str, name_lower: &str) -> Option<usize> {
+    let a: Vec<char> = q.chars().collect();
+    if a.len() < 3 {
+        return None;
+    }
+    let b: Vec<char> = name_lower.chars().collect();
+    let max = if a.len() <= 5 { 1 } else { 2 };
+    osa_within(&a, &b, max)
+}
+
+/// Bounded Optimal String Alignment distance (Levenshtein plus adjacent
+/// transpositions): `None` if it exceeds `max`. Full matrix — names are short.
+/// Inputs are already lowercased, so char equality suffices.
+fn osa_within(a: &[char], b: &[char], max: usize) -> Option<usize> {
+    let (n, m) = (a.len(), b.len());
+    if n.abs_diff(m) > max {
+        return None;
+    }
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=m {
+        d[0][j] = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                v = v.min(d[i - 2][j - 2] + 1); // adjacent transposition
+            }
+            d[i][j] = v;
+        }
+    }
+    (d[n][m] <= max).then_some(d[n][m])
 }
 
 // --- the aligner, ported verbatim from rq ---
@@ -268,6 +316,17 @@ mod tests {
         let user = score("user.email", &rec("email", "User.email", Kind::Field)).unwrap();
         let account = score("user.email", &rec("email", "Account.email", Kind::Field)).unwrap();
         assert!(user > account, "user {user} > account {account}");
+    }
+
+    #[test]
+    fn transposition_typo_still_matches_below_a_clean_hit() {
+        // `usre` (transposed `user`) is not a subsequence of `User`, but a single
+        // adjacent transposition should still match — ranked below a clean match.
+        let clean = score("user", &rec("User", "Query.user", Kind::Object)).unwrap();
+        let typo = score("usre", &rec("User", "Query.user", Kind::Object)).unwrap();
+        assert!(clean > typo, "clean {clean} > typo {typo}");
+        // nonsense still doesn't match
+        assert!(score("xqzw", &rec("User", "Query.user", Kind::Object)).is_none());
     }
 
     #[test]
