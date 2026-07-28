@@ -51,7 +51,11 @@ impl Kind {
     pub fn weight(self) -> i64 {
         match self {
             Kind::Query | Kind::Mutation | Kind::Subscription => 60,
-            Kind::Object | Kind::Interface | Kind::Union | Kind::Enum | Kind::InputObject
+            Kind::Object
+            | Kind::Interface
+            | Kind::Union
+            | Kind::Enum
+            | Kind::InputObject
             | Kind::Scalar => 40,
             Kind::Directive => 30,
             Kind::Field | Kind::InputField => 20,

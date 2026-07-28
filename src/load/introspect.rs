@@ -20,7 +20,10 @@ pub fn from_url(url: &str) -> Result<Vec<SchemaRecord>> {
 
     // Only a non-empty errors array is a real failure — many servers send
     // `"errors": null` or `[]` alongside a valid `data`.
-    if let Some(errors) = body.get("errors").filter(|e| !e.is_null() && !is_empty_array(e)) {
+    if let Some(errors) = body
+        .get("errors")
+        .filter(|e| !e.is_null() && !is_empty_array(e))
+    {
         bail!("introspection returned errors: {errors}");
     }
     let schema = body
@@ -179,7 +182,11 @@ fn render_type(t: &Value) -> String {
     match t.get("kind").and_then(Value::as_str) {
         Some("NON_NULL") => format!("{}!", t.get("ofType").map(render_type).unwrap_or_default()),
         Some("LIST") => format!("[{}]", t.get("ofType").map(render_type).unwrap_or_default()),
-        _ => t.get("name").and_then(Value::as_str).unwrap_or("?").to_string(),
+        _ => t
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string(),
     }
 }
 

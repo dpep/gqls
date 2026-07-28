@@ -19,8 +19,7 @@ pub fn load(source: &str) -> Result<Vec<SchemaRecord>> {
     } else if source.ends_with(".json") {
         introspect::from_json_file(source)
     } else {
-        let text =
-            std::fs::read_to_string(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
+        let text = std::fs::read_to_string(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
         sdl::from_sdl(&text)
     }
 }
@@ -70,7 +69,9 @@ pub fn discover() -> Result<String> {
         .count();
     eprintln!("gqls: using schema {}", rel(&root, &chosen.path));
     if elsewhere > 0 {
-        eprintln!("gqls: {elsewhere} other schema file(s) found elsewhere — pass a path to pick one");
+        eprintln!(
+            "gqls: {elsewhere} other schema file(s) found elsewhere — pass a path to pick one"
+        );
     }
 
     Ok(chosen.path.to_string_lossy().into_owned())

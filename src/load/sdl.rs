@@ -91,7 +91,9 @@ fn extend_schema_block(b: &[u8], i: usize) -> Option<usize> {
 }
 
 fn keyword(b: &[u8], i: usize, kw: &[u8]) -> Option<usize> {
-    b.get(i..i + kw.len()).filter(|s| *s == kw).map(|_| i + kw.len())
+    b.get(i..i + kw.len())
+        .filter(|s| *s == kw)
+        .map(|_| i + kw.len())
 }
 
 fn is_ident(c: u8) -> bool {
@@ -108,7 +110,10 @@ fn skip_ident(b: &[u8], mut i: usize) -> usize {
 /// Skip whitespace, commas (insignificant in GraphQL), and `#` line comments.
 fn skip_trivia(b: &[u8], mut i: usize) -> usize {
     loop {
-        while b.get(i).is_some_and(|&c| c.is_ascii_whitespace() || c == b',') {
+        while b
+            .get(i)
+            .is_some_and(|&c| c.is_ascii_whitespace() || c == b',')
+        {
             i += 1;
         }
         if b.get(i) == Some(&b'#') {
@@ -214,13 +219,23 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
 fn emit_type(td: &TypeDefinition<'_, String>, roots: &Roots, out: &mut Vec<SchemaRecord>) {
     match td {
         TypeDefinition::Object(o) => {
-            out.push(type_record(&o.name, Kind::Object, &o.description, &o.directives));
+            out.push(type_record(
+                &o.name,
+                Kind::Object,
+                &o.description,
+                &o.directives,
+            ));
             for f in &o.fields {
                 out.push(field_record(&o.name, f, roots));
             }
         }
         TypeDefinition::Interface(i) => {
-            out.push(type_record(&i.name, Kind::Interface, &i.description, &i.directives));
+            out.push(type_record(
+                &i.name,
+                Kind::Interface,
+                &i.description,
+                &i.directives,
+            ));
             for f in &i.fields {
                 out.push(field_record(&i.name, f, roots));
             }
@@ -237,16 +252,31 @@ fn emit_type(td: &TypeDefinition<'_, String>, roots: &Roots, out: &mut Vec<Schem
             }
         }
         TypeDefinition::Enum(e) => {
-            out.push(type_record(&e.name, Kind::Enum, &e.description, &e.directives));
+            out.push(type_record(
+                &e.name,
+                Kind::Enum,
+                &e.description,
+                &e.directives,
+            ));
             for v in &e.values {
                 out.push(enum_value_record(&e.name, v));
             }
         }
         TypeDefinition::Union(u) => {
-            out.push(type_record(&u.name, Kind::Union, &u.description, &u.directives));
+            out.push(type_record(
+                &u.name,
+                Kind::Union,
+                &u.description,
+                &u.directives,
+            ));
         }
         TypeDefinition::Scalar(s) => {
-            out.push(type_record(&s.name, Kind::Scalar, &s.description, &s.directives));
+            out.push(type_record(
+                &s.name,
+                Kind::Scalar,
+                &s.description,
+                &s.directives,
+            ));
         }
     }
 }
@@ -392,7 +422,9 @@ mod tests {
             type Query { me: User }\n";
         let recs = from_sdl(sdl).expect("federation subgraph should parse");
         assert!(recs.iter().any(|r| r.path == "User.name"));
-        assert!(recs.iter().any(|r| r.path == "Query.me" && r.kind == Kind::Query));
+        assert!(recs
+            .iter()
+            .any(|r| r.path == "Query.me" && r.kind == Kind::Query));
         assert!(!recs.iter().any(|r| r.name == "link")); // the @link block yields nothing
     }
 
