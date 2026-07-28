@@ -65,8 +65,12 @@ pub fn search<'a>(
     kind: Option<Kind>,
     parent: Option<&str>,
 ) -> Vec<Hit<'a>> {
+    use rayon::prelude::*;
+    // Records score independently, so scan them in parallel — the win shows
+    // on large schemas (tens of thousands of records), and rayon's overhead
+    // is microseconds on small ones.
     let mut hits: Vec<Hit> = records
-        .iter()
+        .par_iter()
         .filter(|r| kind.is_none_or(|k| r.kind == k))
         .filter(|r| {
             parent.is_none_or(|p| {
