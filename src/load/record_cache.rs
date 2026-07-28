@@ -1,10 +1,12 @@
 //! On-disk cache of parsed schema records.
 //!
-//! Parsing a large SDL file dominates the fuzzy path (~28ms of a ~45ms query
-//! on a 48k-record schema), and the records depend only on the SDL text — so
-//! cache them keyed by a hash of it. Same idea and same house format rules as
-//! the vector cache: a small length-prefixed binary layout, dependency-free.
-//! A miss (schema edited, format bumped) simply re-parses and overwrites.
+//! Parsing dominates the fuzzy path on a large schema (~28ms of a ~45ms query
+//! at 48k records for SDL; more for introspection JSON), and the records
+//! depend only on the source bytes — SDL text or an introspection response —
+//! so cache them keyed by a hash of those bytes. Same idea and same house
+//! format rules as the vector cache: a small length-prefixed binary layout,
+//! dependency-free. A miss (schema edited, format bumped) simply re-parses
+//! and overwrites.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -20,10 +22,10 @@ const MAGIC: u32 = 0x47_51_52_31; // "GQR1"
 /// Keep at most this many cache files (LRU by mtime, pruned on write).
 const MAX_FILES: usize = 32;
 
-/// Cached records for this SDL text, or `None` on any miss (absent, stale
-/// magic, corrupt).
-pub fn load(sdl_text: &str) -> Option<Vec<SchemaRecord>> {
-    let p = path(sdl_text)?;
+/// Cached records for this source (SDL text or introspection JSON bytes), or
+/// `None` on any miss (absent, stale magic, corrupt).
+pub fn load(source: &[u8]) -> Option<Vec<SchemaRecord>> {
+    let p = path(source)?;
     let mut buf = Vec::new();
     std::fs::File::open(&p).ok()?.read_to_end(&mut buf).ok()?;
     let records = decode(&buf)?;
@@ -32,10 +34,10 @@ pub fn load(sdl_text: &str) -> Option<Vec<SchemaRecord>> {
     Some(records)
 }
 
-/// Write records for this SDL text (best-effort — a cache write failure is
+/// Write records for this source (best-effort — a cache write failure is
 /// never fatal), then prune the least-recently-used files.
-pub fn store(sdl_text: &str, records: &[SchemaRecord]) {
-    let Some(p) = path(sdl_text) else {
+pub fn store(source: &[u8], records: &[SchemaRecord]) {
+    let Some(p) = path(source) else {
         return;
     };
     let Some(parent) = p.parent() else {
@@ -66,10 +68,10 @@ pub fn clear() -> usize {
     removed
 }
 
-fn path(sdl_text: &str) -> Option<PathBuf> {
+fn path(source: &[u8]) -> Option<PathBuf> {
     let mut h = DefaultHasher::new();
     MAGIC.hash(&mut h);
-    sdl_text.hash(&mut h);
+    source.hash(&mut h);
     Some(crate::paths::cache_dir()?.join(format!("{:016x}.rcds", h.finish())))
 }
 

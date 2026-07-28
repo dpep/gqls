@@ -29,16 +29,16 @@ pub fn load(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     if source.starts_with("http://") || source.starts_with("https://") {
         introspect::from_url(source, opts)
     } else if source.ends_with(".json") {
-        introspect::from_json_file(source)
+        introspect::from_json_file(source, opts)
     } else {
         let text = std::fs::read_to_string(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
         if !opts.refresh {
-            if let Some(records) = record_cache::load(&text) {
+            if let Some(records) = record_cache::load(text.as_bytes()) {
                 return Ok(records);
             }
         }
         let records = sdl::from_sdl(&text)?;
-        record_cache::store(&text, &records);
+        record_cache::store(text.as_bytes(), &records);
         Ok(records)
     }
 }

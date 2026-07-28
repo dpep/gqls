@@ -26,6 +26,13 @@ const DEFAULT_TTL: Duration = Duration::from_secs(60 * 60);
 /// remote endpoint don't refetch all day.
 pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let raw = fetch_or_cached(url, opts)?;
+    // The parsed records depend only on the response bytes, so the record
+    // cache short-circuits the (large) JSON parse on repeat queries.
+    if !opts.refresh {
+        if let Some(records) = super::record_cache::load(&raw) {
+            return Ok(records);
+        }
+    }
     let body: Value = serde_json::from_slice(&raw)
         .with_context(|| format!("parsing introspection response from {url}"))?;
 
@@ -40,7 +47,9 @@ pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let schema = body
         .pointer("/data/__schema")
         .ok_or_else(|| anyhow!("no data.__schema in response from {url}"))?;
-    from_introspection(schema)
+    let records = from_introspection(schema)?;
+    super::record_cache::store(&raw, &records);
+    Ok(records)
 }
 
 /// The raw introspection response for `url` — a cached copy if one exists and is
@@ -159,9 +168,15 @@ pub fn clear_cache() -> usize {
 }
 
 /// Load a local introspection JSON dump — accepts `{data:{__schema}}`,
-/// `{__schema}`, or the bare schema object.
-pub fn from_json_file(path: &str) -> Result<Vec<SchemaRecord>> {
+/// `{__schema}`, or the bare schema object. Parsed records are cached keyed
+/// by the file's bytes (see `record_cache`); `opts.refresh` bypasses.
+pub fn from_json_file(path: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    if !opts.refresh {
+        if let Some(records) = super::record_cache::load(text.as_bytes()) {
+            return Ok(records);
+        }
+    }
     let v: Value = serde_json::from_str(&text).with_context(|| format!("parsing {path}"))?;
     let schema = v
         .pointer("/data/__schema")
@@ -170,7 +185,9 @@ pub fn from_json_file(path: &str) -> Result<Vec<SchemaRecord>> {
     if schema.get("types").is_none() {
         bail!("{path} is not a GraphQL introspection dump (no __schema.types)");
     }
-    from_introspection(schema)
+    let records = from_introspection(schema)?;
+    super::record_cache::store(text.as_bytes(), &records);
+    Ok(records)
 }
 
 fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
