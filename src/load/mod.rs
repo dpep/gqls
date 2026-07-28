@@ -10,16 +10,17 @@ use anyhow::{anyhow, bail, Result};
 use crate::model::SchemaRecord;
 
 pub mod introspect;
+pub mod record_cache;
 pub mod sdl;
 
-/// Options that shape loading. Only URL introspection consults them; file and
-/// SDL sources ignore them.
+/// Options that shape loading. Only URL introspection and SDL files consult
+/// them; introspection JSON files ignore them.
 #[derive(Default)]
 pub struct LoadOptions {
     /// Extra request headers for URL introspection, as `(name, value)` — e.g. an
     /// `Authorization` token for an auth-gated endpoint.
     pub headers: Vec<(String, String)>,
-    /// Bypass the introspection response cache and fetch fresh.
+    /// Bypass the introspection response and parsed-record caches.
     pub refresh: bool,
 }
 
@@ -31,7 +32,14 @@ pub fn load(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
         introspect::from_json_file(source)
     } else {
         let text = std::fs::read_to_string(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
-        sdl::from_sdl(&text)
+        if !opts.refresh {
+            if let Some(records) = record_cache::load(&text) {
+                return Ok(records);
+            }
+        }
+        let records = sdl::from_sdl(&text)?;
+        record_cache::store(&text, &records);
+        Ok(records)
     }
 }
 

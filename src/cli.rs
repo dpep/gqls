@@ -305,11 +305,12 @@ pub fn run() -> Result<()> {
 
     if cli.clear_cache {
         let introspect = crate::load::introspect::clear_cache();
+        let records = crate::load::record_cache::clear();
         #[cfg(feature = "_semantic")]
         let vectors = crate::semantic::clear_cache();
         #[cfg(not(feature = "_semantic"))]
         let vectors = 0;
-        crate::status!("cleared {} cached file(s)", introspect + vectors);
+        crate::status!("cleared {} cached file(s)", introspect + records + vectors);
         return Ok(());
     }
 
