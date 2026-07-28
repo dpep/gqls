@@ -65,7 +65,7 @@ pub fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
 /// Split a query into its leaf name and the optional enclosing type typed
 /// before the last `.`: `User.email` → (`email`, `Some("User")`), a plain
 /// `user` → (`user`, `None`). A leading/trailing `.` is an ordinary query.
-fn parse_qualified(query: &str) -> (&str, Option<&str>) {
+pub(crate) fn parse_qualified(query: &str) -> (&str, Option<&str>) {
     match query.rfind('.') {
         Some(i) if i > 0 && i + 1 < query.len() => (&query[i + 1..], Some(&query[..i])),
         _ => (query, None),

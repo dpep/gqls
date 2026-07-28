@@ -153,13 +153,15 @@ struct Match<'a> {
     score: f64,
 }
 
+/// All fuzzy hits above the quality cutoff, best first — the caller truncates
+/// to the display limit, so the length is the true match count.
 fn fuzzy_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
-    limit: usize,
+    parent: Option<&str>,
 ) -> Vec<Match<'a>> {
-    search::search(query, records, kind, limit)
+    search::search(query, records, kind, parent)
         .into_iter()
         .map(|h| Match {
             record: h.record,
@@ -173,12 +175,14 @@ fn semantic_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
+    parent: Option<&str>,
     cli: &Cli,
 ) -> Vec<Match<'a>> {
     crate::semantic::search(
         query,
         records,
         kind,
+        parent,
         cli.limit,
         cli.model.as_deref(),
         cli.refresh,
@@ -363,24 +367,40 @@ pub fn run() -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
 
+    // A `Type.field` query whose qualifier exactly names a schema type becomes
+    // a hard filter to that type's members, in every search mode.
+    let parent = search::exact_parent(query, &records);
+    if let Some(p) = parent {
+        crate::detail!("qualifier {p:?} names a type — restricting to its members");
+    }
+
     if cli.resolve {
         return run_resolve(
             query,
             &source,
             &records,
             kind,
+            parent,
             cli.code.as_deref(),
             cli.limit,
             output,
         );
     }
 
-    let matches: Vec<Match> = if cli.fuzzy {
-        fuzzy_matches(query, &records, kind, cli.limit)
+    // `total` is the fuzzy match count before the display limit, so the footer
+    // can say how much a raised -l would reveal. Semantic-only mode has no
+    // meaningful total (cosine ranks every record), so it never shows one.
+    let (matches, total): (Vec<Match>, usize) = if cli.fuzzy {
+        let mut fuzzy = fuzzy_matches(query, &records, kind, parent);
+        let total = fuzzy.len();
+        fuzzy.truncate(cli.limit);
+        (fuzzy, total)
     } else if cli.semantic {
         #[cfg(feature = "_semantic")]
         {
-            semantic_matches(query, &records, kind, &cli)
+            let matches = semantic_matches(query, &records, kind, parent, &cli);
+            let total = matches.len();
+            (matches, total)
         }
         #[cfg(not(feature = "_semantic"))]
         {
@@ -393,32 +413,41 @@ pub fn run() -> Result<()> {
     } else {
         // Default: combine fuzzy + semantic when the cache is warm; when cold,
         // return fuzzy now and warm the vectors in the background for next time.
-        let fuzzy = fuzzy_matches(query, &records, kind, cli.limit);
+        let mut fuzzy = fuzzy_matches(query, &records, kind, parent);
+        let total = fuzzy.len();
+        fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
         {
             if crate::semantic::is_cached(&records, cli.model.as_deref()) {
-                let semantic = semantic_matches(query, &records, kind, &cli);
-                combine(fuzzy, semantic, cli.limit)
+                let semantic = semantic_matches(query, &records, kind, parent, &cli);
+                (combine(fuzzy, semantic, cli.limit), total)
             } else {
                 spawn_background_warm(&source, &cli.header);
                 crate::status!(
                     "warming the semantic index in the background — the next run also \
                      ranks by meaning (--semantic to embed now, --fuzzy to skip)"
                 );
-                fuzzy
+                (fuzzy, total)
             }
         }
         #[cfg(not(feature = "_semantic"))]
         {
             let _ = (&cli.model, cli.refresh);
-            fuzzy
+            (fuzzy, total)
         }
     };
 
     if matches.is_empty() {
         crate::status!("no matches for {query:?}");
     }
-    output.write_matches(&matches)
+    output.write_matches(&matches)?;
+    if total > matches.len() {
+        crate::status!(
+            "{total} matches; showing top {} (-l to adjust)",
+            matches.len()
+        );
+    }
+    Ok(())
 }
 
 impl Output {
@@ -477,11 +506,13 @@ fn print_text(matches: &[Match]) {
 }
 
 /// Fuzzy-find the field, then hand it to rq to locate its resolver in code.
+#[allow(clippy::too_many_arguments)]
 fn run_resolve(
     query: &str,
     source: &str,
     records: &[SchemaRecord],
     kind: Option<Kind>,
+    parent: Option<&str>,
     code: Option<&str>,
     limit: usize,
     output: Output,
@@ -489,7 +520,10 @@ fn run_resolve(
     if code.is_none() {
         crate::status!("no --code given; resolving against rq's index for the current directory");
     }
-    let Some(top) = search::search(query, records, kind, 1).into_iter().next() else {
+    let Some(top) = search::search(query, records, kind, parent)
+        .into_iter()
+        .next()
+    else {
         anyhow::bail!("no schema entity matches {query:?} to resolve");
     };
     crate::status!("resolving {} …", top.record.path);
