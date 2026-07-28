@@ -349,7 +349,13 @@ pub fn run() -> Result<()> {
         headers: parse_headers(&cli.header)?,
         refresh: cli.refresh,
     };
+    let t_load = std::time::Instant::now();
     let records = load::load(&source, &load_opts)?;
+    crate::detail!(
+        "loaded {} records in {:.1?}",
+        records.len(),
+        t_load.elapsed()
+    );
 
     // --warm: embed + cache the schema's vectors, then exit (no query needed).
     // Also the primitive the background auto-warm spawns.
@@ -406,6 +412,7 @@ pub fn run() -> Result<()> {
     // `total` is the fuzzy match count before the display limit, so the footer
     // can say how much a raised -l would reveal. Semantic-only mode has no
     // meaningful total (cosine ranks every record), so it never shows one.
+    let t_rank = std::time::Instant::now();
     let (matches, total): (Vec<Match>, usize) = if cli.fuzzy {
         let (mut fuzzy, _) = fuzzy_matches(query, &records, kind, parent);
         let total = fuzzy.len();
@@ -458,6 +465,8 @@ pub fn run() -> Result<()> {
             (fuzzy, total)
         }
     };
+
+    crate::detail!("ranked in {:.1?}", t_rank.elapsed());
 
     if matches.is_empty() {
         crate::status!("no matches for {query:?}");
