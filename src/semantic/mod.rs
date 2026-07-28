@@ -18,6 +18,24 @@ use crate::model::{Kind, SchemaRecord};
 use embed::{default_embedder, Embedder};
 use mrl::{compress_matryoshka_vector, cosine_similarity};
 
+/// Drop hits below this fraction of the top cosine. Deliberately mild:
+/// measured cosine curves decay smoothly (no tiers, no cliff), and near the
+/// noise floor relevant and irrelevant records interleave — so this bounds
+/// the deep tail (`-l 500` returning 500 rows of monotonic noise), it does
+/// not judge relevance.
+const TAIL_CUTOFF: f64 = 0.7;
+
+/// Apply [`TAIL_CUTOFF`] relative to the best hit. Skipped when the top score
+/// isn't positive — a floor computed from a negative top would drop even the
+/// top itself.
+fn bound_tail<T>(hits: &mut Vec<(f64, T)>) {
+    let Some(top) = hits.first().map(|h| h.0).filter(|t| *t > 0.0) else {
+        return;
+    };
+    let floor = top * TAIL_CUTOFF;
+    hits.retain(|(s, _)| *s >= floor);
+}
+
 /// Embed the query and each record, rank by cosine. Returns `(score, record)`
 /// pairs, best first — the caller formats them exactly like fuzzy hits, so
 /// `--json` / `--ndjson` work identically in both modes.
@@ -150,6 +168,7 @@ pub fn search<'a>(
         .collect();
 
     hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+    bound_tail(&mut hits);
     hits.truncate(limit);
     hits
 }
@@ -189,4 +208,23 @@ pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
     let _ = search("", records, None, None, 0, model, refresh);
     records.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bound_tail;
+
+    #[test]
+    fn bounds_the_weak_tail_relative_to_the_top() {
+        let mut hits = vec![(1.0, "a"), (0.8, "b"), (0.6, "c")];
+        bound_tail(&mut hits);
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn keeps_everything_when_the_top_is_not_positive() {
+        let mut hits = vec![(-0.1, "a"), (-0.5, "b")];
+        bound_tail(&mut hits);
+        assert_eq!(hits.len(), 2);
+    }
 }
