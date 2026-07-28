@@ -260,9 +260,8 @@ fn claim_warm_lock(source: &str) -> bool {
     use std::time::Duration;
 
     const LOCK_TTL: Duration = Duration::from_secs(10 * 60);
-    let Some(dir) = crate::paths::cache_dir() else {
-        return true; // no cache dir resolvable: don't block warming
-    };
+    // Lockfiles live in the system temp dir so the OS auto-reaps them.
+    let dir = crate::paths::temp_dir();
     let mut h = DefaultHasher::new();
     source.hash(&mut h);
     let lock = dir.join(format!("warming-{:016x}.lock", h.finish()));

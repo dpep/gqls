@@ -11,3 +11,11 @@ pub fn cache_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
     Some(base.join("gqls"))
 }
+
+/// Directory for ephemeral files (the background-warm single-flight lockfiles).
+/// The system temp dir so the OS reaps them — they never litter the cache. It's
+/// per-user on macOS (`$TMPDIR`) and `/tmp` on Linux, and stable within a login,
+/// so concurrent gqls processes still see the same lock.
+pub fn temp_dir() -> PathBuf {
+    std::env::temp_dir().join("gqls")
+}
