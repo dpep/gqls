@@ -172,9 +172,18 @@ fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow!("running rq: {e} — is `rq` installed and on PATH?"))?;
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            anyhow!(
+                "--resolve needs `rq` (a code-navigation CLI), which isn't installed. Install it:\n  \
+                 brew install dpep/tools/rq\n  \
+                 cargo install --git https://github.com/dpep/rq\n\
+                 Then re-run — see https://github.com/dpep/rq"
+            )
+        } else {
+            anyhow!("running rq: {e}")
+        }
+    })?;
     // rq: exit 0 = hits (JSON array), 1 = no match (a `{status}` object) — both
     // are normal. Any other code is a real rq failure (not a repo, bad flag):
     // surface it instead of silently reporting "no resolver found".
