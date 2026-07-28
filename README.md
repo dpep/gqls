@@ -38,7 +38,7 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 ### Input sources
 - **SDL file** — `gqls user schema.graphql`
 - **Introspection JSON dump** — `gqls user schema.json`
-- **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query)
+- **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query; add auth with `-H "Authorization: Bearer …"`, repeatable). The response is cached ~5 min so repeat queries don't refetch all day — tune with `GQLS_INTROSPECT_TTL` (seconds), `--refresh` to bypass, `--clear-cache` to wipe.
 - **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`; in a federated monorepo, a `supergraph*` schema wins when several exist).
 
 ### Federated schemas (Apollo Federation v2)

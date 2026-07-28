@@ -113,7 +113,37 @@ pub struct SchemaRecord {
     /// Deprecation reason, if the entity is `@deprecated`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<String>,
-    /// Applied directives, rendered like `@auth`.
+    /// Applied directives, rendered like `@auth`. Populated from SDL; always
+    /// empty when the schema is loaded by introspection, since applied
+    /// directives aren't exposed by the standard introspection query — so the
+    /// same schema can differ in this field between its SDL and its endpoint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub directives: Vec<String>,
+}
+
+/// The root operation type names (Query / Mutation / Subscription), used to
+/// classify a type's fields as root operations vs. plain object fields. Shared
+/// by the SDL and introspection loaders so that one rule lives in one place;
+/// each loader fills in whichever roots its source declares.
+#[derive(Default)]
+pub struct Roots {
+    pub query: Option<String>,
+    pub mutation: Option<String>,
+    pub subscription: Option<String>,
+}
+
+impl Roots {
+    /// The [`Kind`] for a field defined on `type_name`: a root-operation kind if
+    /// `type_name` is a root type, otherwise a plain object [`Kind::Field`].
+    pub fn field_kind(&self, type_name: &str) -> Kind {
+        if self.query.as_deref() == Some(type_name) {
+            Kind::Query
+        } else if self.mutation.as_deref() == Some(type_name) {
+            Kind::Mutation
+        } else if self.subscription.as_deref() == Some(type_name) {
+            Kind::Subscription
+        } else {
+            Kind::Field
+        }
+    }
 }

@@ -12,10 +12,21 @@ use crate::model::SchemaRecord;
 pub mod introspect;
 pub mod sdl;
 
+/// Options that shape loading. Only URL introspection consults them; file and
+/// SDL sources ignore them.
+#[derive(Default)]
+pub struct LoadOptions {
+    /// Extra request headers for URL introspection, as `(name, value)` — e.g. an
+    /// `Authorization` token for an auth-gated endpoint.
+    pub headers: Vec<(String, String)>,
+    /// Bypass the introspection response cache and fetch fresh.
+    pub refresh: bool,
+}
+
 /// Load a schema from a file path or an http(s) URL and flatten it to records.
-pub fn load(source: &str) -> Result<Vec<SchemaRecord>> {
+pub fn load(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        introspect::from_url(source)
+        introspect::from_url(source, opts)
     } else if source.ends_with(".json") {
         introspect::from_json_file(source)
     } else {
@@ -67,10 +78,10 @@ pub fn discover() -> Result<String> {
         .iter()
         .filter(|c| c.path.parent() != chosen.path.parent())
         .count();
-    eprintln!("gqls: using schema {}", rel(&root, &chosen.path));
+    crate::status!("using schema {}", rel(&root, &chosen.path));
     if elsewhere > 0 {
-        eprintln!(
-            "gqls: {elsewhere} other schema file(s) found elsewhere — pass a path to pick one"
+        crate::status!(
+            "{elsewhere} other schema file(s) found elsewhere — pass a path to pick one"
         );
     }
 

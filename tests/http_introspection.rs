@@ -10,6 +10,7 @@
 //! stable, auth-free public schema.
 
 use gqls::load;
+use gqls::load::LoadOptions;
 use gqls::model::Kind;
 
 const ENDPOINT: &str = "https://countries.trevorblades.com/";
@@ -17,7 +18,12 @@ const ENDPOINT: &str = "https://countries.trevorblades.com/";
 #[test]
 #[ignore = "hits the network; run with --ignored"]
 fn introspects_and_searches_a_live_endpoint() {
-    let records = load::load(ENDPOINT).expect("HTTP introspection should succeed");
+    // Force a live fetch so the test exercises the network path, not a cache hit.
+    let opts = LoadOptions {
+        refresh: true,
+        ..Default::default()
+    };
+    let records = load::load(ENDPOINT, &opts).expect("HTTP introspection should succeed");
     assert!(!records.is_empty(), "expected a non-empty schema");
 
     // Stable fixtures from the Countries schema: the Country object type and the

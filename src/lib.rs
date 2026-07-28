@@ -15,6 +15,7 @@ pub mod load;
 #[macro_use]
 pub mod logging;
 pub mod model;
+pub mod paths;
 pub mod resolve;
 pub mod search;
 

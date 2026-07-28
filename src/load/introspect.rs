@@ -2,20 +2,30 @@
 //! introspection query) or a local introspection JSON dump. Both flatten the
 //! `__schema` payload into the same [`SchemaRecord`]s that SDL produces.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 
-use crate::model::{Kind, SchemaRecord};
+use super::LoadOptions;
+use crate::model::{Kind, Roots, SchemaRecord};
 
-/// POST the introspection query to `url` and flatten the result.
-pub fn from_url(url: &str) -> Result<Vec<SchemaRecord>> {
-    let resp = ureq::post(url)
-        .set("Content-Type", "application/json")
-        .set("Accept", "application/json")
-        .send_json(serde_json::json!({ "query": INTROSPECTION_QUERY }))
-        .map_err(|e| anyhow!("introspecting {url}: {e}"))?;
-    let body: Value = resp
-        .into_json()
+/// Overall per-request deadline for live introspection (connect + read) — a
+/// hung or slow endpoint fails instead of blocking gqls forever.
+const TIMEOUT_SECS: u64 = 30;
+/// Default introspection-response cache lifetime; see [`ttl`].
+const DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// POST the introspection query to `url` and flatten the result. Honors
+/// `opts.headers` (e.g. an `Authorization` token) and a short TTL response
+/// cache so repeated queries against the same endpoint don't refetch all day.
+pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
+    let raw = fetch_or_cached(url, opts)?;
+    let body: Value = serde_json::from_slice(&raw)
         .with_context(|| format!("parsing introspection response from {url}"))?;
 
     // Only a non-empty errors array is a real failure — many servers send
@@ -30,6 +40,91 @@ pub fn from_url(url: &str) -> Result<Vec<SchemaRecord>> {
         .pointer("/data/__schema")
         .ok_or_else(|| anyhow!("no data.__schema in response from {url}"))?;
     from_introspection(schema)
+}
+
+/// The raw introspection response for `url` — a cached copy if one exists and is
+/// younger than the [`ttl`], otherwise a fresh POST (which is then cached).
+/// `opts.refresh` skips the cache read and forces a live fetch.
+fn fetch_or_cached(url: &str, opts: &LoadOptions) -> Result<Vec<u8>> {
+    let path = cache_path(url);
+    if !opts.refresh {
+        if let Some(p) = path.as_deref() {
+            if let Some(bytes) = read_if_fresh(p, ttl()) {
+                crate::detail!("introspection cache hit: {}", p.display());
+                return Ok(bytes);
+            }
+        }
+    }
+    crate::detail!("introspecting {url} (live)");
+    let bytes = fetch(url, &opts.headers)?;
+    if let Some(p) = path.as_deref() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, &bytes);
+    }
+    Ok(bytes)
+}
+
+fn fetch(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
+    let mut req = ureq::post(url)
+        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .set("Content-Type", "application/json")
+        .set("Accept", "application/json");
+    for (name, value) in headers {
+        req = req.set(name, value);
+    }
+    let resp = req
+        .send_json(serde_json::json!({ "query": INTROSPECTION_QUERY }))
+        .map_err(|e| anyhow!("introspecting {url}: {e}"))?;
+    let mut buf = Vec::new();
+    resp.into_reader()
+        .read_to_end(&mut buf)
+        .with_context(|| format!("reading introspection response from {url}"))?;
+    Ok(buf)
+}
+
+/// Cache file for a URL's introspection response (keyed by the URL).
+fn cache_path(url: &str) -> Option<PathBuf> {
+    let mut h = DefaultHasher::new();
+    url.hash(&mut h);
+    Some(cache_dir()?.join(format!("{:016x}.json", h.finish())))
+}
+
+fn cache_dir() -> Option<PathBuf> {
+    Some(crate::paths::cache_dir()?.join("introspect"))
+}
+
+/// The cached bytes if the file is younger than `ttl`, else `None`.
+fn read_if_fresh(path: &Path, ttl: Duration) -> Option<Vec<u8>> {
+    let age = std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()?;
+    (age <= ttl).then(|| std::fs::read(path).ok()).flatten()
+}
+
+/// Introspection-cache lifetime — [`DEFAULT_TTL`] (5 min), overridable with
+/// `GQLS_INTROSPECT_TTL` (seconds; `0` effectively disables the cache).
+fn ttl() -> Duration {
+    std::env::var("GQLS_INTROSPECT_TTL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map_or(DEFAULT_TTL, Duration::from_secs)
+}
+
+/// Delete all cached introspection responses; returns how many were removed.
+pub fn clear_cache() -> usize {
+    let Some(dir) = cache_dir() else { return 0 };
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
 }
 
 /// Load a local introspection JSON dump — accepts `{data:{__schema}}`,
@@ -78,12 +173,6 @@ fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
     Ok(out)
 }
 
-struct Roots {
-    query: Option<String>,
-    mutation: Option<String>,
-    subscription: Option<String>,
-}
-
 fn root_name(schema: &Value, key: &str) -> Option<String> {
     schema.get(key)?.get("name")?.as_str().map(str::to_string)
 }
@@ -117,15 +206,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
 
     match type_kind {
         Kind::Object | Kind::Interface => {
-            let field_kind = if roots.query.as_deref() == Some(name.as_str()) {
-                Kind::Query
-            } else if roots.mutation.as_deref() == Some(name.as_str()) {
-                Kind::Mutation
-            } else if roots.subscription.as_deref() == Some(name.as_str()) {
-                Kind::Subscription
-            } else {
-                Kind::Field
-            };
+            let field_kind = roots.field_kind(&name);
             for f in array(t, "fields") {
                 let fname = str_field(f, "name");
                 out.push(SchemaRecord {

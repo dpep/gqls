@@ -121,6 +121,12 @@ pub fn search<'a>(
         }
     };
 
+    // warm() calls with an empty query and limit 0 purely to populate the cache
+    // above — there's nothing to rank, so skip the query embed + cosine pass.
+    if query.is_empty() && limit == 0 {
+        return Vec::new();
+    }
+
     let query_vec = compress_matryoshka_vector(&embedder.embed(query));
     let mut hits: Vec<(f64, &SchemaRecord)> = records
         .iter()
@@ -154,10 +160,14 @@ pub fn clear_cache() -> usize {
     cache::clear()
 }
 
-/// Whether the schema's vectors are already cached (either embedder kind), so a
-/// semantic search would be warm. Checked without loading a model.
+/// Whether the schema's real (ONNX) vectors are cached, so the default combine
+/// path can run without a foreground embed. Deliberately ignores hash-fallback
+/// vectors: a run re-selects the embedder and keys the cache on *its* kind, so
+/// treating a stale `hash` cache as "warm" while the run picks `onnx` would
+/// trigger exactly the surprise foreground embed this gate exists to avoid.
+/// Checked without loading a model.
 pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
-    cache::exists(records, "onnx", model) || cache::exists(records, "hash", model)
+    cache::exists(records, "onnx", model)
 }
 
 /// Embed + cache every record's vector without running a real query — pre-warms

@@ -6,22 +6,15 @@ use graphql_parser::schema::{
     TypeExtension, Value,
 };
 
-use crate::model::{Kind, SchemaRecord};
+use crate::model::{Kind, Roots, SchemaRecord};
 
-/// Names of the root operation types (overridable via a `schema { ... }` block).
-struct Roots {
-    query: String,
-    mutation: String,
-    subscription: String,
-}
-
-impl Default for Roots {
-    fn default() -> Self {
-        Self {
-            query: "Query".into(),
-            mutation: "Mutation".into(),
-            subscription: "Subscription".into(),
-        }
+/// The root operation names default to the conventional `Query`/`Mutation`/
+/// `Subscription` when no `schema { ... }` block overrides them.
+fn default_roots() -> Roots {
+    Roots {
+        query: Some("Query".into()),
+        mutation: Some("Mutation".into()),
+        subscription: Some("Subscription".into()),
     }
 }
 
@@ -179,17 +172,17 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
     let text = strip_schema_extensions(text);
     let doc = parse_schema::<String>(&text).map_err(|e| anyhow!("parsing SDL: {e}"))?;
 
-    let mut roots = Roots::default();
+    let mut roots = default_roots();
     for def in &doc.definitions {
         if let Definition::SchemaDefinition(s) = def {
             if let Some(q) = &s.query {
-                roots.query = q.clone();
+                roots.query = Some(q.clone());
             }
             if let Some(m) = &s.mutation {
-                roots.mutation = m.clone();
+                roots.mutation = Some(m.clone());
             }
             if let Some(sub) = &s.subscription {
-                roots.subscription = sub.clone();
+                roots.subscription = Some(sub.clone());
             }
         }
     }
@@ -301,15 +294,7 @@ fn type_record(
 }
 
 fn field_record(type_name: &str, f: &Field<'_, String>, roots: &Roots) -> SchemaRecord {
-    let kind = if type_name == roots.query {
-        Kind::Query
-    } else if type_name == roots.mutation {
-        Kind::Mutation
-    } else if type_name == roots.subscription {
-        Kind::Subscription
-    } else {
-        Kind::Field
-    };
+    let kind = roots.field_kind(type_name);
     SchemaRecord {
         path: format!("{}.{}", type_name, f.name),
         name: f.name.clone(),

@@ -123,6 +123,11 @@ struct Cli {
     #[arg(long)]
     code: Option<String>,
 
+    /// Header for URL introspection, `Name: Value` (repeatable) — e.g. an
+    /// `Authorization` token for an auth-gated endpoint.
+    #[arg(short = 'H', long = "header", value_name = "NAME: VALUE")]
+    header: Vec<String>,
+
     /// Verbose stderr diagnostics: cache hits, rq candidates, and why the
     /// embedding model loaded or fell back.
     #[arg(short, long, conflicts_with = "quiet")]
@@ -191,16 +196,19 @@ fn semantic_matches<'a>(
 fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) -> Vec<Match<'a>> {
     use std::collections::HashMap;
     const K: f64 = 60.0;
-    let mut scored: HashMap<*const SchemaRecord, (f64, &SchemaRecord)> = HashMap::new();
+    // Key on the record's stable qualified path (unique per entity) rather than
+    // pointer identity, so fusion stays correct even if a ranker ever returned
+    // records not borrowed from the same slice.
+    let mut scored: HashMap<&str, (f64, &SchemaRecord)> = HashMap::new();
     for (rank, m) in fuzzy.iter().enumerate() {
         scored
-            .entry(m.record as *const _)
+            .entry(m.record.path.as_str())
             .or_insert((0.0, m.record))
             .0 += 1.0 / (K + rank as f64 + 1.0);
     }
     for (rank, m) in semantic.iter().enumerate() {
         scored
-            .entry(m.record as *const _)
+            .entry(m.record.path.as_str())
             .or_insert((0.0, m.record))
             .0 += 0.7 / (K + rank as f64 + 1.0);
     }
@@ -217,19 +225,68 @@ fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) ->
 /// background — the next run gets combined fuzzy+semantic results with no wait.
 /// Opt out with `GQLS_NO_AUTOWARM`. Best-effort; failures are ignored.
 #[cfg(feature = "_semantic")]
-fn spawn_background_warm(source: &str) {
+fn spawn_background_warm(source: &str, headers: &[String]) {
     if std::env::var_os("GQLS_NO_AUTOWARM").is_some() {
         return;
     }
+    // Single-flight: a detached warm for this source may already be running.
+    // A short-lived lockfile keeps a burst of cold queries from spawning a herd
+    // that all embed the same schema and race the cache.
+    if !claim_warm_lock(source) {
+        return;
+    }
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe)
-            .arg("--warm")
-            .arg(source)
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--warm").arg(source);
+        for h in headers {
+            cmd.arg("--header").arg(h);
+        }
+        let _ = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();
     }
+}
+
+/// Best-effort single-flight guard for background warming: returns true (and
+/// stakes a claim) when no recent warm for `source` is in flight, false when one
+/// likely is. The lockfile self-expires by mtime, so a crashed warm can't wedge
+/// warming forever, and a failed warm won't be retried in a tight loop.
+#[cfg(feature = "_semantic")]
+fn claim_warm_lock(source: &str) -> bool {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::Duration;
+
+    const LOCK_TTL: Duration = Duration::from_secs(10 * 60);
+    let Some(dir) = crate::paths::cache_dir() else {
+        return true; // no cache dir resolvable: don't block warming
+    };
+    let mut h = DefaultHasher::new();
+    source.hash(&mut h);
+    let lock = dir.join(format!("warming-{:016x}.lock", h.finish()));
+    if let Ok(meta) = std::fs::metadata(&lock) {
+        if let Ok(modified) = meta.modified() {
+            if modified.elapsed().is_ok_and(|age| age < LOCK_TTL) {
+                return false; // a recent warm is presumably still running
+            }
+        }
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(&lock, []).is_ok()
+}
+
+/// Parse `-H "Name: Value"` strings into `(name, value)` pairs.
+fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>> {
+    raw.iter()
+        .map(|h| {
+            let (name, value) = h
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("--header {h:?} must be `Name: Value`"))?;
+            Ok((name.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
 }
 
 pub fn run() -> Result<()> {
@@ -244,14 +301,13 @@ pub fn run() -> Result<()> {
     }
 
     if cli.clear_cache {
+        let introspect = crate::load::introspect::clear_cache();
         #[cfg(feature = "_semantic")]
-        {
-            let n = crate::semantic::clear_cache();
-            crate::status!("cleared {n} cached vector file(s)");
-            return Ok(());
-        }
+        let vectors = crate::semantic::clear_cache();
         #[cfg(not(feature = "_semantic"))]
-        anyhow::bail!("no embedding cache in this build (built without --features semantic)");
+        let vectors = 0;
+        crate::status!("cleared {} cached file(s)", introspect + vectors);
+        return Ok(());
     }
 
     let output = if cli.json {
@@ -280,7 +336,11 @@ pub fn run() -> Result<()> {
     } else {
         load::discover()?
     };
-    let records = load::load(&source)?;
+    let load_opts = load::LoadOptions {
+        headers: parse_headers(&cli.header)?,
+        refresh: cli.refresh,
+    };
+    let records = load::load(&source, &load_opts)?;
 
     // --warm: embed + cache the schema's vectors, then exit (no query needed).
     // Also the primitive the background auto-warm spawns.
@@ -341,7 +401,7 @@ pub fn run() -> Result<()> {
                 let semantic = semantic_matches(query, &records, kind, &cli);
                 combine(fuzzy, semantic, cli.limit)
             } else {
-                spawn_background_warm(&source);
+                spawn_background_warm(&source, &cli.header);
                 crate::status!(
                     "warming the semantic index in the background — the next run also \
                      ranks by meaning (--semantic to embed now, --fuzzy to skip)"
@@ -449,8 +509,8 @@ fn run_resolve(
         }
         Output::Text => {
             if hits.is_empty() {
-                eprintln!(
-                    "gqls: no code definition found for {} (tried graphql-ruby rq candidates)",
+                crate::status!(
+                    "no code definition found for {} (tried graphql-ruby rq candidates)",
                     top.record.path
                 );
             }
