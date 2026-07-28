@@ -86,9 +86,9 @@ pub fn discover() -> Result<String> {
         .iter()
         .filter(|c| c.path.parent() != chosen.path.parent())
         .count();
-    crate::status!("using schema {}", rel(&root, &chosen.path));
+    crate::detail!("using schema {}", rel(&root, &chosen.path));
     if elsewhere > 0 {
-        crate::status!(
+        crate::detail!(
             "{elsewhere} other schema file(s) found elsewhere — pass a path to pick one"
         );
     }

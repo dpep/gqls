@@ -29,7 +29,7 @@ pub fn load(source: &[u8]) -> Option<Vec<SchemaRecord>> {
     let mut buf = Vec::new();
     std::fs::File::open(&p).ok()?.read_to_end(&mut buf).ok()?;
     let records = decode(&buf)?;
-    crate::detail!("record cache hit: {}", p.display());
+    crate::detail!("schema cache hit: {}", p.display());
     touch(&p);
     Some(records)
 }

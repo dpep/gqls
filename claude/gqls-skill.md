@@ -21,7 +21,7 @@ gqls <query> <source> --json
 
 `<source>` is a `.graphql`/`.graphqls` SDL file, a `.json` introspection dump,
 or an `http(s)://…/graphql` URL (introspected live). Omit it and gqls finds a
-schema in the current directory tree, printing which one it picked. Apollo
+schema in the current directory tree (`-v` shows which one it picked). Apollo
 Federation v2 subgraph SDL parses directly, and auto-discovery prefers a
 composed `supergraph*` schema when several exist.
 
