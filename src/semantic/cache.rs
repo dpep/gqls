@@ -43,6 +43,12 @@ pub fn path(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) 
     Some(cache_dir()?.join(format!("{:016x}.vecs", h.finish())))
 }
 
+/// Whether a cache file for this (schema, embedder, model) triple exists — a
+/// cheap "is it warm?" check that reads no vectors.
+pub fn exists(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) -> bool {
+    path(records, embedder_kind, model).is_some_and(|p| p.is_file())
+}
+
 fn cache_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)

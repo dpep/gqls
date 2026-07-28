@@ -1,6 +1,6 @@
 [package]
 name = "gqls-cli"  # crates.io name (`gqls` is taken); the binary is still `gqls`
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.82"  # `Option::is_none_or`
 description = "Fuzzy and semantic search over a GraphQL schema (SDL, introspection JSON, or a live endpoint), plus a field-to-resolver jump."
@@ -42,7 +42,10 @@ log = { version = "0.4", optional = true }
 rayon = { version = "1", optional = true }  # parallel cold embed pass
 
 [features]
-default = []
+# Semantic search is on by default so `cargo install gqls-cli` includes it
+# (downloads ONNX Runtime at build time). Opt out with `--no-default-features`
+# for a lean fuzzy-only build; Homebrew uses `semantic-dynamic` instead.
+default = ["semantic"]
 
 # Internal: the semantic embedding code + deps, minus the ORT linking strategy.
 # Not selected directly — pick `semantic` or `semantic-dynamic` below.

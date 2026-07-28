@@ -131,3 +131,16 @@ fn record_text(r: &SchemaRecord) -> String {
 pub fn clear_cache() -> usize {
     cache::clear()
 }
+
+/// Whether the schema's vectors are already cached (either embedder kind), so a
+/// semantic search would be warm. Checked without loading a model.
+pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
+    cache::exists(records, "onnx", model) || cache::exists(records, "hash", model)
+}
+
+/// Embed + cache every record's vector without running a real query — pre-warms
+/// the cache so the first search is instant. Returns the record count.
+pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
+    let _ = search("", records, None, 0, model, refresh);
+    records.len()
+}

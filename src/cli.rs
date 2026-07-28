@@ -21,7 +21,7 @@ EXAMPLES:
   gqls User.email                     qualified Type.field query
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
-  gqls 'cancel a subscription' -s     semantic search (rank by meaning)
+  gqls 'cancel a subscription'        rank by meaning (fuzzy + semantic, auto)
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
 ";
@@ -50,14 +50,15 @@ Semantic search (-s, rank by meaning) is not compiled into this build. Enable it
     long_about = "Find the types, fields, args, and directives in a GraphQL schema from the \
                   terminal. The source is an SDL file, a local introspection JSON dump, or a live \
                   http(s) endpoint; with none given, gqls discovers a schema in the current tree. \
-                  Fuzzy by default; --semantic ranks by meaning; --resolve jumps to the \
-                  graphql-ruby resolver via rq. All modes support -j/--json and -J/--ndjson.",
+                  Fuzzy and semantic results are ranked together by default (-s or --fuzzy \
+                  forces one); --resolve jumps to the graphql-ruby resolver via rq. All modes \
+                  support -j/--json and -J/--ndjson.",
     after_help = EXAMPLES
 )]
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
     /// and `Type.field` queries match against the qualified path.
-    #[arg(required_unless_present_any = ["clear_cache", "completions"])]
+    #[arg(required_unless_present_any = ["clear_cache", "completions", "warm"])]
     query: Option<String>,
 
     /// Schema source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection
@@ -81,9 +82,14 @@ struct Cli {
     #[arg(short = 'J', long)]
     ndjson: bool,
 
-    /// Semantic (embedding) search instead of fuzzy — rank by meaning.
+    /// Force semantic-only search. By default fuzzy and semantic results are
+    /// combined once the schema's vectors are cached.
     #[arg(short, long, hide = HIDE_SEMANTIC)]
     semantic: bool,
+
+    /// Force fuzzy-only search — skip the semantic combine.
+    #[arg(long, conflicts_with = "semantic")]
+    fuzzy: bool,
 
     /// Embedding model for --semantic: a local dir / `.onnx` path, or a
     /// HuggingFace `org/name` id. Defaults to all-MiniLM-L6-v2.
@@ -99,6 +105,10 @@ struct Cli {
     /// Delete all cached embedding vector files, then exit.
     #[arg(long, hide = HIDE_SEMANTIC)]
     clear_cache: bool,
+
+    /// Pre-embed the schema's vectors (warm the cache), then exit.
+    #[arg(long, hide = HIDE_SEMANTIC)]
+    warm: bool,
 
     /// Print a shell completion script (bash, zsh, fish, ...) to stdout, then exit.
     #[arg(long, value_name = "SHELL")]
@@ -129,6 +139,77 @@ struct Match<'a> {
     score: f64,
 }
 
+fn fuzzy_matches<'a>(
+    query: &str,
+    records: &'a [SchemaRecord],
+    kind: Option<Kind>,
+    limit: usize,
+) -> Vec<Match<'a>> {
+    search::search(query, records, kind, limit)
+        .into_iter()
+        .map(|h| Match {
+            record: h.record,
+            score: h.score as f64,
+        })
+        .collect()
+}
+
+#[cfg(feature = "_semantic")]
+fn semantic_matches<'a>(
+    query: &str,
+    records: &'a [SchemaRecord],
+    kind: Option<Kind>,
+    cli: &Cli,
+) -> Vec<Match<'a>> {
+    crate::semantic::search(query, records, kind, cli.limit, cli.model.as_deref(), cli.refresh)
+        .into_iter()
+        .map(|(score, record)| Match { record, score })
+        .collect()
+}
+
+/// Merge the fuzzy and semantic rankings via Reciprocal Rank Fusion — precise
+/// name matches and meaning matches both surface, and a record strong in both
+/// rises to the top. Fuzzy is weighted a touch higher so an exact-name hit
+/// keeps the lead; scale-free, so the two score systems needn't be normalized.
+#[cfg(feature = "_semantic")]
+fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) -> Vec<Match<'a>> {
+    use std::collections::HashMap;
+    const K: f64 = 60.0;
+    let mut scored: HashMap<*const SchemaRecord, (f64, &SchemaRecord)> = HashMap::new();
+    for (rank, m) in fuzzy.iter().enumerate() {
+        scored.entry(m.record as *const _).or_insert((0.0, m.record)).0 += 1.0 / (K + rank as f64 + 1.0);
+    }
+    for (rank, m) in semantic.iter().enumerate() {
+        scored.entry(m.record as *const _).or_insert((0.0, m.record)).0 += 0.7 / (K + rank as f64 + 1.0);
+    }
+    let mut merged: Vec<Match> = scored
+        .into_values()
+        .map(|(score, record)| Match { record, score })
+        .collect();
+    merged.sort_by(|a, b| b.score.total_cmp(&a.score));
+    merged.truncate(limit);
+    merged
+}
+
+/// Spawn a detached `gqls --warm <source>` so the schema's vectors embed in the
+/// background — the next run gets combined fuzzy+semantic results with no wait.
+/// Opt out with `GQLS_NO_AUTOWARM`. Best-effort; failures are ignored.
+#[cfg(feature = "_semantic")]
+fn spawn_background_warm(source: &str) {
+    if std::env::var_os("GQLS_NO_AUTOWARM").is_some() {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::process::Command::new(exe)
+            .arg("--warm")
+            .arg(source)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -150,12 +231,6 @@ pub fn run() -> Result<()> {
         anyhow::bail!("no embedding cache in this build (built without --features semantic)");
     }
 
-    // clap guarantees this is present (required_unless_present = clear_cache).
-    let query = cli
-        .query
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
-
     let output = if cli.json {
         Output::Json
     } else if cli.ndjson {
@@ -169,23 +244,53 @@ pub fn run() -> Result<()> {
         None => None,
     };
 
-    let source = match cli.source {
-        Some(s) => s,
-        None => load::discover()?,
+    // The schema source. With `--warm` and no explicit source, the sole
+    // positional is the schema (there's no query to warm), so `gqls --warm
+    // schema.graphql` — and the background spawn — target the right file.
+    let source = if let Some(s) = cli.source.clone() {
+        s
+    } else if cli.warm {
+        match cli.query.clone() {
+            Some(s) => s,
+            None => load::discover()?,
+        }
+    } else {
+        load::discover()?
     };
     let records = load::load(&source)?;
+
+    // --warm: embed + cache the schema's vectors, then exit (no query needed).
+    // Also the primitive the background auto-warm spawns.
+    if cli.warm {
+        #[cfg(feature = "_semantic")]
+        {
+            let n = crate::semantic::warm(&records, cli.model.as_deref(), cli.refresh);
+            eprintln!("gqls: warmed {n} record vector(s) into the cache");
+            return Ok(());
+        }
+        #[cfg(not(feature = "_semantic"))]
+        {
+            let _ = (&cli.model, cli.refresh);
+            anyhow::bail!("--warm needs a semantic build");
+        }
+    }
+
+    // clap guarantees a query unless --clear-cache/--completions/--warm.
+    let query = cli
+        .query
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
 
     if cli.resolve {
         return run_resolve(query, &source, &records, kind, cli.code.as_deref(), cli.limit, output);
     }
 
-    let matches: Vec<Match> = if cli.semantic {
+    let matches: Vec<Match> = if cli.fuzzy {
+        fuzzy_matches(query, &records, kind, cli.limit)
+    } else if cli.semantic {
         #[cfg(feature = "_semantic")]
         {
-            crate::semantic::search(query, &records, kind, cli.limit, cli.model.as_deref(), cli.refresh)
-                .into_iter()
-                .map(|(score, record)| Match { record, score })
-                .collect()
+            semantic_matches(query, &records, kind, &cli)
         }
         #[cfg(not(feature = "_semantic"))]
         {
@@ -196,13 +301,28 @@ pub fn run() -> Result<()> {
             );
         }
     } else {
-        search::search(query, &records, kind, cli.limit)
-            .into_iter()
-            .map(|h| Match {
-                record: h.record,
-                score: h.score as f64,
-            })
-            .collect()
+        // Default: combine fuzzy + semantic when the cache is warm; when cold,
+        // return fuzzy now and warm the vectors in the background for next time.
+        let fuzzy = fuzzy_matches(query, &records, kind, cli.limit);
+        #[cfg(feature = "_semantic")]
+        {
+            if crate::semantic::is_cached(&records, cli.model.as_deref()) {
+                let semantic = semantic_matches(query, &records, kind, &cli);
+                combine(fuzzy, semantic, cli.limit)
+            } else {
+                spawn_background_warm(&source);
+                eprintln!(
+                    "gqls: warming the semantic index in the background — the next run also \
+                     ranks by meaning (-s to embed now, --fuzzy to skip)"
+                );
+                fuzzy
+            }
+        }
+        #[cfg(not(feature = "_semantic"))]
+        {
+            let _ = (&cli.model, cli.refresh);
+            fuzzy
+        }
     };
 
     if matches.is_empty() {

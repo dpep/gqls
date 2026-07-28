@@ -10,7 +10,7 @@ Point `gqls` at a schema and find the type, field, argument, or directive you're
 ```sh
 gqls user schema.graphql              # fuzzy: usr, usre, User.email all match
 gqls repository https://api/graphql   # introspect a live endpoint
-gqls 'cancel a subscription' -s       # semantic: rank by meaning
+gqls 'cancel a subscription'          # ranks by meaning (fuzzy + semantic, auto)
 gqls Query.user -R --code ./app       # jump to the graphql-ruby resolver
 ```
 
@@ -24,11 +24,11 @@ Nothing else combines fuzzy/semantic search with big-schema speed in a CLI. Sche
 # Homebrew (fuzzy + introspection + resolver jump + semantic search)
 brew install dpep/tools/gqls
 
-# Cargo (crate is `gqls-cli`; it installs the `gqls` binary)
+# Cargo (crate is `gqls-cli`; installs the `gqls` binary, semantic search included)
 cargo install gqls-cli
 
-# Cargo, with semantic search (downloads ONNX Runtime at build time)
-cargo install gqls-cli --features semantic
+# Lean, fuzzy-only build (no ONNX Runtime download)
+cargo install gqls-cli --no-default-features
 ```
 
 The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); install it too if you want that.
@@ -52,14 +52,16 @@ gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — boosts the field on User
 ```
 
-### Semantic search (`-s`, requires `--features semantic`)
-Ranks by meaning using a local `all-MiniLM-L6-v2` model (via ONNX Runtime), fetched once from the HuggingFace Hub then cached offline. The Homebrew build ships it against the system `onnxruntime`.
+### Semantic search — automatic, combined with fuzzy
+By default gqls returns fuzzy matches **and** semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), fetched once from the HuggingFace Hub then cached offline.
 
 ```sh
-gqls 'delete a repository' -s https://api/graphql
+gqls 'delete a repository'    # a phrase — semantic dominates
+gqls user                     # an identifier — fuzzy leads, semantic fills in
+gqls user -s                  # force semantic only  (--fuzzy forces fuzzy only)
 ```
 
-Per-record vectors are cached (keyed by schema content + model): the first run on a large schema embeds everything once, parallelized across cores; later runs only embed the query. GitHub's schema: cold ~40s, warm ~0.3s. Editing the schema re-embeds automatically; `--refresh` forces it, `--clear-cache` wipes the cache.
+Per-record vectors are cached (keyed by schema content + model). The **first** time gqls sees a schema it returns fuzzy results immediately and embeds the vectors **in the background** — so the next run is combined and instant (GitHub's schema: background embed ~40s once, warm query ~0.3s). Set `GQLS_NO_AUTOWARM=1` to disable that. Editing the schema re-embeds automatically; `--refresh` forces it, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and the Homebrew build have it; `--no-default-features` is fuzzy-only.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
