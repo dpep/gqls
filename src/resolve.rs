@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,9 @@ pub fn resolve(
     let mut seen = HashSet::new();
     let mut hits: Vec<RqHit> = Vec::new();
     for (idx, cand) in candidates(rec).into_iter().enumerate() {
-        for mut hit in run_rq(&cand, code_dir)? {
+        let found = run_rq(&cand, code_dir)?;
+        crate::detail!("rq candidate {:?} -> {} hit(s)", cand, found.len());
+        for mut hit in found {
             if seen.insert(format!("{}:{}", hit.file, hit.line)) {
                 hit.via = cand.clone();
                 hit.candidate_rank = idx;
@@ -148,7 +150,11 @@ pub fn candidates(rec: &SchemaRecord) -> Vec<String> {
             c.push(snake.clone());
         }
         // a type: jump to its `XType` / `Types::X` class
-        Kind::Object | Kind::Interface | Kind::InputObject | Kind::Union | Kind::Enum
+        Kind::Object
+        | Kind::Interface
+        | Kind::InputObject
+        | Kind::Union
+        | Kind::Enum
         | Kind::Scalar => {
             let t = &rec.name;
             c.push(format!("{t}Type"));
@@ -165,25 +171,39 @@ pub fn candidates(rec: &SchemaRecord) -> Vec<String> {
 }
 
 fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
+    let verbose = crate::logging::is_verbose();
     let mut cmd = Command::new("rq");
-    cmd.arg("--json").arg("--limit").arg("5").arg(query);
+    cmd.arg("--json").arg("--limit").arg("5");
+    // Mirror `gqls -v` into rq: it traces its own decisions (root, coverage,
+    // warming) to stderr, which we let stream straight to the terminal. Without
+    // -v we keep capturing rq's stderr so a failure can surface its message.
+    if verbose {
+        cmd.arg("--verbose");
+    }
+    cmd.arg(query);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(if verbose {
+        Stdio::inherit()
+    } else {
+        Stdio::piped()
+    });
     // rq searches the *current repo*, so run it from the server code dir (else
     // gqls's own cwd) rather than passing a cross-repo path filter.
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            anyhow!(
-                "--resolve needs `rq` (a code-navigation CLI), which isn't installed. Install it:\n  \
-                 brew install dpep/tools/rq\n  \
-                 cargo install --git https://github.com/dpep/rq\n\
-                 Then re-run — see https://github.com/dpep/rq"
-            )
-        } else {
-            anyhow!("running rq: {e}")
-        }
-    })?;
+    let output = match cmd.spawn() {
+        Ok(child) => child
+            .wait_with_output()
+            .map_err(|e| anyhow!("running rq: {e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
+            "--resolve needs `rq` (a code-navigation CLI), which isn't installed. Install it:\n  \
+             brew install dpep/tools/rq\n  \
+             cargo install --git https://github.com/dpep/rq\n\
+             Then re-run — see https://github.com/dpep/rq"
+        ),
+        Err(e) => bail!("running rq: {e}"),
+    };
     // rq: exit 0 = hits (JSON array), 1 = no match (a `{status}` object) — both
     // are normal. Any other code is a real rq failure (not a repo, bad flag):
     // surface it instead of silently reporting "no resolver found".

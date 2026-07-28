@@ -15,7 +15,7 @@ mod embed;
 mod mrl;
 
 use crate::model::{Kind, SchemaRecord};
-use embed::default_embedder;
+use embed::{default_embedder, Embedder};
 use mrl::{compress_matryoshka_vector, cosine_similarity};
 
 /// Embed the query and each record, rank by cosine. Returns `(score, record)`
@@ -30,7 +30,16 @@ pub fn search<'a>(
     refresh: bool,
 ) -> Vec<(f64, &'a SchemaRecord)> {
     let embedder = default_embedder(model);
-    eprintln!("gqls: semantic search via {} embeddings", embedder.kind());
+    // On the good path (onnx) this is verbose-only noise; a fall back to the
+    // hash embedder means weaker results, so surface that unconditionally.
+    if embedder.kind() == "onnx" {
+        crate::detail!("semantic search via onnx embeddings");
+    } else {
+        crate::status!(
+            "semantic search via {} embeddings — model unavailable, results are weaker (-v for why)",
+            embedder.kind()
+        );
+    }
 
     // Per-record vectors are the expensive part; cache them keyed by schema
     // content + embedder + model, so editing the schema (or switching model)
@@ -46,28 +55,40 @@ pub fn search<'a>(
     let vectors = match cached {
         Some(v) => {
             if let Some(p) = cache_path.as_deref() {
+                crate::detail!("vector cache hit: {}", p.display());
                 cache::touch(p); // LRU: mark this schema as recently used
             }
             v
         }
         None => {
+            if let Some(p) = cache_path.as_deref() {
+                crate::detail!("vector cache miss: {}", p.display());
+            }
             use rayon::prelude::*;
             use std::io::IsTerminal;
             use std::sync::atomic::{AtomicUsize, Ordering};
 
             let total = records.len();
-            eprintln!(
-                "gqls: embedding {total} records (one-time, then cached; a large schema can take ~a minute)…"
+            crate::status!(
+                "embedding {total} records (one-time, then cached; a large schema can take ~a minute)…"
             );
             let done = AtomicUsize::new(0);
 
-            // Per-worker embedder/session: the session is behind a Mutex, so a
-            // shared one would serialize the parallel pass. The model is a cached
-            // file, so every worker resolves the same kind as the main embedder
-            // above (no mixed onnx/hash vectors). Order-preserving `collect`, so
-            // vectors stay index-aligned with `records`.
+            // One embedder per worker thread, built on first use and reused for
+            // every record that thread handles. rayon's `map_init` rebuilt it per
+            // job-split (≈ once per record), reloading the ONNX session tens of
+            // thousands of times on a large schema; a `thread_local` caps it at
+            // one per worker. `model` is constant for the process, so the workers
+            // all resolve the same embedder kind (no mixed onnx/hash vectors), and
+            // caching on "already built?" alone is safe. Order-preserving
+            // `collect` keeps vectors index-aligned with `records`.
+            use std::cell::RefCell;
+            thread_local! {
+                static EMBEDDER: RefCell<Option<Box<dyn Embedder>>> = const { RefCell::new(None) };
+            }
             let v: Vec<Vec<f32>> = std::thread::scope(|scope| {
-                let show_progress = std::io::stderr().is_terminal() && total > 500;
+                let show_progress =
+                    std::io::stderr().is_terminal() && total > 500 && !crate::logging::is_quiet();
                 if show_progress {
                     scope.spawn(|| loop {
                         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -81,14 +102,15 @@ pub fn search<'a>(
                 }
                 records
                     .par_iter()
-                    .map_init(
-                        || default_embedder(model),
-                        |emb, r| {
-                            let out = compress_matryoshka_vector(&emb.embed(&record_text(r)));
-                            done.fetch_add(1, Ordering::Relaxed);
-                            out
-                        },
-                    )
+                    .map(|r| {
+                        let out = EMBEDDER.with(|cell| {
+                            let mut slot = cell.borrow_mut();
+                            let emb = slot.get_or_insert_with(|| default_embedder(model));
+                            compress_matryoshka_vector(&emb.embed(&record_text(r)))
+                        });
+                        done.fetch_add(1, Ordering::Relaxed);
+                        out
+                    })
                     .collect()
             });
             if let Some(p) = cache_path.as_deref() {

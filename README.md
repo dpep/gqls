@@ -80,6 +80,8 @@ Every mode supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record
 gqls repository schema.json -J | jq -r '.path'
 ```
 
+`-q`/`--quiet` silences the stderr status lines (results and hard errors still print); `-v`/`--verbose` adds diagnostics — cache hits/misses, the `rq` candidates `-R` tried, and why the embedding model loaded or fell back to the hash embedder.
+
 Shell completions: `gqls --completions zsh` (or `bash`/`fish`/…).
 
 ## Using with Claude Code

@@ -9,8 +9,8 @@ use crate::load;
 use crate::model::{Kind, SchemaRecord};
 use crate::search;
 
-/// The semantic-only flags (-s, --model, --refresh, --clear-cache) are hidden
-/// from --help on builds without the feature, where they'd only error.
+/// The semantic-only flags (--semantic, --model, --refresh, --clear-cache) are
+/// hidden from --help on builds without the feature, where they'd only error.
 const HIDE_SEMANTIC: bool = !cfg!(feature = "_semantic");
 
 #[cfg(feature = "_semantic")]
@@ -37,7 +37,7 @@ EXAMPLES:
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
 
-Semantic search (-s, rank by meaning) is not compiled into this build. Enable it:
+Semantic search (--semantic, rank by meaning) is not compiled into this build. Enable it:
   cargo install gqls-cli --features semantic
   brew install dpep/tools/gqls
 ";
@@ -122,6 +122,15 @@ struct Cli {
     /// Directory of the server code for --resolve (defaults to rq's index).
     #[arg(long)]
     code: Option<String>,
+
+    /// Verbose stderr diagnostics: cache hits, rq candidates, and why the
+    /// embedding model loaded or fell back.
+    #[arg(short, long, conflicts_with = "quiet")]
+    verbose: bool,
+
+    /// Suppress status chatter on stderr (results and hard errors still print).
+    #[arg(short, long)]
+    quiet: bool,
 }
 
 /// The chosen output format — computed once, honored by every mode.
@@ -161,10 +170,17 @@ fn semantic_matches<'a>(
     kind: Option<Kind>,
     cli: &Cli,
 ) -> Vec<Match<'a>> {
-    crate::semantic::search(query, records, kind, cli.limit, cli.model.as_deref(), cli.refresh)
-        .into_iter()
-        .map(|(score, record)| Match { record, score })
-        .collect()
+    crate::semantic::search(
+        query,
+        records,
+        kind,
+        cli.limit,
+        cli.model.as_deref(),
+        cli.refresh,
+    )
+    .into_iter()
+    .map(|(score, record)| Match { record, score })
+    .collect()
 }
 
 /// Merge the fuzzy and semantic rankings via Reciprocal Rank Fusion — precise
@@ -177,10 +193,16 @@ fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) ->
     const K: f64 = 60.0;
     let mut scored: HashMap<*const SchemaRecord, (f64, &SchemaRecord)> = HashMap::new();
     for (rank, m) in fuzzy.iter().enumerate() {
-        scored.entry(m.record as *const _).or_insert((0.0, m.record)).0 += 1.0 / (K + rank as f64 + 1.0);
+        scored
+            .entry(m.record as *const _)
+            .or_insert((0.0, m.record))
+            .0 += 1.0 / (K + rank as f64 + 1.0);
     }
     for (rank, m) in semantic.iter().enumerate() {
-        scored.entry(m.record as *const _).or_insert((0.0, m.record)).0 += 0.7 / (K + rank as f64 + 1.0);
+        scored
+            .entry(m.record as *const _)
+            .or_insert((0.0, m.record))
+            .0 += 0.7 / (K + rank as f64 + 1.0);
     }
     let mut merged: Vec<Match> = scored
         .into_values()
@@ -212,6 +234,7 @@ fn spawn_background_warm(source: &str) {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+    crate::logging::init(cli.verbose, cli.quiet);
 
     if let Some(shell) = cli.completions {
         let mut cmd = Cli::command();
@@ -224,7 +247,7 @@ pub fn run() -> Result<()> {
         #[cfg(feature = "_semantic")]
         {
             let n = crate::semantic::clear_cache();
-            eprintln!("gqls: cleared {n} cached vector file(s)");
+            crate::status!("cleared {n} cached vector file(s)");
             return Ok(());
         }
         #[cfg(not(feature = "_semantic"))]
@@ -265,7 +288,7 @@ pub fn run() -> Result<()> {
         #[cfg(feature = "_semantic")]
         {
             let n = crate::semantic::warm(&records, cli.model.as_deref(), cli.refresh);
-            eprintln!("gqls: warmed {n} record vector(s) into the cache");
+            crate::status!("warmed {n} record vector(s) into the cache");
             return Ok(());
         }
         #[cfg(not(feature = "_semantic"))]
@@ -282,7 +305,15 @@ pub fn run() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
 
     if cli.resolve {
-        return run_resolve(query, &source, &records, kind, cli.code.as_deref(), cli.limit, output);
+        return run_resolve(
+            query,
+            &source,
+            &records,
+            kind,
+            cli.code.as_deref(),
+            cli.limit,
+            output,
+        );
     }
 
     let matches: Vec<Match> = if cli.fuzzy {
@@ -311,8 +342,8 @@ pub fn run() -> Result<()> {
                 combine(fuzzy, semantic, cli.limit)
             } else {
                 spawn_background_warm(&source);
-                eprintln!(
-                    "gqls: warming the semantic index in the background — the next run also \
+                crate::status!(
+                    "warming the semantic index in the background — the next run also \
                      ranks by meaning (--semantic to embed now, --fuzzy to skip)"
                 );
                 fuzzy
@@ -326,7 +357,7 @@ pub fn run() -> Result<()> {
     };
 
     if matches.is_empty() {
-        eprintln!("gqls: no matches for {query:?}");
+        crate::status!("no matches for {query:?}");
     }
     output.write_matches(&matches)
 }
@@ -346,7 +377,10 @@ impl Output {
             })
         };
         match self {
-            Output::Json => println!("{}", serde_json::to_string_pretty(&rows().collect::<Vec<_>>())?),
+            Output::Json => println!(
+                "{}",
+                serde_json::to_string_pretty(&rows().collect::<Vec<_>>())?
+            ),
             Output::Ndjson => {
                 for row in rows() {
                     println!("{}", serde_json::to_string(&row)?);
@@ -394,14 +428,12 @@ fn run_resolve(
     output: Output,
 ) -> Result<()> {
     if code.is_none() {
-        eprintln!(
-            "gqls: no --code given; resolving against rq's index for the current directory"
-        );
+        crate::status!("no --code given; resolving against rq's index for the current directory");
     }
     let Some(top) = search::search(query, records, kind, 1).into_iter().next() else {
         anyhow::bail!("no schema entity matches {query:?} to resolve");
     };
-    eprintln!("gqls: resolving {} …", top.record.path);
+    crate::status!("resolving {} …", top.record.path);
     // a local file schema (not a URL) enables package-proximity ranking
     let schema_path = (!source.starts_with("http://") && !source.starts_with("https://"))
         .then(|| std::path::Path::new(source))

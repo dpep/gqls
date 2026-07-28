@@ -132,7 +132,7 @@ pub fn prune(keep: usize) {
     if files.len() <= keep {
         return;
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    files.sort_by_key(|f| std::cmp::Reverse(f.0)); // newest first
     for (_, p) in files.into_iter().skip(keep) {
         let _ = std::fs::remove_file(p);
     }

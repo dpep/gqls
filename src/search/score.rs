@@ -44,10 +44,8 @@ pub fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     // No name match: fall back to the qualified path (`user.email` vs
     // `User.email`) — a weaker signal, and required to match at all.
     if !name_matched {
-        match subsequence_score(&query.to_ascii_lowercase(), &rec.path) {
-            Some(s) => total += (s * 0.5).min(300.0),
-            None => return None,
-        }
+        let s = subsequence_score(&query.to_ascii_lowercase(), &rec.path)?;
+        total += (s * 0.5).min(300.0);
     }
 
     // Qualifier boost — the user named the enclosing type (`Repository.name`);
@@ -81,7 +79,10 @@ fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
     let parent = parent?;
     if parent.eq_ignore_ascii_case(qualifier) {
         Some(300.0)
-    } else if parent.to_ascii_lowercase().starts_with(&qualifier.to_ascii_lowercase()) {
+    } else if parent
+        .to_ascii_lowercase()
+        .starts_with(&qualifier.to_ascii_lowercase())
+    {
         Some(150.0)
     } else {
         None
@@ -120,13 +121,15 @@ fn osa_within(a: &[char], b: &[char], max: usize) -> Option<usize> {
     for (i, row) in d.iter_mut().enumerate() {
         row[0] = i;
     }
-    for j in 0..=m {
-        d[0][j] = j;
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
     }
     for i in 1..=n {
         for j in 1..=m {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            let mut v = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 v = v.min(d[i - 2][j - 2] + 1); // adjacent transposition
             }
@@ -299,9 +302,17 @@ mod tests {
 
     #[test]
     fn abbreviation_matches_camelcase() {
-        assert!(score("cu", &rec("createUser", "Mutation.createUser", Kind::Mutation)).is_some());
+        assert!(score(
+            "cu",
+            &rec("createUser", "Mutation.createUser", Kind::Mutation)
+        )
+        .is_some());
         // real abbreviation the DP aligner handles well
-        assert!(score("refproc", &rec("refundProcessor", "T.refundProcessor", Kind::Field)).is_some());
+        assert!(score(
+            "refproc",
+            &rec("refundProcessor", "T.refundProcessor", Kind::Field)
+        )
+        .is_some());
     }
 
     #[test]
@@ -332,8 +343,16 @@ mod tests {
     #[test]
     fn adjacent_word_rule_rejects_scatter() {
         // skipping a whole middle word isn't a match
-        assert!(score("rndsvc", &rec("RefundProcessingService", "T.x", Kind::Object)).is_none());
+        assert!(score(
+            "rndsvc",
+            &rec("RefundProcessingService", "T.x", Kind::Object)
+        )
+        .is_none());
         // adjacent-word abbreviation still matches
-        assert!(score("refprocsvc", &rec("RefundProcessingService", "T.x", Kind::Object)).is_some());
+        assert!(score(
+            "refprocsvc",
+            &rec("RefundProcessingService", "T.x", Kind::Object)
+        )
+        .is_some());
     }
 }
