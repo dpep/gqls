@@ -50,8 +50,8 @@ Semantic search (-s, rank by meaning) is not compiled into this build. Enable it
     long_about = "Find the types, fields, args, and directives in a GraphQL schema from the \
                   terminal. The source is an SDL file, a local introspection JSON dump, or a live \
                   http(s) endpoint; with none given, gqls discovers a schema in the current tree. \
-                  Fuzzy and semantic results are ranked together by default (-s or --fuzzy \
-                  forces one); --resolve jumps to the graphql-ruby resolver via rq. All modes \
+                  Fuzzy and semantic results are ranked together by default (--semantic or \
+                  --fuzzy forces one); --resolve jumps to the graphql-ruby resolver via rq. All modes \
                   support -j/--json and -J/--ndjson.",
     after_help = EXAMPLES
 )]
@@ -84,7 +84,7 @@ struct Cli {
 
     /// Force semantic-only search. By default fuzzy and semantic results are
     /// combined once the schema's vectors are cached.
-    #[arg(short, long, hide = HIDE_SEMANTIC)]
+    #[arg(long, hide = HIDE_SEMANTIC)]
     semantic: bool,
 
     /// Force fuzzy-only search — skip the semantic combine.
@@ -313,7 +313,7 @@ pub fn run() -> Result<()> {
                 spawn_background_warm(&source);
                 eprintln!(
                     "gqls: warming the semantic index in the background — the next run also \
-                     ranks by meaning (-s to embed now, --fuzzy to skip)"
+                     ranks by meaning (--semantic to embed now, --fuzzy to skip)"
                 );
                 fuzzy
             }
