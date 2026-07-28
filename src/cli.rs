@@ -177,6 +177,7 @@ fn semantic_matches<'a>(
     kind: Option<Kind>,
     parent: Option<&str>,
     cli: &Cli,
+    prepared: Option<crate::semantic::Prepared>,
 ) -> Vec<Match<'a>> {
     crate::semantic::search(
         query,
@@ -186,6 +187,7 @@ fn semantic_matches<'a>(
         cli.limit,
         cli.model.as_deref(),
         cli.refresh,
+        prepared,
     )
     .into_iter()
     .map(|(score, record)| Match { record, score })
@@ -327,6 +329,17 @@ pub fn run() -> Result<()> {
         None => None,
     };
 
+    // The model load + query embed need no schema, so on runs that may rank
+    // semantically, start them on a thread now — they overlap the schema
+    // parse and fuzzy scoring below. A run that ends fuzzy-only (cold vector
+    // cache) just drops the handle; the thread dies with the process.
+    #[cfg(feature = "_semantic")]
+    let prepared: Option<std::thread::JoinHandle<crate::semantic::Prepared>> = cli
+        .query
+        .as_deref()
+        .filter(|_| !cli.fuzzy && !cli.resolve && !cli.warm)
+        .map(|q| crate::semantic::spawn_prepare(q, cli.model.as_deref()));
+
     // The schema source. With `--warm` and no explicit source, the sole
     // positional is the schema (there's no query to warm), so `gqls --warm
     // schema.graphql` — and the background spawn — target the right file.
@@ -409,7 +422,8 @@ pub fn run() -> Result<()> {
     } else if cli.semantic {
         #[cfg(feature = "_semantic")]
         {
-            let matches = semantic_matches(query, &records, kind, parent, &cli);
+            let prep = prepared.and_then(|h| h.join().ok());
+            let matches = semantic_matches(query, &records, kind, parent, &cli, prep);
             let total = matches.len();
             (matches, total)
         }
@@ -430,7 +444,8 @@ pub fn run() -> Result<()> {
         #[cfg(feature = "_semantic")]
         {
             if crate::semantic::is_cached(&records, cli.model.as_deref()) {
-                let semantic = semantic_matches(query, &records, kind, parent, &cli);
+                let prep = prepared.and_then(|h| h.join().ok());
+                let semantic = semantic_matches(query, &records, kind, parent, &cli, prep);
                 (combine(fuzzy, semantic, cli.limit), total)
             } else {
                 spawn_background_warm(&source, &cli.header);
