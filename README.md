@@ -86,7 +86,12 @@ Shell completions: `gqls --completions zsh` (or `bash`/`fish`/…).
 
 ## Using with Claude Code
 
-Drop a small skill into `~/.claude/skills/gqls/` (see `claude/gqls-skill.md` in this repo) so Claude reaches for `gqls` when navigating a GraphQL schema instead of grepping SDL by hand.
+`gqls` ships with a Claude Code skill (`claude/gqls-skill.md`) so Claude reaches for it when navigating a GraphQL schema instead of grepping SDL by hand. Install it:
+
+```sh
+mkdir -p ~/.claude/skills/gqls
+cp claude/gqls-skill.md ~/.claude/skills/gqls/SKILL.md
+```
 
 ## How it works
 
