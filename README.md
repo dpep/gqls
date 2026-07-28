@@ -5,7 +5,7 @@
 [![crates.io](https://img.shields.io/crates/v/gqls-cli.svg)](https://crates.io/crates/gqls-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Point `gqls` at a schema and find the type, field, argument, or directive you're after — by approximate name, by meaning, or jump straight to its resolver in code. It reads an SDL file, a local introspection dump, or a live endpoint, so you skip the part where you `grep` an SDL file, guess the exact spelling, and scroll. Built for schemas too big to scroll: GitHub's ~68k-line API answers in ~0.15s.
+Point `gqls` at a schema and find the type, field, argument, or directive you're after — by approximate name, by meaning, or by jumping straight to its resolver in code. It reads an SDL file, an introspection dump, a live endpoint, or a federated supergraph, so instead of grepping SDL and guessing the exact spelling you get ranked matches — even on schemas too big to scroll, where GitHub's ~68k-line API answers in ~0.15s.
 
 ```sh
 gqls user schema.graphql              # fuzzy: usr, usre, User.email all match
@@ -39,7 +39,10 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 - **SDL file** — `gqls user schema.graphql`
 - **Introspection JSON dump** — `gqls user schema.json`
 - **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query)
-- **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`).
+- **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`; in a federated monorepo, a `supergraph*` schema wins when several exist).
+
+### Federated schemas (Apollo Federation v2)
+`gqls` parses subgraph SDL directly — the `extend schema @link(...)` header and `@key`/`@shareable` directives that trip up plain GraphQL parsers — so you can `cd` into a subgraph package and search its own schema. Auto-discovery follows suit: at the repo root it prefers the composed `supergraph*` schema, but run from inside a subgraph it uses that subgraph's local schema.
 
 ### Fuzzy search (default)
 Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up.
@@ -50,13 +53,13 @@ gqls User.email                  # qualified — boosts the field on User
 ```
 
 ### Semantic search (`-s`, requires `--features semantic`)
-Ranks by meaning using a local `all-MiniLM-L6-v2` model (via ONNX Runtime), fetched once from the HuggingFace Hub, then cached offline. The Homebrew build ships it (against the system `onnxruntime`); the plain `cargo install` needs `--features semantic`.
+Ranks by meaning using a local `all-MiniLM-L6-v2` model (via ONNX Runtime), fetched once from the HuggingFace Hub then cached offline. The Homebrew build ships it against the system `onnxruntime`.
 
 ```sh
 gqls 'delete a repository' -s https://api/graphql
 ```
 
-Per-record vectors are cached (keyed by schema content + model): the first run on a large schema embeds everything once (parallelized across cores), and later runs only embed the query. GitHub's schema: cold ~40s, warm ~0.3s. Editing the schema re-embeds automatically; `--refresh` forces it, `--clear-cache` wipes the cache.
+Per-record vectors are cached (keyed by schema content + model): the first run on a large schema embeds everything once, parallelized across cores; later runs only embed the query. GitHub's schema: cold ~40s, warm ~0.3s. Editing the schema re-embeds automatically; `--refresh` forces it, `--clear-cache` wipes the cache.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
@@ -66,7 +69,7 @@ $ gqls Query.user schema.graphql -R --code ./app
 app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
 ```
 
-`gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates. When the schema is a local file, candidates are ranked by package proximity to it — so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
+`gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates. When the schema is a local file, candidates are also ranked by package proximity to it — so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
 
 ### Output
 Every mode supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line). Status chatter goes to stderr, so JSON pipes clean:
