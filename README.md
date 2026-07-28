@@ -45,7 +45,7 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 `gqls` parses subgraph SDL directly — the `extend schema @link(...)` header and `@key`/`@shareable` directives that trip up plain GraphQL parsers — so you can `cd` into a subgraph package and search its own schema. Auto-discovery follows suit: at the repo root it prefers the composed `supergraph*` schema, but run from inside a subgraph it uses that subgraph's local schema.
 
 ### Fuzzy search (default)
-Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up. Weak long-tail matches are cut relative to the best hit, and when more matches exist than the limit shows, a stderr footer reports the total (`342 matches; showing top 20 (-l to adjust)`).
+Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up. Weak long-tail matches are cut relative to the best hit; `-v` reports the total match count when it exceeds the limit.
 
 ```sh
 gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)

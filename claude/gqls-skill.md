@@ -47,8 +47,8 @@ pipe cleanly into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
   scalar, input_object, interface, union, directive (plurals ok). A bad kind
   lists the valid ones.
 - Count: `-l 1` for just the top hit, larger to survey (default 20). Weak
-  long-tail matches are dropped relative to the best hit; when more remain than
-  shown, stderr reports the total (`342 matches; showing top 20 (-l to adjust)`).
+  long-tail matches are dropped relative to the best hit; `-v` reports the
+  total match count when it exceeds the limit.
 
 ```sh
 gqls repository schema.json -k object -l 5 --json

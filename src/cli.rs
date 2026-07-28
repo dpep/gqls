@@ -442,7 +442,7 @@ pub fn run() -> Result<()> {
     }
     output.write_matches(&matches)?;
     if total > matches.len() {
-        crate::status!(
+        crate::detail!(
             "{total} matches; showing top {} (-l to adjust)",
             matches.len()
         );
