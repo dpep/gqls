@@ -53,7 +53,7 @@ gqls User.email                  # qualified — boosts the field on User
 ```
 
 ### Semantic search — automatic, combined with fuzzy
-By default gqls returns fuzzy matches **and** semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), fetched once from the HuggingFace Hub then cached offline.
+By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), MRL-compressed to 64 dimensions and cosine-ranked; the model is fetched once from the HuggingFace Hub, then cached offline.
 
 ```sh
 gqls 'delete a repository'    # a phrase — semantic dominates
@@ -61,7 +61,7 @@ gqls user                     # an identifier — fuzzy leads, semantic fills in
 gqls user --semantic          # force semantic only  (--fuzzy forces fuzzy only)
 ```
 
-Per-record vectors are cached (keyed by schema content + model). The **first** time gqls sees a schema it returns fuzzy results immediately and embeds the vectors **in the background** — so the next run is combined and instant (GitHub's schema: background embed ~40s once, warm query ~0.3s). Set `GQLS_NO_AUTOWARM=1` to disable that. Editing the schema re-embeds automatically; `--refresh` forces it, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and the Homebrew build have it; `--no-default-features` is fuzzy-only.
+Per-record vectors are cached, keyed by schema content and model. The first time gqls sees a schema it returns fuzzy results immediately and embeds in the background — so the next run is combined and instant (GitHub's schema: ~40s to embed once, then ~0.3s warm queries). `GQLS_NO_AUTOWARM=1` disables the background embed. Editing the schema re-embeds on its own; `--refresh` forces a re-embed, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and Homebrew have it; `--no-default-features` is fuzzy-only.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
@@ -80,7 +80,7 @@ Every mode supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record
 gqls repository schema.json -J | jq -r '.path'
 ```
 
-`-q`/`--quiet` silences the stderr status lines (results and hard errors still print); `-v`/`--verbose` adds diagnostics — cache hits/misses, the `rq` candidates `-R` tried, and why the embedding model loaded or fell back to the hash embedder.
+`-q`/`--quiet` silences the stderr status lines (results and hard errors still print); `-v`/`--verbose` adds diagnostics — cache hits/misses, the `rq` candidates `-R` tried, and why the embedding model loaded or fell back to the hash embedder. Under `-R`, verbose also passes `-v` through to `rq` and streams its trace.
 
 Shell completions: `gqls --completions zsh` (or `bash`/`fish`/…).
 
@@ -102,7 +102,7 @@ src/
   cli.rs          clap + unified text/json/ndjson output
 ```
 
-Two capabilities are **borrowed** from sibling tools rather than reinvented: the fuzzy ranking is ported from [`rq`](https://github.com/dpep/rq)'s aligner, and the local embedding pipeline is copied from [`ae`](https://github.com/dpep/ae).
+Two capabilities are borrowed from sibling tools rather than reinvented: the fuzzy ranking is ported from [`rq`](https://github.com/dpep/rq)'s aligner, and the local embedding pipeline is copied from [`ae`](https://github.com/dpep/ae).
 
 ## License
 
