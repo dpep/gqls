@@ -52,7 +52,7 @@ gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
 ```
 
-In a qualified query, a `Type` that exactly names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". A qualifier that matches no type falls back to plain fuzzy matching.
+In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". A misspelled qualifier snaps to the unique closest type (`Compnay.` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching.
 
 ### Semantic search — automatic, combined with fuzzy
 By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), MRL-compressed to 64 dimensions and cosine-ranked; the model is fetched once from the HuggingFace Hub, then cached offline.

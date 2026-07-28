@@ -40,9 +40,10 @@ pipe cleanly into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
 ## Scope when you know more
 
 - Fuzzy / abbreviation / typo: `gqls usr`, `gqls usre`, `gqls createuser`.
-- Qualified: `gqls User.email` — when `User` exactly names a schema type (any
-  case), results are hard-filtered to that type's members; otherwise it falls
-  back to fuzzy-matching the whole query.
+- Qualified: `gqls User.email` — when `User` names a schema type (any case,
+  misspellings snap to the unique closest type), results are hard-filtered to
+  that type's members; otherwise it falls back to fuzzy-matching the whole
+  query.
 - Kind: `gqls createUser -k mutation` — object, field, query, mutation, enum,
   scalar, input_object, interface, union, directive (plurals ok). A bad kind
   lists the valid ones.

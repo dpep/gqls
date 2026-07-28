@@ -99,7 +99,7 @@ fn subsequence_score(query: &str, name: &str) -> Option<f64> {
 /// `None` if it exceeds a small budget. Catches transposed/typo'd queries
 /// (`usre` → `user`) that aren't a clean subsequence. Skipped for very short
 /// queries, where a tiny edit distance would match almost anything.
-fn typo_distance(q: &str, name_lower: &str) -> Option<usize> {
+pub(crate) fn typo_distance(q: &str, name_lower: &str) -> Option<usize> {
     let a: Vec<char> = q.chars().collect();
     if a.len() < 3 {
         return None;

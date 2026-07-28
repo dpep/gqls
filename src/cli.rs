@@ -367,11 +367,21 @@ pub fn run() -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
 
-    // A `Type.field` query whose qualifier exactly names a schema type becomes
-    // a hard filter to that type's members, in every search mode.
-    let parent = search::exact_parent(query, &records);
+    // A `Type.field` query whose qualifier names a schema type — exactly, or
+    // as its unique closest misspelling — becomes a hard filter to that type's
+    // members, in every search mode. A silent correction would be confusing,
+    // so that case is announced at normal verbosity.
+    let parent = search::parent_filter(query, &records);
     if let Some(p) = parent {
-        crate::detail!("qualifier {p:?} names a type — restricting to its members");
+        let (_, qualifier) = search::score::parse_qualified(query);
+        if qualifier.is_some_and(|q| q.eq_ignore_ascii_case(p)) {
+            crate::detail!("qualifier {p:?} names a type — restricting to its members");
+        } else {
+            crate::status!(
+                "no type named {:?} — filtering to the closest match, {p:?}",
+                qualifier.unwrap_or_default()
+            );
+        }
     }
 
     if cli.resolve {
