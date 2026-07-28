@@ -1,41 +1,115 @@
 ---
 name: gqls
-description: Search a GraphQL schema (fuzzy or semantic) or jump to a field's graphql-ruby resolver, using the `gqls` CLI. Use when locating a type/field/argument/directive in a GraphQL schema (an SDL file, an introspection JSON dump, or a live endpoint), or finding where a field resolves in code — instead of grepping SDL by hand.
+description: Search a GraphQL schema — find a type, field, argument, or directive by fuzzy name or by meaning, or jump to a field's graphql-ruby resolver — with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", or navigating a large schema (an SDL file, an introspection JSON dump, or a live endpoint). Prefer over grep/rg for schema lookups — it ranks the intended match first and handles camelCase/snake_case/typos. Not for raw text search.
 ---
 
-# gqls — GraphQL schema search
+# gqls — search a GraphQL schema
 
-Use the `gqls` CLI to navigate GraphQL schemas instead of grepping SDL. It ranks
-the intended match first and handles camelCase/snake_case, abbreviations, and typos.
+`gqls` is a GraphQL schema *navigation* engine: give it a name or a natural-
+language phrase and it returns the ranked match — a type, field, argument, enum
+value, or directive — not every textual hit. Reach for it whenever the question
+is "where is this in the schema?" Use `grep`/`rg` for raw text; gqls for the
+schema.
 
-## Availability (check before first use)
-If `gqls` isn't on PATH (`command -v gqls` fails), offer to install it:
-- `brew install dpep/tools/gqls` — includes semantic search (uses the system `onnxruntime` keg)
-- or `cargo install gqls-cli` — add `--features semantic` for semantic search
+## Use it like this
 
-Semantic search (`-s`) needs a semantic build. The Homebrew build has it; a plain
-`cargo install gqls-cli` does not — running `-s` on such a build prints exactly how
-to enable it. Installed binary lands at `/opt/homebrew/bin/gqls` (brew) or
-`~/.cargo/bin/gqls` (cargo).
+Ask for JSON so you can act on the result:
 
-## When to use
-- "where is the X type/field", "find the mutation that …", "what returns Y"
-- searching a large schema (an SDL file, a `schema.json` introspection dump, or a live URL)
-- "jump to the resolver for `<field>`" in a graphql-ruby server
+```sh
+gqls <query> <source> --json
+```
 
-## Commands
-- Fuzzy search: `gqls <query> [source]` — abbreviations/typos ok; `Type.field`
-  queries boost that type's field; `-k <kind>` restricts (object, field,
-  mutation, enum, … plurals ok).
-- Source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection dump, or an
-  `http(s)://…/graphql` URL. Omit it to auto-discover a schema in the cwd.
-- Semantic (meaning-based): `gqls '<natural language>' -s [source]`.
-- Resolver jump: `gqls <field> <source> -R --code <server-dir>` (needs `rq`).
-- Machine output: add `-j` (pretty JSON) or `-J` (ndjson). Status lines go to
-  stderr, so JSON pipes cleanly into `jq`.
+`<source>` is a `.graphql`/`.graphqls` SDL file, a `.json` introspection dump,
+or an `http(s)://…/graphql` URL (introspected live). Omit it and gqls finds a
+schema in the current directory tree, printing which one it picked. Apollo
+Federation v2 subgraph SDL parses directly, and auto-discovery prefers a
+composed `supergraph*` schema when several exist.
+
+Each result is an object:
+
+```json
+{ "path": "Query.user", "name": "user", "kind": "query", "parent": "Query",
+  "type_ref": "User", "args": ["id: ID!"], "score": 1060 }
+```
+
+`path` is the qualified location (`Type.field`), `type_ref` the return/field
+type, `args` the argument signatures — usually enough to confirm a match without
+opening the schema. Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson`
+pipe cleanly into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
+
+## Scope when you know more
+
+- Fuzzy / abbreviation / typo: `gqls usr`, `gqls usre`, `gqls createuser`.
+- Qualified: `gqls User.email` — matches the leaf and boosts that type's field.
+- Kind: `gqls createUser -k mutation` — object, field, query, mutation, enum,
+  scalar, input_object, interface, union, directive (plurals ok). A bad kind
+  lists the valid ones.
+- Count: `-l 1` for just the top hit, larger to survey (default 20).
+
+```sh
+gqls repository schema.json -k object -l 5 --json
+gqls user https://api.example.com/graphql --json     # live introspection
+gqls user https://api/graphql -H "Authorization: Bearer $TOKEN" --json   # auth'd
+```
+
+For a live endpoint, add auth with `-H "Name: Value"` (repeatable). Remote
+responses are cached ~1h (`localhost` is never cached); `--refresh` forces a
+fresh fetch, `--clear-cache` wipes the lot.
+
+## Semantic search (automatic)
+
+gqls combines fuzzy and semantic ranking by default — meaning-based matches
+surface alongside name matches, so "what does X" phrases just work, no flag
+needed:
+
+```sh
+gqls 'cancel a subscription' <source>     # combined fuzzy + semantic
+gqls 'delete a repository' --semantic      # force semantic-only
+gqls user --fuzzy                          # force fuzzy-only (skip semantic)
+```
+
+Semantic ranking uses a local model (all-MiniLM-L6-v2, ONNX). The first time
+gqls sees a schema it returns fuzzy results immediately and embeds the vectors
+in the background, so the next run is combined and instant; `gqls --warm
+<source>` pre-embeds up front. It ships in the default `cargo install` and the
+Homebrew build (a `--no-default-features` build is fuzzy-only).
+
+## Jump to the resolver (graphql-ruby)
+
+Find a field, then jump to the code that implements it, via `rq`:
+
+```sh
+gqls Query.user <source> -R --code <server-dir>
+# -> app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
+```
+
+Tries graphql-ruby conventions (resolver class, type method, mutation class) and
+ranks the candidates. Needs the `rq` CLI installed and a server dir that's a git
+repo `rq` has indexed.
+
+## Installing / updating the binary
+
+If `gqls` isn't on PATH, install it, then retry:
+
+```sh
+brew install dpep/tools/gqls    # macOS/Homebrew — includes semantic search
+```
+
+No Homebrew?
+
+```sh
+cargo install gqls-cli                          # semantic search included
+cargo install gqls-cli --no-default-features    # lean, fuzzy-only
+```
+
+To update: `brew upgrade dpep/tools/gqls` (or re-run the `cargo install` line).
+Source + issues: <https://github.com/dpep/gqls>.
 
 ## Notes
-- Prefer `gqls` over `rg`/grep for "find this in the schema" questions.
+
+- The resolver jump (`-R`) is graphql-ruby-specific and shells out to `rq`.
+- `-v`/`--verbose` shows diagnostics (cache hits, rq candidates, why the model
+  loaded or fell back); `-q`/`--quiet` silences the stderr status lines.
 - `gqls -h` prints full help with examples.
 
 To install this skill for Claude Code, copy it to `~/.claude/skills/gqls/SKILL.md`.
