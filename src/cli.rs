@@ -155,8 +155,7 @@ struct Match<'a> {
 
 /// All fuzzy hits above the quality cutoff, best first — the caller truncates
 /// to the display limit, so the length is the true match count. The `bool` is
-/// [`search::has_exact`]: whether some hit matches the query's leaf name
-/// exactly.
+/// [`search::named_hit`]: whether some hit names the query's leaf.
 fn fuzzy_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
@@ -164,7 +163,7 @@ fn fuzzy_matches<'a>(
     parent: Option<&str>,
 ) -> (Vec<Match<'a>>, bool) {
     let hits = search::search(query, records, kind, parent);
-    let exact = search::has_exact(query, &hits);
+    let named = search::named_hit(query, &hits);
     let matches = hits
         .into_iter()
         .map(|h| Match {
@@ -172,7 +171,7 @@ fn fuzzy_matches<'a>(
             score: h.score as f64,
         })
         .collect();
-    (matches, exact)
+    (matches, named)
 }
 
 #[cfg(feature = "_semantic")]
@@ -447,16 +446,19 @@ pub fn run() -> Result<()> {
     } else {
         // Default: combine fuzzy + semantic when the cache is warm; when cold,
         // return fuzzy now and warm the vectors in the background for next time.
-        // An exact name hit skips the combine outright — the query *named* the
-        // entity, so semantic ranking would only append lookalike filler below
-        // it (and cost the model load).
-        let (mut fuzzy, exact) = fuzzy_matches(query, &records, kind, parent);
+        // A strong name hit (exact, or the leaf whole at a word boundary —
+        // `name` → `lastName`) skips the combine outright: the user typed a
+        // word that exists, so semantic ranking would only append lookalike
+        // filler below it (and cost the model load).
+        let (mut fuzzy, named) = fuzzy_matches(query, &records, kind, parent);
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
         {
-            if exact && !loose {
-                crate::detail!("exact name match — semantic ranking skipped (--semantic to force)");
+            if named && !loose {
+                crate::detail!(
+                    "strong name match — semantic ranking skipped (--semantic to force)"
+                );
                 (fuzzy, total)
             } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
                 let semantic = semantic_matches(query, &records, kind, parent, &cli);
@@ -472,7 +474,7 @@ pub fn run() -> Result<()> {
         }
         #[cfg(not(feature = "_semantic"))]
         {
-            let _ = (&cli.model, cli.refresh, exact, loose);
+            let _ = (&cli.model, cli.refresh, named, loose);
             (fuzzy, total)
         }
     };

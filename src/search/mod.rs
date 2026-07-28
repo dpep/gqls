@@ -75,13 +75,26 @@ pub fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<String>
         .then(|| format!("{first}.{second}"))
 }
 
-/// Whether any hit's name equals the query's leaf exactly (case-insensitive)
-/// — the signal that the query *named* a specific entity rather than described
-/// one, so meaning-based ranking would only append lookalike filler.
-pub fn has_exact(query: &str, hits: &[Hit]) -> bool {
+/// Whether some hit *names* the query's leaf: equal to it, or containing it
+/// whole at a camelCase/underscore word boundary (`name` → `lastName`,
+/// `User.name` → `User.fullName`). That's the scorer's strongest tier short
+/// of exact — the signal that the user typed a word that really exists, so
+/// meaning-based ranking would only append lookalike filler below it.
+/// (GraphQL names are ASCII by spec, so byte and char indices agree.)
+pub fn named_hit(query: &str, hits: &[Hit]) -> bool {
     let (leaf, _) = score::parse_qualified(query);
-    hits.iter()
-        .any(|h| h.record.name.eq_ignore_ascii_case(leaf))
+    let leaf = leaf.to_ascii_lowercase();
+    if leaf.is_empty() {
+        return false;
+    }
+    hits.iter().any(|h| {
+        let lower = h.record.name.to_ascii_lowercase();
+        let chars: Vec<char> = h.record.name.chars().collect();
+        let boundary = score::boundaries(&chars);
+        lower
+            .match_indices(&leaf)
+            .any(|(i, _)| boundary.get(i).copied().unwrap_or(false))
+    })
 }
 
 /// Fuzzy-search `records` for `query`, optionally restricted to one `kind`
@@ -216,16 +229,29 @@ mod tests {
     }
 
     #[test]
-    fn has_exact_matches_the_leaf_name_only() {
-        let records = vec![
-            rec("name", Some("User"), Kind::Field),
-            rec("username", Some("Query"), Kind::Query),
-        ];
+    fn named_hit_accepts_exact_and_boundary_words() {
+        let records = vec![rec("name", Some("User"), Kind::Field)];
         let hits = search("User.name", &records, None, None);
-        assert!(has_exact("User.name", &hits));
-        assert!(has_exact("user.NAME", &hits));
-        let near = search("User.nam", &records, None, None);
-        assert!(!has_exact("User.nam", &near));
+        assert!(named_hit("User.name", &hits));
+        assert!(named_hit("user.NAME", &hits));
+
+        // the leaf appearing whole at a word boundary also counts —
+        // `User.name` against a schema with only lastName/fullName
+        let variants = vec![
+            rec("lastName", Some("User"), Kind::Field),
+            rec("fullName", Some("User"), Kind::Field),
+        ];
+        let hits = search("User.name", &variants, None, Some("User"));
+        assert!(named_hit("User.name", &hits));
+    }
+
+    #[test]
+    fn named_hit_rejects_mid_word_and_scattered_matches() {
+        let records = vec![rec("accountant", Some("User"), Kind::Field)];
+        // `count` sits mid-word in accountant — a fuzzy match, not a naming
+        let hits = search("count", &records, None, None);
+        assert!(!hits.is_empty());
+        assert!(!named_hit("count", &hits));
     }
 
     #[test]

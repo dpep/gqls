@@ -255,7 +255,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 
 /// Mark word-boundary positions: index 0, anything after `_`/non-alphanumeric,
 /// and camelCase humps (lower→Upper, and the last cap of an ACRONYMWord run).
-fn boundaries(chars: &[char]) -> Vec<bool> {
+pub(crate) fn boundaries(chars: &[char]) -> Vec<bool> {
     let mut out = vec![false; chars.len()];
     for i in 0..chars.len() {
         let c = chars[i];
