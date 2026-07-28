@@ -17,12 +17,13 @@ use crate::model::{Kind, Roots, SchemaRecord};
 /// Overall per-request deadline for live introspection (connect + read) — a
 /// hung or slow endpoint fails instead of blocking gqls forever.
 const TIMEOUT_SECS: u64 = 30;
-/// Default introspection-response cache lifetime; see [`ttl`].
-const DEFAULT_TTL: Duration = Duration::from_secs(5 * 60);
+/// Default introspection-response cache lifetime for remote endpoints; see [`ttl`].
+const DEFAULT_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// POST the introspection query to `url` and flatten the result. Honors
-/// `opts.headers` (e.g. an `Authorization` token) and a short TTL response
-/// cache so repeated queries against the same endpoint don't refetch all day.
+/// `opts.headers` (e.g. an `Authorization` token) and a TTL response cache
+/// (1h for remote endpoints, never for localhost) so repeated queries against a
+/// remote endpoint don't refetch all day.
 pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let raw = fetch_or_cached(url, opts)?;
     let body: Value = serde_json::from_slice(&raw)
@@ -46,10 +47,13 @@ pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
 /// younger than the [`ttl`], otherwise a fresh POST (which is then cached).
 /// `opts.refresh` skips the cache read and forces a live fetch.
 fn fetch_or_cached(url: &str, opts: &LoadOptions) -> Result<Vec<u8>> {
-    let path = cache_path(url);
+    let ttl = ttl(url);
+    // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
+    // neither read nor write, so a schema you're actively editing is never stale.
+    let path = (!ttl.is_zero()).then(|| cache_path(url)).flatten();
     if !opts.refresh {
         if let Some(p) = path.as_deref() {
-            if let Some(bytes) = read_if_fresh(p, ttl()) {
+            if let Some(bytes) = read_if_fresh(p, ttl) {
                 crate::detail!("introspection cache hit: {}", p.display());
                 return Ok(bytes);
             }
@@ -106,13 +110,40 @@ fn read_if_fresh(path: &Path, ttl: Duration) -> Option<Vec<u8>> {
     (age <= ttl).then(|| std::fs::read(path).ok()).flatten()
 }
 
-/// Introspection-cache lifetime — [`DEFAULT_TTL`] (5 min), overridable with
-/// `GQLS_INTROSPECT_TTL` (seconds; `0` effectively disables the cache).
-fn ttl() -> Duration {
-    std::env::var("GQLS_INTROSPECT_TTL")
+/// Effective cache lifetime for `url`: `GQLS_INTROSPECT_TTL` (seconds) if set,
+/// else zero for localhost — you're likely editing that schema, so always fetch
+/// fresh — and [`DEFAULT_TTL`] (1h) for remote endpoints.
+fn ttl(url: &str) -> Duration {
+    if let Some(secs) = std::env::var("GQLS_INTROSPECT_TTL")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .map_or(DEFAULT_TTL, Duration::from_secs)
+    {
+        return Duration::from_secs(secs);
+    }
+    if is_localhost(url) {
+        return Duration::ZERO;
+    }
+    DEFAULT_TTL
+}
+
+/// Whether `url` points at the local machine (loopback), where the schema is
+/// probably under active development and should never be served from cache.
+fn is_localhost(url: &str) -> bool {
+    let after_scheme = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    // Pull the host out of `host:port` / `[ipv6]:port` / bare host.
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    let host = host.to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "::1"
+        || host == "0.0.0.0"
+        || host.starts_with("127.")
 }
 
 /// Delete all cached introspection responses; returns how many were removed.
@@ -339,3 +370,35 @@ fragment TypeRef on __Type {
   ofType { kind name ofType { kind name ofType { kind name } } } } } } }
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::is_localhost;
+
+    #[test]
+    fn localhost_urls_are_detected() {
+        for url in [
+            "http://localhost:4000/graphql",
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.2/graphql",
+            "http://[::1]:4000/graphql",
+            "http://0.0.0.0:3000",
+            "https://api.localhost/graphql",
+            "http://user:pass@localhost:4000/",
+        ] {
+            assert!(is_localhost(url), "{url} should be localhost");
+        }
+    }
+
+    #[test]
+    fn remote_urls_are_not_localhost() {
+        for url in [
+            "https://countries.trevorblades.com/",
+            "https://api.github.com/graphql",
+            "https://mylocalhost.com/graphql",
+            "http://localhost.evil.com/graphql",
+        ] {
+            assert!(!is_localhost(url), "{url} should not be localhost");
+        }
+    }
+}
