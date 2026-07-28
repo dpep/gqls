@@ -379,6 +379,17 @@ pub fn run() -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
 
+    // `User name` — a two-word query whose first word exactly names a type —
+    // is the qualified form typed with a space. Rewrite it, but remember the
+    // loose intent: unlike the dot form, an exact hit here keeps the semantic
+    // combine on ("around this", not "exactly this").
+    let spaced = search::spaced_qualifier(query, &records);
+    let loose = spaced.is_some();
+    let query = spaced.as_deref().unwrap_or(query);
+    if loose {
+        crate::detail!("two-word query names a type — searching as {query:?}");
+    }
+
     // A `Type.field` query whose qualifier names a schema type — exactly, or
     // as its unique closest misspelling — becomes a hard filter to that type's
     // members, in every search mode. A silent correction would be confusing,
@@ -444,7 +455,7 @@ pub fn run() -> Result<()> {
         fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
         {
-            if exact {
+            if exact && !loose {
                 crate::detail!("exact name match — semantic ranking skipped (--semantic to force)");
                 (fuzzy, total)
             } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
@@ -461,7 +472,7 @@ pub fn run() -> Result<()> {
         }
         #[cfg(not(feature = "_semantic"))]
         {
-            let _ = (&cli.model, cli.refresh, exact);
+            let _ = (&cli.model, cli.refresh, exact, loose);
             (fuzzy, total)
         }
     };

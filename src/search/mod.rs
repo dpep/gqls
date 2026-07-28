@@ -55,6 +55,26 @@ pub fn parent_filter<'a>(query: &str, records: &'a [SchemaRecord]) -> Option<&'a
     }
 }
 
+/// Rewrite a two-word query whose first word exactly names a schema type into
+/// the qualified form: `User name` → `User.name`. The space (vs the dot) is
+/// kept as an intent signal by the caller — it means "around this", so the
+/// semantic combine stays on where a dot-typed exact hit would skip it.
+/// `None` for anything else (phrases, dots, no matching type).
+pub fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<String> {
+    if query.contains('.') {
+        return None;
+    }
+    let mut words = query.split_whitespace();
+    let (Some(first), Some(second), None) = (words.next(), words.next(), words.next()) else {
+        return None;
+    };
+    records
+        .iter()
+        .filter_map(|r| r.parent.as_deref())
+        .any(|p| p.eq_ignore_ascii_case(first))
+        .then(|| format!("{first}.{second}"))
+}
+
 /// Whether any hit's name equals the query's leaf exactly (case-insensitive)
 /// — the signal that the query *named* a specific entity rather than described
 /// one, so meaning-based ranking would only append lookalike filler.
@@ -173,6 +193,26 @@ mod tests {
         let hits = search("Company.employe", &records, None, Some("Company"));
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.path, "Company.employees");
+    }
+
+    #[test]
+    fn spaced_qualifier_rewrites_type_plus_word() {
+        let records = vec![
+            rec("name", Some("User"), Kind::Field),
+            rec("lastName", Some("User"), Kind::Field),
+        ];
+        assert_eq!(
+            spaced_qualifier("User name", &records).as_deref(),
+            Some("User.name")
+        );
+        assert_eq!(
+            spaced_qualifier("user name", &records).as_deref(),
+            Some("user.name")
+        );
+        // phrases, dots, and non-type first words stay untouched
+        assert_eq!(spaced_qualifier("cancel a subscription", &records), None);
+        assert_eq!(spaced_qualifier("User.name", &records), None);
+        assert_eq!(spaced_qualifier("employee summary", &records), None);
     }
 
     #[test]
