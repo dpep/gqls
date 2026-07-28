@@ -65,7 +65,8 @@ fresh fetch, `--clear-cache` wipes the lot.
 
 gqls combines fuzzy and semantic ranking by default — meaning-based matches
 surface alongside name matches, so "what does X" phrases just work, no flag
-needed:
+needed. An exact name match skips the semantic combine (you named the entity;
+lookalike fields would just pad the list) — `--semantic` forces it back on:
 
 ```sh
 gqls 'cancel a subscription' <source>     # combined fuzzy + semantic

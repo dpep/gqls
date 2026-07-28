@@ -55,6 +55,15 @@ pub fn parent_filter<'a>(query: &str, records: &'a [SchemaRecord]) -> Option<&'a
     }
 }
 
+/// Whether any hit's name equals the query's leaf exactly (case-insensitive)
+/// — the signal that the query *named* a specific entity rather than described
+/// one, so meaning-based ranking would only append lookalike filler.
+pub fn has_exact(query: &str, hits: &[Hit]) -> bool {
+    let (leaf, _) = score::parse_qualified(query);
+    hits.iter()
+        .any(|h| h.record.name.eq_ignore_ascii_case(leaf))
+}
+
 /// Fuzzy-search `records` for `query`, optionally restricted to one `kind`
 /// and/or one enclosing `parent` type. Returns every hit above the quality
 /// cutoff, best first — callers truncate to their own limit, so the length is
@@ -164,6 +173,19 @@ mod tests {
         let hits = search("Company.employe", &records, None, Some("Company"));
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.path, "Company.employees");
+    }
+
+    #[test]
+    fn has_exact_matches_the_leaf_name_only() {
+        let records = vec![
+            rec("name", Some("User"), Kind::Field),
+            rec("username", Some("Query"), Kind::Query),
+        ];
+        let hits = search("User.name", &records, None, None);
+        assert!(has_exact("User.name", &hits));
+        assert!(has_exact("user.NAME", &hits));
+        let near = search("User.nam", &records, None, None);
+        assert!(!has_exact("User.nam", &near));
     }
 
     #[test]

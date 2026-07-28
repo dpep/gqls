@@ -154,20 +154,25 @@ struct Match<'a> {
 }
 
 /// All fuzzy hits above the quality cutoff, best first — the caller truncates
-/// to the display limit, so the length is the true match count.
+/// to the display limit, so the length is the true match count. The `bool` is
+/// [`search::has_exact`]: whether some hit matches the query's leaf name
+/// exactly.
 fn fuzzy_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
-) -> Vec<Match<'a>> {
-    search::search(query, records, kind, parent)
+) -> (Vec<Match<'a>>, bool) {
+    let hits = search::search(query, records, kind, parent);
+    let exact = search::has_exact(query, &hits);
+    let matches = hits
         .into_iter()
         .map(|h| Match {
             record: h.record,
             score: h.score as f64,
         })
-        .collect()
+        .collect();
+    (matches, exact)
 }
 
 #[cfg(feature = "_semantic")]
@@ -177,7 +182,6 @@ fn semantic_matches<'a>(
     kind: Option<Kind>,
     parent: Option<&str>,
     cli: &Cli,
-    prepared: Option<crate::semantic::Prepared>,
 ) -> Vec<Match<'a>> {
     crate::semantic::search(
         query,
@@ -187,7 +191,6 @@ fn semantic_matches<'a>(
         cli.limit,
         cli.model.as_deref(),
         cli.refresh,
-        prepared,
     )
     .into_iter()
     .map(|(score, record)| Match { record, score })
@@ -329,17 +332,6 @@ pub fn run() -> Result<()> {
         None => None,
     };
 
-    // The model load + query embed need no schema, so on runs that may rank
-    // semantically, start them on a thread now — they overlap the schema
-    // parse and fuzzy scoring below. A run that ends fuzzy-only (cold vector
-    // cache) just drops the handle; the thread dies with the process.
-    #[cfg(feature = "_semantic")]
-    let prepared: Option<std::thread::JoinHandle<crate::semantic::Prepared>> = cli
-        .query
-        .as_deref()
-        .filter(|_| !cli.fuzzy && !cli.resolve && !cli.warm)
-        .map(|q| crate::semantic::spawn_prepare(q, cli.model.as_deref()));
-
     // The schema source. With `--warm` and no explicit source, the sole
     // positional is the schema (there's no query to warm), so `gqls --warm
     // schema.graphql` — and the background spawn — target the right file.
@@ -415,15 +407,14 @@ pub fn run() -> Result<()> {
     // can say how much a raised -l would reveal. Semantic-only mode has no
     // meaningful total (cosine ranks every record), so it never shows one.
     let (matches, total): (Vec<Match>, usize) = if cli.fuzzy {
-        let mut fuzzy = fuzzy_matches(query, &records, kind, parent);
+        let (mut fuzzy, _) = fuzzy_matches(query, &records, kind, parent);
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         (fuzzy, total)
     } else if cli.semantic {
         #[cfg(feature = "_semantic")]
         {
-            let prep = prepared.and_then(|h| h.join().ok());
-            let matches = semantic_matches(query, &records, kind, parent, &cli, prep);
+            let matches = semantic_matches(query, &records, kind, parent, &cli);
             let total = matches.len();
             (matches, total)
         }
@@ -438,14 +429,19 @@ pub fn run() -> Result<()> {
     } else {
         // Default: combine fuzzy + semantic when the cache is warm; when cold,
         // return fuzzy now and warm the vectors in the background for next time.
-        let mut fuzzy = fuzzy_matches(query, &records, kind, parent);
+        // An exact name hit skips the combine outright — the query *named* the
+        // entity, so semantic ranking would only append lookalike filler below
+        // it (and cost the model load).
+        let (mut fuzzy, exact) = fuzzy_matches(query, &records, kind, parent);
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
         {
-            if crate::semantic::is_cached(&records, cli.model.as_deref()) {
-                let prep = prepared.and_then(|h| h.join().ok());
-                let semantic = semantic_matches(query, &records, kind, parent, &cli, prep);
+            if exact {
+                crate::detail!("exact name match — semantic ranking skipped (--semantic to force)");
+                (fuzzy, total)
+            } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
+                let semantic = semantic_matches(query, &records, kind, parent, &cli);
                 (combine(fuzzy, semantic, cli.limit), total)
             } else {
                 spawn_background_warm(&source, &cli.header);
@@ -458,7 +454,7 @@ pub fn run() -> Result<()> {
         }
         #[cfg(not(feature = "_semantic"))]
         {
-            let _ = (&cli.model, cli.refresh);
+            let _ = (&cli.model, cli.refresh, exact);
             (fuzzy, total)
         }
     };

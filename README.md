@@ -59,9 +59,11 @@ By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal R
 
 ```sh
 gqls 'delete a repository'    # a phrase — semantic dominates
-gqls user                     # an identifier — fuzzy leads, semantic fills in
+gqls usr                      # an identifier — fuzzy leads, semantic fills in
 gqls user --semantic          # force semantic only  (--fuzzy forces fuzzy only)
 ```
+
+When the query matches a name *exactly* (`User.name`), the combine is skipped — you named the entity, so meaning-based lookalikes would only pad the list. `--semantic` forces it back on.
 
 Per-record vectors are cached, keyed by schema content and model. The first time gqls sees a schema it returns fuzzy results immediately and embeds in the background — so the next run is combined and instant (GitHub's schema: ~40s to embed once, then ~0.3s warm queries). `GQLS_NO_AUTOWARM=1` disables the background embed. Editing the schema re-embeds on its own; `--refresh` forces a re-embed, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and Homebrew have it; `--no-default-features` is fuzzy-only.
 

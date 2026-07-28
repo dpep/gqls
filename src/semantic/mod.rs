@@ -18,39 +18,15 @@ use crate::model::{Kind, SchemaRecord};
 use embed::{default_embedder, Embedder};
 use mrl::{compress_matryoshka_vector, cosine_similarity};
 
-/// The heavy, schema-independent half of a semantic query: the loaded model
-/// and the embedded query vector. Split out so a caller can compute it on a
-/// background thread while the schema parses and fuzzy scoring runs.
-pub struct Prepared {
-    embedder: Box<dyn Embedder>,
-    query_vec: Vec<f32>,
-}
-
-/// Load the embedding model and embed the query — everything semantic search
-/// needs that doesn't depend on the schema.
-pub fn prepare(query: &str, model: Option<&str>) -> Prepared {
-    let embedder = default_embedder(model);
-    let query_vec = compress_matryoshka_vector(&embedder.embed(query));
-    Prepared {
-        embedder,
-        query_vec,
-    }
-}
-
-/// Run [`prepare`] on a background thread. The caller joins when semantic
-/// ranking actually happens; on runs that end fuzzy-only (cold vector cache)
-/// the handle is simply dropped and the thread dies with the process.
-pub fn spawn_prepare(query: &str, model: Option<&str>) -> std::thread::JoinHandle<Prepared> {
-    let query = query.to_string();
-    let model = model.map(String::from);
-    std::thread::spawn(move || prepare(&query, model.as_deref()))
-}
-
 /// Embed the query and each record, rank by cosine. Returns `(score, record)`
 /// pairs, best first — the caller formats them exactly like fuzzy hits, so
-/// `--json` / `--ndjson` work identically in both modes. `prepared` reuses a
-/// model+query embed computed concurrently (see [`spawn_prepare`]).
-#[allow(clippy::too_many_arguments)]
+/// `--json` / `--ndjson` work identically in both modes.
+///
+/// The model load is deliberately synchronous, not overlapped on a thread:
+/// ONNX Runtime's C++ one-time init segfaults if the process exits mid-load
+/// (a thread dropped on a fuzzy-only exit), and joining always would erase
+/// the overlap. The exact-match skip in the CLI avoids the cost where it
+/// matters instead.
 pub fn search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
@@ -59,12 +35,8 @@ pub fn search<'a>(
     limit: usize,
     model: Option<&str>,
     refresh: bool,
-    prepared: Option<Prepared>,
 ) -> Vec<(f64, &'a SchemaRecord)> {
-    let Prepared {
-        embedder,
-        query_vec,
-    } = prepared.unwrap_or_else(|| prepare(query, model));
+    let embedder = default_embedder(model);
     // On the good path (onnx) this is verbose-only noise; a fall back to the
     // hash embedder means weaker results, so surface that unconditionally.
     if embedder.kind() == "onnx" {
@@ -162,6 +134,7 @@ pub fn search<'a>(
         return Vec::new();
     }
 
+    let query_vec = compress_matryoshka_vector(&embedder.embed(query));
     let mut hits: Vec<(f64, &SchemaRecord)> = records
         .iter()
         .zip(&vectors)
@@ -214,6 +187,6 @@ pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
 /// Embed + cache every record's vector without running a real query — pre-warms
 /// the cache so the first search is instant. Returns the record count.
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
-    let _ = search("", records, None, None, 0, model, refresh, None);
+    let _ = search("", records, None, None, 0, model, refresh);
     records.len()
 }
