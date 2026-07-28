@@ -47,9 +47,8 @@ pub fn default_embedder(model: Option<&str>) -> Box<dyn Embedder> {
         None => {
             ANNOUNCED.call_once(|| {
                 log::warn!(
-                    "embedding model unavailable — using the built-in hash fallback \
-                     (reduced semantic accuracy). Pass --model <dir|.onnx|org/name>, \
-                     or run with -v to see why the model didn't load."
+                    "embedding model failed to load — using hash fallback \
+                     (--model <dir|.onnx|org/name> to point at one)"
                 )
             });
             Box::new(HashEmbedder::new())

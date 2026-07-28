@@ -61,8 +61,7 @@ pub fn search<'a>(
         crate::detail!("semantic search via onnx embeddings");
     } else {
         crate::status!(
-            "semantic search via {} embeddings — model unavailable, results are weaker (-v for why)",
-            embedder.kind()
+            "embedding model unavailable — semantic results will be weaker (-v for why)"
         );
     }
 
@@ -80,23 +79,21 @@ pub fn search<'a>(
     let vectors = match cached {
         Some(v) => {
             if let Some(p) = cache_path.as_deref() {
-                crate::detail!("vector cache hit: {}", p.display());
+                crate::detail!("vector cache hit: {}", crate::paths::display(p));
                 cache::touch(p); // LRU: mark this schema as recently used
             }
             v
         }
         None => {
             if let Some(p) = cache_path.as_deref() {
-                crate::detail!("vector cache miss: {}", p.display());
+                crate::detail!("vector cache miss: {}", crate::paths::display(p));
             }
             use rayon::prelude::*;
             use std::io::IsTerminal;
             use std::sync::atomic::{AtomicUsize, Ordering};
 
             let total = records.len();
-            crate::status!(
-                "embedding {total} records (one-time, then cached; a large schema can take ~a minute)…"
-            );
+            crate::status!("embedding {total} records (one-time; may take a minute)…");
             let done = AtomicUsize::new(0);
 
             // One embedder per worker thread, built on first use and reused for

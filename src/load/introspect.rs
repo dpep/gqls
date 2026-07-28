@@ -63,12 +63,12 @@ fn fetch_or_cached(url: &str, opts: &LoadOptions) -> Result<Vec<u8>> {
     if !opts.refresh {
         if let Some(p) = path.as_deref() {
             if let Some(bytes) = read_if_fresh(p, ttl) {
-                crate::detail!("introspection cache hit: {}", p.display());
+                crate::detail!("introspection cache hit: {}", crate::paths::display(p));
                 return Ok(bytes);
             }
         }
     }
-    crate::detail!("introspecting {url} (live)");
+    crate::detail!("introspecting {url}");
     let bytes = fetch(url, &opts.headers)?;
     if let Some(p) = path.as_deref() {
         if let Some(dir) = p.parent() {

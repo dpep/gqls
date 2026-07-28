@@ -363,7 +363,7 @@ pub fn run() -> Result<()> {
         #[cfg(feature = "_semantic")]
         {
             let n = crate::semantic::warm(&records, cli.model.as_deref(), cli.refresh);
-            crate::status!("warmed {n} record vector(s) into the cache");
+            crate::status!("cached vectors for {n} record(s)");
             return Ok(());
         }
         #[cfg(not(feature = "_semantic"))]
@@ -401,7 +401,7 @@ pub fn run() -> Result<()> {
             crate::detail!("qualifier {p:?} names a type — restricting to its members");
         } else {
             crate::status!(
-                "no type named {:?} — filtering to the closest match, {p:?}",
+                "no type named {:?} — using closest match {p:?}",
                 qualifier.unwrap_or_default()
             );
         }
@@ -464,8 +464,8 @@ pub fn run() -> Result<()> {
             } else {
                 spawn_background_warm(&source, &cli.header);
                 crate::status!(
-                    "warming the semantic index in the background — the next run also \
-                     ranks by meaning (--semantic to embed now, --fuzzy to skip)"
+                    "building the semantic index in the background; next run ranks by \
+                     meaning (--semantic to wait, --fuzzy to skip)"
                 );
                 (fuzzy, total)
             }
@@ -560,7 +560,7 @@ fn run_resolve(
     output: Output,
 ) -> Result<()> {
     if code.is_none() {
-        crate::status!("no --code given; resolving against rq's index for the current directory");
+        crate::status!("searching code in the current directory (--code to search elsewhere)");
     }
     let Some(top) = search::search(query, records, kind, parent)
         .into_iter()
@@ -585,7 +585,7 @@ fn run_resolve(
         Output::Text => {
             if hits.is_empty() {
                 crate::status!(
-                    "no code definition found for {} (tried graphql-ruby rq candidates)",
+                    "no code definition found for {} (-v shows what was tried)",
                     top.record.path
                 );
             }

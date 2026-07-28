@@ -12,6 +12,16 @@ pub fn cache_dir() -> Option<PathBuf> {
     Some(base.join("gqls"))
 }
 
+/// Render a path for display, shortening the home directory to `~`.
+pub fn display(p: &std::path::Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        if let Ok(rest) = p.strip_prefix(&home) {
+            return format!("~/{}", rest.display());
+        }
+    }
+    p.display().to_string()
+}
+
 /// Directory for ephemeral files (the background-warm single-flight lockfiles).
 /// The system temp dir so the OS reaps them — they never litter the cache. It's
 /// per-user on macOS (`$TMPDIR`) and `/tmp` on Linux, and stable within a login,

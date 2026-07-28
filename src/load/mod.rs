@@ -88,9 +88,7 @@ pub fn discover() -> Result<String> {
         .count();
     crate::detail!("using schema {}", rel(&root, &chosen.path));
     if elsewhere > 0 {
-        crate::detail!(
-            "{elsewhere} other schema file(s) found elsewhere — pass a path to pick one"
-        );
+        crate::detail!("{elsewhere} other schema file(s) elsewhere — pass a path to pick one");
     }
 
     Ok(chosen.path.to_string_lossy().into_owned())
