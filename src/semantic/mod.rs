@@ -25,6 +25,7 @@ pub fn search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
+    parent: Option<&str>,
     limit: usize,
     model: Option<&str>,
     refresh: bool,
@@ -132,6 +133,13 @@ pub fn search<'a>(
         .iter()
         .zip(&vectors)
         .filter(|(r, _)| kind.is_none_or(|k| r.kind == k))
+        .filter(|(r, _)| {
+            parent.is_none_or(|p| {
+                r.parent
+                    .as_deref()
+                    .is_some_and(|rp| rp.eq_ignore_ascii_case(p))
+            })
+        })
         .map(|(r, v)| (cosine_similarity(&query_vec, v) as f64, r))
         .collect();
 
@@ -173,6 +181,6 @@ pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
 /// Embed + cache every record's vector without running a real query — pre-warms
 /// the cache so the first search is instant. Returns the record count.
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
-    let _ = search("", records, None, 0, model, refresh);
+    let _ = search("", records, None, None, 0, model, refresh);
     records.len()
 }
