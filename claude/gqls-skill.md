@@ -33,9 +33,13 @@ Each result is an object:
 ```
 
 `path` is the qualified location (`Type.field`), `type_ref` the return/field
-type, `args` the argument signatures — usually enough to confirm a match without
-opening the schema. Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson`
-pipe cleanly into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
+type, `args` the argument signatures, `description` the schema doc when the
+schema has one — usually enough to confirm a match without opening the schema.
+Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson` pipe cleanly
+into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
+
+Text output shows the description too (elided to one line; `-D` drops it); the
+JSON forms always carry the full text.
 
 ## Scope when you know more
 

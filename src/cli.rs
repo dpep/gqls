@@ -82,6 +82,11 @@ struct Cli {
     #[arg(short = 'J', long)]
     ndjson: bool,
 
+    /// Omit schema descriptions from text output (they're shown by default;
+    /// `--json`/`--ndjson` always carry the full text).
+    #[arg(short = 'D', long)]
+    no_description: bool,
+
     /// Force semantic-only search. By default fuzzy and semantic results are
     /// combined once the schema's vectors are cached.
     #[arg(long, hide = HIDE_SEMANTIC)]
@@ -138,10 +143,11 @@ struct Cli {
     quiet: bool,
 }
 
-/// The chosen output format — computed once, honored by every mode.
+/// The chosen output format — computed once, honored by every mode. Text
+/// carries whether to print descriptions; the JSON forms always include them.
 #[derive(Clone, Copy)]
 enum Output {
-    Text,
+    Text { descriptions: bool },
     Json,
     Ndjson,
 }
@@ -323,7 +329,9 @@ pub fn run() -> Result<()> {
     } else if cli.ndjson {
         Output::Ndjson
     } else {
-        Output::Text
+        Output::Text {
+            descriptions: !cli.no_description,
+        }
     };
 
     let kind: Option<Kind> = match &cli.kind {
@@ -518,13 +526,18 @@ impl Output {
                     println!("{}", serde_json::to_string(&row)?);
                 }
             }
-            Output::Text => print_text(matches),
+            Output::Text { descriptions } => print_text(matches, descriptions),
         }
         Ok(())
     }
 }
 
-fn print_text(matches: &[Match]) {
+/// Longest description rendered inline. A schema doc can run to paragraphs;
+/// one line per result keeps the output greppable, so the rest is elided
+/// (`--json` carries the full text).
+const DESCRIPTION_WIDTH: usize = 72;
+
+fn print_text(matches: &[Match], descriptions: bool) {
     let width = matches
         .iter()
         .map(|m| display_path(m.record).len())
@@ -545,8 +558,38 @@ fn print_text(matches: &[Match]) {
         } else {
             ""
         };
-        println!("{path:<width$}{ret}  [{kind}]{dep}", kind = r.kind.as_str());
+        let desc = if descriptions {
+            r.description
+                .as_deref()
+                .map(summarize)
+                .filter(|d| !d.is_empty())
+                .map(|d| format!(" — {d}"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        println!(
+            "{path:<width$}{ret}  [{kind}]{dep}{desc}",
+            kind = r.kind.as_str()
+        );
     }
+}
+
+/// A schema description as one line: whitespace (including the newlines of a
+/// block description) collapsed, then elided at [`DESCRIPTION_WIDTH`].
+fn summarize(description: &str) -> String {
+    let mut out = String::new();
+    for (i, word) in description.split_whitespace().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(word);
+        if out.chars().count() > DESCRIPTION_WIDTH {
+            let kept: String = out.chars().take(DESCRIPTION_WIDTH).collect();
+            return format!("{}…", kept.trim_end());
+        }
+    }
+    out
 }
 
 /// Fuzzy-find the field, then hand it to rq to locate its resolver in code.
@@ -584,7 +627,7 @@ fn run_resolve(
                 println!("{}", serde_json::to_string(h)?);
             }
         }
-        Output::Text => {
+        Output::Text { .. } => {
             if hits.is_empty() {
                 crate::status!(
                     "no code definition found for {} (-v shows what was tried)",
@@ -605,5 +648,30 @@ fn display_path(r: &SchemaRecord) -> String {
         r.path.clone()
     } else {
         format!("{}({})", r.path, r.args.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{summarize, DESCRIPTION_WIDTH};
+
+    #[test]
+    fn collapses_block_descriptions_to_one_line() {
+        assert_eq!(summarize("  Look up\n  a user.\n"), "Look up a user.");
+        assert_eq!(summarize("   "), "");
+    }
+
+    #[test]
+    fn elides_past_the_width() {
+        let long = "word ".repeat(60);
+        let out = summarize(&long);
+        assert!(out.ends_with('…'), "{out}");
+        assert!(out.chars().count() <= DESCRIPTION_WIDTH + 1, "{out}");
+    }
+
+    #[test]
+    fn keeps_a_description_that_fits() {
+        let s = "An account.";
+        assert_eq!(summarize(s), s);
     }
 }

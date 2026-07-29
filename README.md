@@ -78,7 +78,15 @@ app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
 `gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates. When the schema is a local file, candidates are also ranked by package proximity to it — so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
 
 ### Output
-Every mode supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line). Status chatter goes to stderr, so JSON pipes clean:
+Text results carry the path, the type, the kind, and the schema description — a match is usually confirmable without opening the schema:
+
+```sh
+$ gqls user examples/schema.graphql
+Query.user(id: ID!)  -> User  [query] — Look up a user by id.
+User                  [object] — An account.
+```
+
+Long descriptions are elided to one line; `-D`/`--no-description` drops them entirely. Every mode also supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line), which always carry the full description text. Status chatter goes to stderr, so JSON pipes clean:
 
 ```sh
 gqls repository schema.json -J | jq -r '.path'
