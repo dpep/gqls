@@ -19,6 +19,7 @@ EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
   gqls User.email                     qualified Type.field query
+  gqls 'User.*'                       wildcard — list a type's fields (quote it)
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls 'cancel a subscription'        rank by meaning (fuzzy + semantic, auto)
@@ -32,6 +33,7 @@ EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
   gqls User.email                     qualified Type.field query
+  gqls 'User.*'                       wildcard — list a type's fields (quote it)
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
@@ -57,7 +59,9 @@ Semantic search (--semantic, rank by meaning) is not compiled into this build. E
 )]
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
-    /// and `Type.field` queries match against the qualified path.
+    /// and `Type.field` queries match against the qualified path. A `*`
+    /// wildcard enumerates instead of searching — quote it (`'User.*'`) so the
+    /// shell doesn't expand it first.
     #[arg(required_unless_present_any = ["clear_cache", "completions", "warm"])]
     query: Option<String>,
 
@@ -386,11 +390,21 @@ pub fn run() -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
 
+    // A wildcard query (`User.*`) enumerates rather than searches: the pattern
+    // does its own scoping and every match is exact, so the qualifier rewrites
+    // and the semantic combine below are both bypassed.
+    let pattern = search::glob::is_pattern(query);
+    if pattern {
+        crate::detail!("wildcard query — enumerating matches for {query:?}");
+    }
+
     // `User name` — a two-word query whose first word exactly names a type —
     // is the qualified form typed with a space. Rewrite it, but remember the
     // loose intent: unlike the dot form, an exact hit here keeps the semantic
     // combine on ("around this", not "exactly this").
-    let spaced = search::spaced_qualifier(query, &records);
+    let spaced = (!pattern)
+        .then(|| search::spaced_qualifier(query, &records))
+        .flatten();
     let loose = spaced.is_some();
     let query = spaced.as_deref().unwrap_or(query);
     if loose {
@@ -401,7 +415,9 @@ pub fn run() -> Result<()> {
     // as its unique closest misspelling — becomes a hard filter to that type's
     // members, in every search mode. A silent correction would be confusing,
     // so that case is announced at normal verbosity.
-    let parent = search::parent_filter(query, &records);
+    let parent = (!pattern)
+        .then(|| search::parent_filter(query, &records))
+        .flatten();
     if let Some(p) = parent {
         let (_, qualifier) = search::score::parse_qualified(query);
         if qualifier.is_some_and(|q| q.eq_ignore_ascii_case(p)) {
@@ -439,6 +455,9 @@ pub fn run() -> Result<()> {
     } else if cli.semantic {
         #[cfg(feature = "_semantic")]
         {
+            if pattern {
+                crate::status!("--semantic ranks by meaning and ignores wildcards in {query:?}");
+            }
             let matches = semantic_matches(query, &records, kind, parent, &cli);
             let total = matches.len();
             (matches, total)
@@ -463,10 +482,18 @@ pub fn run() -> Result<()> {
         fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
         {
-            if named && !loose {
-                crate::detail!(
-                    "strong name match — semantic ranking skipped (--semantic to force)"
-                );
+            // A wildcard enumerates exact matches, and a strong name hit means
+            // fuzzy already found the word typed — neither wants meaning-based
+            // lookalikes appended (nor the model load they cost).
+            let skip = if pattern {
+                Some("wildcard enumeration")
+            } else if named && !loose {
+                Some("strong name match")
+            } else {
+                None
+            };
+            if let Some(why) = skip {
+                crate::detail!("{why} — semantic ranking skipped (--semantic to force)");
                 (fuzzy, total)
             } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
                 let semantic = semantic_matches(query, &records, kind, parent, &cli);

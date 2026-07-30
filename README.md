@@ -52,6 +52,18 @@ gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
 ```
 
+### Wildcards
+A `*` in the query switches from fuzzy search to enumeration — every match is exact, ordered by kind then alphabetically. **Quote the pattern** so your shell doesn't expand it against local filenames:
+
+```sh
+gqls 'User.*'        # every field on User (nested paths included)
+gqls '*.email'       # the email field on every type that has one
+gqls 'get*'          # every name starting with "get"
+gqls '*Payment*'     # every name containing "Payment"
+```
+
+`*` is the only metacharacter — it matches any run of characters, `.` included — and patterns are anchored, so `'User.*'` never wanders into `UserProfile`. Wildcards skip semantic ranking (you asked for a list, not a guess); combine them with `-k` to narrow further (`gqls '*.email' -k input_field`).
+
 In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". A misspelled qualifier snaps to the unique closest type (`Compnay.` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching.
 
 ### Semantic search — automatic, combined with fuzzy

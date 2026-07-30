@@ -2,6 +2,7 @@
 
 use crate::model::{Kind, SchemaRecord};
 
+pub mod glob;
 pub mod score;
 
 pub struct Hit<'a> {
@@ -102,6 +103,46 @@ pub fn named_hit(query: &str, hits: &[Hit]) -> bool {
 /// cutoff, best first — callers truncate to their own limit, so the length is
 /// the true match count.
 pub fn search<'a>(
+    query: &str,
+    records: &'a [SchemaRecord],
+    kind: Option<Kind>,
+    parent: Option<&str>,
+) -> Vec<Hit<'a>> {
+    if glob::is_pattern(query) {
+        return glob_search(query, records, kind);
+    }
+    fuzzy_search(query, records, kind, parent)
+}
+
+/// Enumerate the records a wildcard pattern matches. A pattern containing `.`
+/// matches the qualified path (`User.*`, `*.email`); a bare one matches the
+/// leaf name (`get*`). Every match is exact by construction, so there's no
+/// quality tail to cut and no fuzzy score to rank by — order by kind (roots
+/// and types before leaves), then alphabetically, so listings read predictably.
+fn glob_search<'a>(pattern: &str, records: &'a [SchemaRecord], kind: Option<Kind>) -> Vec<Hit<'a>> {
+    use rayon::prelude::*;
+    let against_path = pattern.contains('.');
+    let mut hits: Vec<Hit> = records
+        .par_iter()
+        .filter(|r| kind.is_none_or(|k| r.kind == k))
+        .filter(|r| {
+            let text = if against_path { &r.path } else { &r.name };
+            glob::matches(pattern, text)
+        })
+        .map(|r| Hit {
+            record: r,
+            score: r.kind.weight(),
+        })
+        .collect();
+    hits.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| a.record.path.cmp(&b.record.path))
+    });
+    hits
+}
+
+fn fuzzy_search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
@@ -252,6 +293,48 @@ mod tests {
         let hits = search("count", &records, None, None);
         assert!(!hits.is_empty());
         assert!(!named_hit("count", &hits));
+    }
+
+    #[test]
+    fn wildcard_enumerates_a_types_members() {
+        let records = vec![
+            rec("email", Some("User"), Kind::Field),
+            rec("id", Some("User"), Kind::Field),
+            rec("email", Some("UserProfile"), Kind::Field),
+            rec("User", None, Kind::Object),
+        ];
+        let paths: Vec<&str> = search("User.*", &records, None, None)
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        // only User's members, alphabetical — not UserProfile's, not User itself
+        assert_eq!(paths, ["User.email", "User.id"]);
+    }
+
+    #[test]
+    fn wildcard_without_a_dot_matches_leaf_names() {
+        let records = vec![
+            rec("getUser", Some("Query"), Kind::Query),
+            rec("getCompany", Some("Query"), Kind::Query),
+            rec("forget", Some("User"), Kind::Field),
+        ];
+        let paths: Vec<&str> = search("get*", &records, None, None)
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        // anchored, so `forget` is out; roots outrank fields, then alphabetical
+        assert_eq!(paths, ["Query.getCompany", "Query.getUser"]);
+    }
+
+    #[test]
+    fn wildcard_keeps_every_match_regardless_of_kind_weight() {
+        // the fuzzy tail cutoff would drop a field (weight 20) under a root
+        // (60); enumeration must not lose members that way
+        let records = vec![
+            rec("user", Some("Query"), Kind::Query),
+            rec("name", Some("User"), Kind::Field),
+        ];
+        assert_eq!(search("*", &records, None, None).len(), 2);
     }
 
     #[test]
