@@ -180,11 +180,9 @@ struct Match<'a> {
 fn fuzzy_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
-    kind: Option<Kind>,
-    parent: Option<&str>,
-    returns: Option<&str>,
+    filters: search::Filters<'_>,
 ) -> (Vec<Match<'a>>, bool) {
-    let hits = search::search(query, records, kind, parent, returns);
+    let hits = search::search(query, records, filters);
     let named = search::named_hit(query, &hits);
     let matches = hits
         .into_iter()
@@ -200,17 +198,13 @@ fn fuzzy_matches<'a>(
 fn semantic_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
-    kind: Option<Kind>,
-    parent: Option<&str>,
-    returns: Option<&str>,
+    filters: search::Filters<'_>,
     cli: &Cli,
 ) -> Vec<Match<'a>> {
     crate::semantic::search(
         query,
         records,
-        kind,
-        parent,
-        returns,
+        filters,
         cli.limit,
         cli.model.as_deref(),
         cli.refresh,
@@ -454,14 +448,18 @@ pub fn run() -> Result<()> {
         }
     }
 
+    let filters = search::Filters {
+        kind,
+        parent,
+        returns: cli.returns.as_deref(),
+    };
+
     if cli.resolve {
         return run_resolve(
             query,
             &source,
             &records,
-            kind,
-            parent,
-            cli.returns.as_deref(),
+            filters,
             cli.code.as_deref(),
             cli.limit,
             output,
@@ -473,7 +471,7 @@ pub fn run() -> Result<()> {
     // meaningful total (cosine ranks every record), so it never shows one.
     let t_rank = std::time::Instant::now();
     let (matches, total): (Vec<Match>, usize) = if cli.fuzzy {
-        let (mut fuzzy, _) = fuzzy_matches(query, &records, kind, parent, cli.returns.as_deref());
+        let (mut fuzzy, _) = fuzzy_matches(query, &records, filters);
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         (fuzzy, total)
@@ -483,8 +481,7 @@ pub fn run() -> Result<()> {
             if pattern {
                 crate::status!("--semantic ranks by meaning and ignores wildcards in {query:?}");
             }
-            let matches =
-                semantic_matches(query, &records, kind, parent, cli.returns.as_deref(), &cli);
+            let matches = semantic_matches(query, &records, filters, &cli);
             let total = matches.len();
             (matches, total)
         }
@@ -503,8 +500,7 @@ pub fn run() -> Result<()> {
         // `name` → `lastName`) skips the combine outright: the user typed a
         // word that exists, so semantic ranking would only append lookalike
         // filler below it (and cost the model load).
-        let (mut fuzzy, named) =
-            fuzzy_matches(query, &records, kind, parent, cli.returns.as_deref());
+        let (mut fuzzy, named) = fuzzy_matches(query, &records, filters);
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
@@ -523,8 +519,7 @@ pub fn run() -> Result<()> {
                 crate::detail!("{why} — semantic ranking skipped (--semantic to force)");
                 (fuzzy, total)
             } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
-                let semantic =
-                    semantic_matches(query, &records, kind, parent, cli.returns.as_deref(), &cli);
+                let semantic = semantic_matches(query, &records, filters, &cli);
                 (combine(fuzzy, semantic, cli.limit), total)
             } else {
                 spawn_background_warm(&source, &cli.header);
@@ -648,14 +643,11 @@ fn summarize(description: &str) -> String {
 }
 
 /// Fuzzy-find the field, then hand it to rq to locate its resolver in code.
-#[allow(clippy::too_many_arguments)]
 fn run_resolve(
     query: &str,
     source: &str,
     records: &[SchemaRecord],
-    kind: Option<Kind>,
-    parent: Option<&str>,
-    returns: Option<&str>,
+    filters: search::Filters<'_>,
     code: Option<&str>,
     limit: usize,
     output: Output,
@@ -663,10 +655,7 @@ fn run_resolve(
     if code.is_none() {
         crate::status!("searching code in the current directory (--code to search elsewhere)");
     }
-    let Some(top) = search::search(query, records, kind, parent, returns)
-        .into_iter()
-        .next()
-    else {
+    let Some(top) = search::search(query, records, filters).into_iter().next() else {
         anyhow::bail!("no schema entity matches {query:?} to resolve");
     };
     crate::status!("resolving {} …", top.record.path);

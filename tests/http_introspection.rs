@@ -41,7 +41,7 @@ fn introspects_and_searches_a_live_endpoint() {
 
     // The introspected records flow through the same fuzzy scorer as a file
     // schema — a typo'd query still surfaces the type.
-    let hits = gqls::search::search("contry", &records, None, None, None);
+    let hits = gqls::search::search("contry", &records, Default::default());
     assert!(
         hits.iter().any(|h| h.record.name == "Country"),
         "fuzzy search should surface Country despite the typo"
