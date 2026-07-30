@@ -135,6 +135,10 @@ mkdir -p ~/.claude/skills/gqls
 cp claude/gqls-skill.md ~/.claude/skills/gqls/SKILL.md
 ```
 
+## Development
+
+`script/check.sh` is the gate — formatting, clippy, and tests across every feature configuration gqls ships (default/semantic, fuzzy-only, and the `semantic-dynamic` build Homebrew uses). Run it before pushing.
+
 ## How it works
 
 Layered so the core is one idea — flatten every schema entity to a searchable record, and let search and output touch nothing but records:
