@@ -367,8 +367,15 @@ fn enum_value_record(type_name: &str, v: &EnumValue<'_, String>) -> SchemaRecord
     }
 }
 
+/// `name: Type`, plus ` = default` when the schema gives one — the default is
+/// what tells a caller the argument is optional even where the type is
+/// non-null, so it belongs in the rendered signature.
 fn fmt_input(iv: &InputValue<'_, String>) -> String {
-    format!("{}: {}", iv.name, type_to_string(&iv.value_type))
+    let base = format!("{}: {}", iv.name, type_to_string(&iv.value_type));
+    match &iv.default_value {
+        Some(default) => format!("{base} = {default}"),
+        None => base,
+    }
 }
 
 fn type_to_string(t: &Type<'_, String>) -> String {

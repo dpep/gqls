@@ -15,8 +15,9 @@ use std::path::PathBuf;
 
 use crate::model::{Kind, SchemaRecord};
 
-/// Bump when the encoding or `SchemaRecord` shape changes — old files then
-/// fail the magic check and re-parse.
+/// Bump when the on-disk encoding changes — old files then fail this check and
+/// re-parse. Changes to what the loaders *put* in a record are covered by the
+/// crate version in the key (see `path`), so they need no bump here.
 const MAGIC: u32 = 0x47_51_52_31; // "GQR1"
 
 /// Keep at most this many cache files (LRU by mtime, pruned on write).
@@ -71,6 +72,12 @@ pub fn clear() -> usize {
 fn path(source: &[u8]) -> Option<PathBuf> {
     let mut h = DefaultHasher::new();
     MAGIC.hash(&mut h);
+    // Keyed by the crate version as well as the source, because the records
+    // depend on how the loaders render them — teaching the SDL parser to keep
+    // argument defaults changes what's cached without changing the schema a
+    // byte. Re-parsing after an upgrade costs milliseconds; serving records
+    // from a previous parser silently omits whatever it has since learned.
+    env!("CARGO_PKG_VERSION").hash(&mut h);
     source.hash(&mut h);
     Some(crate::paths::cache_dir()?.join(format!("{:016x}.rcds", h.finish())))
 }

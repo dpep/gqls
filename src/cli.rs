@@ -678,25 +678,23 @@ fn run_example(
         }
     }
 
+    let payload = serde_json::json!({
+        "path": top.record.path,
+        "operation": example.operation,
+        "variables": example.variables,
+        "optional_args": example.optional,
+    });
     match output {
-        Output::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "path": top.record.path,
-                "operation": example.operation,
-                "variables": example.variables,
-            }))?
-        ),
-        Output::Ndjson => println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({
-                "path": top.record.path,
-                "operation": example.operation,
-                "variables": example.variables,
-            }))?
-        ),
+        Output::Json => println!("{}", serde_json::to_string_pretty(&payload)?),
+        Output::Ndjson => println!("{}", serde_json::to_string(&payload)?),
         Output::Text { .. } => {
             print!("{}", example.operation);
+            if !example.optional.is_empty() {
+                println!("\n# optional arguments, omitted above:");
+                for arg in &example.optional {
+                    println!("#   {arg}");
+                }
+            }
             println!("\n# variables");
             println!("{}", serde_json::to_string_pretty(&example.variables)?);
         }

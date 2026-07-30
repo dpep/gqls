@@ -111,11 +111,13 @@ gqls Mutation.updateEmployee -e          # operation + variables, as text
 gqls Company.employee -e --json          # {path, operation, variables}
 ```
 
-It turns every argument into a variable, selects one level of leaf fields,
-expands an `errors` block only when the payload really has one, and wraps a
-nested field in a root that returns its type. Object-valued fields become
-`# add fields you need` markers — fill those in from the schema rather than
-guessing depth.
+Each argument you must supply becomes a variable, with a `"<ID!>"` placeholder
+that names its type. Anything the server can supply — nullable, or carrying a
+schema default — is left out of the operation and listed underneath, so what
+it prints runs as-is. It selects one level of leaf fields, expands an `errors`
+block only when the payload really has one, and wraps a nested field in a root
+that returns its type. Object-valued fields become `# add fields you need`
+markers — fill those in from the schema rather than guessing depth.
 
 Two things still need your judgment:
 

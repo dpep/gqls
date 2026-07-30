@@ -102,8 +102,8 @@ Find a field, then get something you can paste into a client:
 
 ```sh
 $ gqls Mutation.updateEmployee -e
-mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!, $dryRun: Boolean) {
-  updateEmployee(companyId: $companyId, input: $input, dryRun: $dryRun) {
+mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
+  updateEmployee(companyId: $companyId, input: $input) {
     errors {
       message
       path
@@ -113,22 +113,25 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!, $dryRun: Boolea
   }
 }
 
+# optional arguments, omitted above:
+#   updateEmployee(dryRun: Boolean = false)
+
 # variables
 {
-  "companyId": "",
-  "dryRun": null,
-  "input": {}
+  "companyId": "<ID!>",
+  "input": "<EmployeeInput!>"
 }
 ```
 
 The rules are deliberately conservative, because a wrong guess costs more than a visible hole:
 
-- **Arguments always become variables** — nothing is inlined into the query body. Required ones get a typed placeholder; optional ones stay `null`, so the knob is visible but unset.
+- **Arguments you must supply become variables** — nothing is inlined into the query body, and each placeholder names its type (`"<ID!>"`), so it can't be mistaken for a usable value the way `""` or `0` can.
+- **Anything the server can supply is left out and listed underneath** — a nullable argument, or one with a schema default (even a non-null one, like `first: Int! = 10`). The operation runs as-is, and the knobs you skipped are still visible with their defaults.
 - **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# add fields you need` marker per object-valued field.
 - **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
 - **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, the pick and the alternatives are both named on stderr. When none does, it's an error with a pointer to `--returns`, not a guess.
 
-A union return can't be selected without inline fragments, so it gets `__typename` and a marker. Every drafted operation is parsed back with a GraphQL parser in the test suite, so what it prints is syntactically valid. `-j`/`--json` emits `{path, operation, variables}` for scripting.
+A union return can't be selected without inline fragments, so it gets `__typename` and a marker. Every drafted operation is parsed back with a GraphQL parser in the test suite, so what it prints is syntactically valid. `-j`/`--json` emits `{path, operation, variables, optional_args}` for scripting.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:

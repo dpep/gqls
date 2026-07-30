@@ -4,8 +4,14 @@
 //! are, what the field returns, and which of that type's fields are leaves. The
 //! rules, and why each one:
 //!
-//! * **Arguments always become variables.** Never inline a literal into the
-//!   query body; a pasted operation should be parameterized from the start.
+//! * **Arguments you must supply become variables.** Never inline a literal
+//!   into the query body; a pasted operation should be parameterized from the
+//!   start. An argument the server can fill in for itself — nullable, or with
+//!   a schema default — is left out of the operation entirely and listed
+//!   underneath, so the query runs as-is and the knobs are still discoverable.
+//! * **A placeholder names its type.** `"<ID!>"` says both what to put there
+//!   and that it's required; `""` or `0` look like real values and get pasted
+//!   by accident.
 //! * **One level of selection, leaves only.** A scalar or enum return needs no
 //!   selection set at all. An object return gets its scalar/enum fields, and a
 //!   `# add fields you need` marker for the object-valued ones — guessing how
@@ -30,8 +36,11 @@ use crate::model::{Kind, SchemaRecord};
 pub struct Example {
     /// The GraphQL document, ready to paste.
     pub operation: String,
-    /// A JSON object of placeholder variable values.
+    /// A JSON object of placeholder variable values, one per required argument.
     pub variables: Value,
+    /// Arguments left out because the server can supply them — rendered as
+    /// `field(name: Type = default)`, ready to paste back in.
+    pub optional: Vec<String>,
     /// The root field a nested target was reached through, if it needed one.
     pub via: Option<String>,
     /// Other root fields that could have reached a nested target. Non-empty
@@ -79,7 +88,7 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example>
 
     // Variables first: every argument along the chain, deduped so a repeated
     // name (two `id`s) doesn't collide in the signature.
-    let vars = Variables::collect(&chain);
+    let (vars, optional) = Variables::collect(&chain);
 
     // Then the selection, innermost outward.
     let leaf_type = chain
@@ -117,7 +126,8 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example>
 
     Ok(Example {
         operation,
-        variables: vars.placeholders(&schema),
+        variables: vars.placeholders(),
+        optional,
         via,
         alternatives,
     })
@@ -227,37 +237,6 @@ impl<'a> Schema<'a> {
         }
         lines
     }
-
-    /// A JSON placeholder for a variable of this type.
-    fn placeholder(&self, type_ref: &str) -> Value {
-        let type_ref = type_ref.trim();
-        // An optional argument stays null — present so the knob is visible,
-        // unset because a made-up default would be a silent decision.
-        if !type_ref.ends_with('!') {
-            return Value::Null;
-        }
-        if type_ref.starts_with('[') {
-            return Value::Array(Vec::new());
-        }
-        let base = type_ref.trim_matches(|c| matches!(c, '[' | ']' | '!' | ' '));
-        match base {
-            "ID" | "String" => Value::String(String::new()),
-            "Int" => Value::Number(0.into()),
-            "Float" => serde_json::json!(0.0),
-            "Boolean" => Value::Bool(false),
-            _ => match self.kinds.get(base) {
-                // An enum's first value is a real, valid choice.
-                Some(Kind::Enum) => self
-                    .fields
-                    .get(base)
-                    .and_then(|vs| vs.first())
-                    .map(|v| Value::String(v.name.clone()))
-                    .unwrap_or(Value::Null),
-                Some(Kind::InputObject) => Value::Object(Map::new()),
-                _ => Value::Null,
-            },
-        }
-    }
 }
 
 /// The operation's variables: one per argument along the field chain.
@@ -267,11 +246,24 @@ struct Variables {
 }
 
 impl Variables {
-    fn collect(chain: &[&SchemaRecord]) -> Self {
+    /// Split the chain's arguments: the ones a caller must supply become
+    /// variables, the rest are returned as notes.
+    fn collect(chain: &[&SchemaRecord]) -> (Self, Vec<String>) {
         let mut entries: Vec<(usize, String, String, String)> = Vec::new();
+        let mut optional = Vec::new();
         for (depth, field) in chain.iter().enumerate() {
             for arg in &field.args {
-                let (name, type_ref) = split_arg(arg);
+                let Arg {
+                    name,
+                    type_ref,
+                    default,
+                } = split_arg(arg);
+                // A default means the server fills it in, so even a non-null
+                // argument needs nothing from the caller.
+                if !type_ref.ends_with('!') || default.is_some() {
+                    optional.push(format!("{}({})", field.name, arg.trim()));
+                    continue;
+                }
                 // Disambiguate a name already taken by an outer field's arg.
                 let taken = entries.iter().any(|(_, _, var, _)| var == name);
                 let var = if taken {
@@ -282,7 +274,7 @@ impl Variables {
                 entries.push((depth, name.to_string(), var, type_ref.to_string()));
             }
         }
-        Self { entries }
+        (Self { entries }, optional)
     }
 
     /// `($id: ID!, $first: Int)`, or empty when there are no arguments.
@@ -313,10 +305,12 @@ impl Variables {
         }
     }
 
-    fn placeholders(&self, schema: &Schema) -> Value {
+    /// Every variable is required by construction, so each placeholder names
+    /// its type — unmistakably a blank to fill rather than a usable value.
+    fn placeholders(&self) -> Value {
         let mut map = Map::new();
         for (_, _, var, ty) in &self.entries {
-            map.insert(var.clone(), schema.placeholder(ty));
+            map.insert(var.clone(), Value::String(format!("<{ty}>")));
         }
         Value::Object(map)
     }
@@ -326,16 +320,31 @@ impl Variables {
 fn required_args(r: &SchemaRecord) -> usize {
     r.args
         .iter()
-        .filter(|a| split_arg(a).1.ends_with('!'))
+        .map(|a| split_arg(a))
+        .filter(|a| a.type_ref.ends_with('!') && a.default.is_none())
         .count()
 }
 
-/// `"first: Int = 10"` → `("first", "Int")`. gqls renders args as `name: Type`;
-/// a default value, if one ever survives parsing, isn't part of the type.
-fn split_arg(arg: &str) -> (&str, &str) {
+/// One parsed argument signature.
+struct Arg<'a> {
+    name: &'a str,
+    type_ref: &'a str,
+    default: Option<&'a str>,
+}
+
+/// `"first: Int = 10"` → name `first`, type `Int`, default `10`. gqls renders
+/// arguments as `name: Type` with ` = default` appended when the schema has one.
+fn split_arg(arg: &str) -> Arg<'_> {
     let (name, rest) = arg.split_once(':').unwrap_or((arg, ""));
-    let type_ref = rest.split('=').next().unwrap_or(rest);
-    (name.trim(), type_ref.trim())
+    let (type_ref, default) = match rest.split_once('=') {
+        Some((t, d)) => (t, Some(d.trim())),
+        None => (rest, None),
+    };
+    Arg {
+        name: name.trim(),
+        type_ref: type_ref.trim(),
+        default,
+    }
 }
 
 /// `updateEmployee` → `UpdateEmployee`, for the operation name.
@@ -496,7 +505,7 @@ mod tests {
                }\n\
              }\n"
         );
-        assert_eq!(ex.variables, serde_json::json!({ "id": "" }));
+        assert_eq!(ex.variables, serde_json::json!({ "id": "<ID!>" }));
     }
 
     #[test]
@@ -509,19 +518,22 @@ mod tests {
     #[test]
     fn mutation_expands_a_real_errors_block() {
         let ex = build_for("Mutation.save");
-        assert!(ex.operation.starts_with(
-            "mutation Save($input: Input!, $dryRun: Boolean) {\n  save(input: $input, dryRun: $dryRun) {"
-        ), "{}", ex.operation);
+        assert!(
+            ex.operation
+                .starts_with("mutation Save($input: Input!) {\n  save(input: $input) {"),
+            "{}",
+            ex.operation
+        );
+        // the nullable arg is left out of the operation, but still surfaced
+        assert_eq!(ex.optional, ["save(dryRun: Boolean)"]);
         assert!(
             ex.operation.contains("errors {\n      message\n    }"),
             "{}",
             ex.operation
         );
-        // an optional arg is null; a required input object is an empty object
-        assert_eq!(
-            ex.variables,
-            serde_json::json!({ "input": {}, "dryRun": null })
-        );
+        // only what the caller must supply, typed so it can't be mistaken
+        // for a usable value
+        assert_eq!(ex.variables, serde_json::json!({ "input": "<Input!>" }));
     }
 
     #[test]
@@ -571,6 +583,31 @@ mod tests {
         assert_eq!(ex.alternatives.len(), 1);
     }
 
+    #[test]
+    fn a_defaulted_argument_is_omitted_even_when_non_null() {
+        let records = vec![
+            rec("Query", "Query", Kind::Object, None, None, &[]),
+            rec(
+                "Query.feed",
+                "feed",
+                Kind::Query,
+                Some("Query"),
+                Some("Int!"),
+                // non-null, but the schema supplies a default — nothing is
+                // required of the caller
+                &["first: Int! = 10", "after: String"],
+            ),
+        ];
+        let target = records.iter().find(|r| r.path == "Query.feed").unwrap();
+        let ex = build(target, &records).unwrap();
+        assert_eq!(ex.operation, "query Feed {\n  feed\n}\n");
+        assert_eq!(ex.variables, serde_json::json!({}));
+        assert_eq!(
+            ex.optional,
+            ["feed(first: Int! = 10)", "feed(after: String)"]
+        );
+    }
+
     /// The point of the whole module: what it prints must parse as GraphQL.
     #[test]
     fn every_drafted_operation_is_valid_graphql() {
@@ -589,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn enum_placeholder_uses_a_real_value_and_args_disambiguate() {
+    fn colliding_argument_names_are_disambiguated() {
         let records = vec![
             rec("Query", "Query", Kind::Object, None, None, &[]),
             rec("Role", "Role", Kind::Enum, None, None, &[]),
@@ -629,7 +666,7 @@ mod tests {
         );
         assert_eq!(
             ex.variables,
-            serde_json::json!({ "id": "", "childId": "", "role": "ADMIN" })
+            serde_json::json!({ "id": "<ID!>", "childId": "<ID!>", "role": "<Role!>" })
         );
     }
 }

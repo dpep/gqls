@@ -325,7 +325,11 @@ fn args_of(f: &Value) -> Vec<String> {
         .map(|a| {
             let n = str_field(a, "name");
             let ty = a.get("type").map(render_type).unwrap_or_default();
-            format!("{n}: {ty}")
+            // `defaultValue` arrives as a GraphQL literal in a string.
+            match a.get("defaultValue").and_then(Value::as_str) {
+                Some(default) => format!("{n}: {ty} = {default}"),
+                None => format!("{n}: {ty}"),
+            }
         })
         .collect()
 }
@@ -380,7 +384,7 @@ fragment FullType on __Type {
   inputFields { ...InputValue }
   enumValues(includeDeprecated: true) { name description isDeprecated deprecationReason }
 }
-fragment InputValue on __InputValue { name description type { ...TypeRef } }
+fragment InputValue on __InputValue { name description defaultValue type { ...TypeRef } }
 fragment TypeRef on __Type {
   kind name
   ofType { kind name ofType { kind name ofType { kind name ofType { kind name
