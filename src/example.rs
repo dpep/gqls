@@ -41,6 +41,10 @@ pub struct Example {
     /// Arguments left out because the server can supply them — rendered as
     /// `field(name: Type = default)`, ready to paste back in.
     pub optional: Vec<String>,
+    /// The input objects and enums the arguments refer to, expanded so the
+    /// variables can be filled in without opening the schema. Each entry is a
+    /// block of lines; nested input objects appear as their own entries.
+    pub input_types: Vec<Vec<String>>,
     /// The root field a nested target was reached through, if it needed one.
     pub via: Option<String>,
     /// Other root fields that could have reached a nested target. Non-empty
@@ -127,6 +131,7 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example>
     Ok(Example {
         operation,
         variables: vars.placeholders(),
+        input_types: schema.input_types(&chain),
         optional,
         via,
         alternatives,
@@ -169,6 +174,58 @@ impl<'a> Schema<'a> {
             fields,
             roots,
         }
+    }
+
+    /// Expand the input objects and enums an operation's arguments refer to,
+    /// so the variables can be filled in without going back to the schema. A
+    /// nested input object becomes its own entry rather than a deeper
+    /// indent — flat reads better and makes cycles (`Filter { and: [Filter] }`)
+    /// a non-issue, since each type is expanded once.
+    fn input_types(&self, chain: &[&SchemaRecord]) -> Vec<Vec<String>> {
+        /// Enough for any real argument list; a guard, not a policy.
+        const MAX_TYPES: usize = 12;
+
+        let mut queue: Vec<String> = chain
+            .iter()
+            .flat_map(|f| f.args.iter())
+            .map(|a| base_of(split_arg(a).type_ref).to_string())
+            .collect();
+        let mut seen: Vec<String> = Vec::new();
+        let mut out = Vec::new();
+
+        while let Some(name) = queue.pop() {
+            if seen.contains(&name) || out.len() >= MAX_TYPES {
+                continue;
+            }
+            seen.push(name.clone());
+            match self.kinds.get(name.as_str()) {
+                Some(Kind::InputObject) => {
+                    let mut block = vec![format!("{name} {{")];
+                    for f in self.fields.get(name.as_str()).into_iter().flatten() {
+                        let ty = f.type_ref.as_deref().unwrap_or("");
+                        block.push(format!("  {}: {}", f.name, ty));
+                        queue.push(base_of(ty).to_string());
+                    }
+                    block.push("}".to_string());
+                    out.push(block);
+                }
+                Some(Kind::Enum) => {
+                    let values: Vec<&str> = self
+                        .fields
+                        .get(name.as_str())
+                        .into_iter()
+                        .flatten()
+                        .map(|v| v.name.as_str())
+                        .collect();
+                    if !values.is_empty() {
+                        out.push(vec![format!("{name} = {}", values.join(" | "))]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.sort();
+        out
     }
 
     /// Root operation fields returning `type_name`, best first. Fewest required
@@ -323,6 +380,12 @@ fn required_args(r: &SchemaRecord) -> usize {
         .map(|a| split_arg(a))
         .filter(|a| a.type_ref.ends_with('!') && a.default.is_none())
         .count()
+}
+
+/// A type reference with its list and non-null wrappers peeled: `[User!]!`
+/// → `User`.
+fn base_of(type_ref: &str) -> &str {
+    type_ref.trim_matches(|c| matches!(c, '[' | ']' | '!' | ' '))
 }
 
 /// One parsed argument signature.
@@ -605,6 +668,50 @@ mod tests {
         assert_eq!(
             ex.optional,
             ["feed(first: Int! = 10)", "feed(after: String)"]
+        );
+    }
+
+    #[test]
+    fn a_self_referential_input_expands_once() {
+        let records = vec![
+            rec("Query", "Query", Kind::Object, None, None, &[]),
+            rec("Filter", "Filter", Kind::InputObject, None, None, &[]),
+            rec(
+                "Filter.and",
+                "and",
+                Kind::InputField,
+                Some("Filter"),
+                // Filter refers to itself — the expansion must terminate
+                Some("[Filter!]"),
+                &[],
+            ),
+            rec(
+                "Filter.eq",
+                "eq",
+                Kind::InputField,
+                Some("Filter"),
+                Some("String"),
+                &[],
+            ),
+            rec(
+                "Query.search",
+                "search",
+                Kind::Query,
+                Some("Query"),
+                Some("Int!"),
+                &["filter: Filter!"],
+            ),
+        ];
+        let target = records.iter().find(|r| r.path == "Query.search").unwrap();
+        let ex = build(target, &records).unwrap();
+        assert_eq!(
+            ex.input_types,
+            vec![vec![
+                "Filter {".to_string(),
+                "  and: [Filter!]".to_string(),
+                "  eq: String".to_string(),
+                "}".to_string(),
+            ]]
         );
     }
 

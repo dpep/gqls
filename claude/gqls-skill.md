@@ -117,7 +117,9 @@ schema default — is left out of the operation and listed underneath, so what
 it prints runs as-is. It selects one level of leaf fields, expands an `errors`
 block only when the payload really has one, and wraps a nested field in a root
 that returns its type. Object-valued fields become `# add fields you need`
-markers — fill those in from the schema rather than guessing depth.
+markers — fill those in from the schema rather than guessing depth. Input
+objects and enums referenced by the arguments are expanded underneath, so a
+`"<SomeInput!>"` placeholder can be filled without a second lookup.
 
 Two things still need your judgment:
 

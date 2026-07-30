@@ -47,3 +47,53 @@ fn introspects_and_searches_a_live_endpoint() {
         "fuzzy search should surface Country despite the typo"
     );
 }
+
+/// The real proof for `--example`: draft an operation from a live schema, send
+/// it back to that same server, and require data in the response. Parsing the
+/// draft only shows it's well-formed GraphQL; executing it shows the arguments,
+/// variables, and selection set actually agree with the schema they came from.
+#[test]
+#[ignore = "hits the network; run with --ignored"]
+fn drafted_operation_executes_against_the_live_endpoint() {
+    let opts = LoadOptions {
+        refresh: true,
+        ..Default::default()
+    };
+    let records = load::load(ENDPOINT, &opts).expect("HTTP introspection should succeed");
+
+    let target = records
+        .iter()
+        .find(|r| r.path == "Query.country")
+        .expect("expected a Query.country root field");
+    let drafted = gqls::example::build(target, &records).expect("drafting should succeed");
+
+    // `country(code: ID!)` — the one thing the caller must supply.
+    assert_eq!(
+        drafted.variables,
+        serde_json::json!({ "code": "<ID!>" }),
+        "{}",
+        drafted.operation
+    );
+
+    let response: serde_json::Value = ureq::post(ENDPOINT)
+        .send_json(ureq::json!({
+            "query": drafted.operation,
+            "variables": { "code": "US" },
+        }))
+        .expect("the drafted operation should POST cleanly")
+        .into_json()
+        .expect("a JSON response");
+
+    assert!(
+        response.get("errors").is_none(),
+        "server rejected the drafted operation: {response}\n{}",
+        drafted.operation
+    );
+    assert_eq!(
+        response
+            .pointer("/data/country/code")
+            .and_then(|v| v.as_str()),
+        Some("US"),
+        "unexpected payload: {response}"
+    );
+}

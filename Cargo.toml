@@ -43,6 +43,14 @@ log = { version = "0.4", optional = true }
 # Parallel fuzzy scoring scan (and the cold embed pass under `semantic`).
 rayon = "1"
 
+[dev-dependencies]
+# Integration tests parse drafted operations back, so `--example` output is
+# checked against a real GraphQL grammar rather than string equality. Same
+# versions as above, so nothing extra is compiled.
+graphql-parser = "0.4"
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+
 [features]
 # Semantic search is on by default so `cargo install gqls-cli` includes it
 # (downloads ONNX Runtime at build time). Opt out with `--no-default-features`

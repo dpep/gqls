@@ -683,6 +683,7 @@ fn run_example(
         "operation": example.operation,
         "variables": example.variables,
         "optional_args": example.optional,
+        "input_types": example.input_types,
     });
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&payload)?),
@@ -693,6 +694,14 @@ fn run_example(
                 println!("\n# optional arguments, omitted above:");
                 for arg in &example.optional {
                     println!("#   {arg}");
+                }
+            }
+            if !example.input_types.is_empty() {
+                println!("\n# input types:");
+                for block in &example.input_types {
+                    for line in block {
+                        println!("#   {line}");
+                    }
                 }
             }
             println!("\n# variables");

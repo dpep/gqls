@@ -116,6 +116,13 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
 # optional arguments, omitted above:
 #   updateEmployee(dryRun: Boolean = false)
 
+# input types:
+#   EmployeeInput {
+#     name: String!
+#     role: Role
+#   }
+#   Role = ADMIN | MEMBER | GUEST
+
 # variables
 {
   "companyId": "<ID!>",
@@ -129,9 +136,10 @@ The rules are deliberately conservative, because a wrong guess costs more than a
 - **Anything the server can supply is left out and listed underneath** — a nullable argument, or one with a schema default (even a non-null one, like `first: Int! = 10`). The operation runs as-is, and the knobs you skipped are still visible with their defaults.
 - **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# add fields you need` marker per object-valued field.
 - **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
+- **Input objects and enums are expanded underneath** — every input type the arguments refer to, followed transitively through input fields, so you can fill in `"<EmployeeInput!>"` without opening the schema. Expansion is flat and each type appears once, so a self-referential filter (`Filter { and: [Filter!] }`) terminates.
 - **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, the pick and the alternatives are both named on stderr. When none does, it's an error with a pointer to `--returns`, not a guess.
 
-A union return can't be selected without inline fragments, so it gets `__typename` and a marker. Every drafted operation is parsed back with a GraphQL parser in the test suite, so what it prints is syntactically valid. `-j`/`--json` emits `{path, operation, variables, optional_args}` for scripting.
+A union return can't be selected without inline fragments, so it gets `__typename` and a marker. Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, input_types}` for scripting.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
