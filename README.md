@@ -97,6 +97,39 @@ When the query names something that exists — an exact match, or the word whole
 
 Per-record vectors are cached, keyed by schema content and model. The first time gqls sees a schema it returns fuzzy results immediately and embeds in the background — so the next run is combined and instant (GitHub's schema: ~40s to embed once, then ~0.3s warm queries). `GQLS_NO_AUTOWARM=1` disables the background embed. Editing the schema re-embeds on its own; `--refresh` forces a re-embed, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and Homebrew have it; `--no-default-features` is fuzzy-only.
 
+### Draft an example operation (`-e`)
+Find a field, then get something you can paste into a client:
+
+```sh
+$ gqls Mutation.updateEmployee -e
+mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!, $dryRun: Boolean) {
+  updateEmployee(companyId: $companyId, input: $input, dryRun: $dryRun) {
+    errors {
+      message
+      path
+    }
+    clientMutationId
+    # employee: Employee — add fields you need
+  }
+}
+
+# variables
+{
+  "companyId": "",
+  "dryRun": null,
+  "input": {}
+}
+```
+
+The rules are deliberately conservative, because a wrong guess costs more than a visible hole:
+
+- **Arguments always become variables** — nothing is inlined into the query body. Required ones get a typed placeholder; optional ones stay `null`, so the knob is visible but unset.
+- **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# add fields you need` marker per object-valued field.
+- **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
+- **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, the pick and the alternatives are both named on stderr. When none does, it's an error with a pointer to `--returns`, not a guess.
+
+A union return can't be selected without inline fragments, so it gets `__typename` and a marker. Every drafted operation is parsed back with a GraphQL parser in the test suite, so what it prints is syntactically valid. `-j`/`--json` emits `{path, operation, variables}` for scripting.
+
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
 

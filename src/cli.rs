@@ -25,6 +25,7 @@ EXAMPLES:
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls 'cancel a subscription'        rank by meaning (fuzzy + semantic, auto)
+  gqls Mutation.createUser -e         draft an operation to paste
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
 ";
@@ -40,6 +41,7 @@ EXAMPLES:
   gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
+  gqls Mutation.createUser -e         draft an operation to paste
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
 
@@ -133,6 +135,11 @@ struct Cli {
     /// Print a shell completion script (bash, zsh, fish, ...) to stdout, then exit.
     #[arg(long, value_name = "SHELL")]
     completions: Option<Shell>,
+
+    /// Draft a ready-to-paste example operation for the top match — arguments
+    /// as variables, one level of leaf fields selected.
+    #[arg(short = 'e', long, conflicts_with = "resolve")]
+    example: bool,
 
     /// Jump the top match to its graphql-ruby resolver/method in code, via
     /// `rq` (must be installed).
@@ -466,6 +473,10 @@ pub fn run() -> Result<()> {
         );
     }
 
+    if cli.example {
+        return run_example(query, &records, filters, output);
+    }
+
     // `total` is the fuzzy match count before the display limit, so the footer
     // can say how much a raised -l would reveal. Semantic-only mode has no
     // meaningful total (cosine ranks every record), so it never shows one.
@@ -640,6 +651,57 @@ fn summarize(description: &str) -> String {
         }
     }
     out
+}
+
+/// Find the field, then draft an operation that calls it.
+fn run_example(
+    query: &str,
+    records: &[SchemaRecord],
+    filters: search::Filters<'_>,
+    output: Output,
+) -> Result<()> {
+    let Some(top) = search::search(query, records, filters).into_iter().next() else {
+        anyhow::bail!("no schema entity matches {query:?} to draft");
+    };
+    crate::status!("drafting an operation for {}", top.record.path);
+    let example = crate::example::build(top.record, records)?;
+    if let Some(via) = &example.via {
+        if example.alternatives.is_empty() {
+            crate::detail!("reached through {via}");
+        } else {
+            // Several roots qualify; name the pick and the runners-up rather
+            // than passing the choice off as obvious.
+            crate::status!(
+                "reached through {via}; also reachable via {}",
+                example.alternatives.join(", ")
+            );
+        }
+    }
+
+    match output {
+        Output::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "path": top.record.path,
+                "operation": example.operation,
+                "variables": example.variables,
+            }))?
+        ),
+        Output::Ndjson => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "path": top.record.path,
+                "operation": example.operation,
+                "variables": example.variables,
+            }))?
+        ),
+        Output::Text { .. } => {
+            print!("{}", example.operation);
+            println!("\n# variables");
+            println!("{}", serde_json::to_string_pretty(&example.variables)?);
+        }
+    }
+    Ok(())
 }
 
 /// Fuzzy-find the field, then hand it to rq to locate its resolver in code.

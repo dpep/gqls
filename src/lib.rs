@@ -11,6 +11,7 @@
 //!   Behind the `semantic` cargo feature (pulls in ONNX Runtime).
 
 pub mod cli;
+pub mod example;
 pub mod load;
 #[macro_use]
 pub mod logging;

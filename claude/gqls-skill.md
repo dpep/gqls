@@ -101,6 +101,31 @@ in the background, so the next run is combined and instant; `gqls --warm
 <source>` pre-embeds up front. It ships in the default `cargo install` and the
 Homebrew build (a `--no-default-features` build is fuzzy-only).
 
+## Draft a query to paste (`-e`)
+
+When the goal isn't "where is this field" but "give me something I can put in
+the code", let gqls build it rather than assembling one by hand:
+
+```sh
+gqls Mutation.updateEmployee -e          # operation + variables, as text
+gqls Company.employee -e --json          # {path, operation, variables}
+```
+
+It turns every argument into a variable, selects one level of leaf fields,
+expands an `errors` block only when the payload really has one, and wraps a
+nested field in a root that returns its type. Object-valued fields become
+`# add fields you need` markers — fill those in from the schema rather than
+guessing depth.
+
+Two things still need your judgment:
+
+- **Ambiguous entry points.** If stderr says "also reachable via …", several
+  root fields return that type. gqls picks the one with the fewest required
+  arguments; in a federated schema another path may be the right one. Ask the
+  user rather than silently accepting the pick.
+- **Unreachable fields.** If it reports no root returns the type, don't invent
+  a path — run `gqls --returns <Type>` and show what actually exists.
+
 ## Jump to the resolver (graphql-ruby)
 
 Find a field, then jump to the code that implements it, via `rq`:
