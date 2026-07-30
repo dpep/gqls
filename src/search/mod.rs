@@ -121,13 +121,15 @@ pub fn search<'a>(
 /// and types before leaves), then alphabetically, so listings read predictably.
 fn glob_search<'a>(pattern: &str, records: &'a [SchemaRecord], kind: Option<Kind>) -> Vec<Hit<'a>> {
     use rayon::prelude::*;
-    let against_path = pattern.contains('.');
+    // Parsed once, then tested against every record.
+    let pattern = glob::Pattern::new(pattern);
+    let against_path = pattern.targets_path();
     let mut hits: Vec<Hit> = records
         .par_iter()
         .filter(|r| kind.is_none_or(|k| r.kind == k))
         .filter(|r| {
             let text = if against_path { &r.path } else { &r.name };
-            glob::matches(pattern, text)
+            pattern.matches(text)
         })
         .map(|r| Hit {
             record: r,
@@ -309,6 +311,20 @@ mod tests {
             .collect();
         // only User's members, alphabetical — not UserProfile's, not User itself
         assert_eq!(paths, ["User.email", "User.id"]);
+    }
+
+    #[test]
+    fn brace_alternation_enumerates_each_branch() {
+        let records = vec![
+            rec("firstName", Some("User"), Kind::Field),
+            rec("lastName", Some("User"), Kind::Field),
+            rec("middleName", Some("User"), Kind::Field),
+        ];
+        let paths: Vec<&str> = search("User.{first,last}Name", &records, None, None)
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths, ["User.firstName", "User.lastName"]);
     }
 
     #[test]

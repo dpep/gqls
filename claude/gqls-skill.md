@@ -49,10 +49,11 @@ JSON forms always carry the full text.
   that type's members; otherwise it falls back to fuzzy-matching the whole
   query.
 - Wildcard: `gqls 'User.*'` lists every field on User, `gqls '*.email'` the
-  email field on every type, `gqls 'get*'` every name starting with "get".
-  Always quote the pattern (shell globbing). `*` matches any run of characters
-  including `.`, patterns are anchored, and semantic ranking is skipped — use
-  this to enumerate rather than to search.
+  email field on every type, `gqls 'get*'` every name starting with "get",
+  `gqls 'User.?d'` matches one character, `gqls 'User.{first,last}Name'`
+  alternates. Always quote the pattern (shell globbing). `*`/`?` span `.`,
+  patterns are anchored, and semantic ranking is skipped — use this to
+  enumerate rather than to search.
 - Kind: `gqls createUser -k mutation` — object, field, query, mutation, enum,
   scalar, input_object, interface, union, directive (plurals ok). A bad kind
   lists the valid ones.

@@ -20,6 +20,7 @@ EXAMPLES:
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
   gqls User.email                     qualified Type.field query
   gqls 'User.*'                       wildcard — list a type's fields (quote it)
+  gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls 'cancel a subscription'        rank by meaning (fuzzy + semantic, auto)
@@ -34,6 +35,7 @@ EXAMPLES:
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
   gqls User.email                     qualified Type.field query
   gqls 'User.*'                       wildcard — list a type's fields (quote it)
+  gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
@@ -59,9 +61,9 @@ Semantic search (--semantic, rank by meaning) is not compiled into this build. E
 )]
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
-    /// and `Type.field` queries match against the qualified path. A `*`
-    /// wildcard enumerates instead of searching — quote it (`'User.*'`) so the
-    /// shell doesn't expand it first.
+    /// and `Type.field` queries match against the qualified path. Wildcards
+    /// (`*` any run, `?` one char, `{a,b}` alternatives) enumerate instead of
+    /// searching — quote them (`'User.*'`) so the shell doesn't expand first.
     #[arg(required_unless_present_any = ["clear_cache", "completions", "warm"])]
     query: Option<String>,
 
