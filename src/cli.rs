@@ -21,6 +21,7 @@ EXAMPLES:
   gqls User.email                     qualified Type.field query
   gqls 'User.*'                       wildcard — list a type's fields (quote it)
   gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
+  gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls 'cancel a subscription'        rank by meaning (fuzzy + semantic, auto)
@@ -36,6 +37,7 @@ EXAMPLES:
   gqls User.email                     qualified Type.field query
   gqls 'User.*'                       wildcard — list a type's fields (quote it)
   gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
+  gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
@@ -64,7 +66,7 @@ struct Cli {
     /// and `Type.field` queries match against the qualified path. Wildcards
     /// (`*` any run, `?` one char, `{a,b}` alternatives) enumerate instead of
     /// searching — quote them (`'User.*'`) so the shell doesn't expand first.
-    #[arg(required_unless_present_any = ["clear_cache", "completions", "warm"])]
+    #[arg(required_unless_present_any = ["clear_cache", "completions", "warm", "returns"])]
     query: Option<String>,
 
     /// Schema source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection
@@ -75,6 +77,12 @@ struct Cli {
     /// Restrict to a kind (object, field, query, mutation, enum, scalar, ...).
     #[arg(short, long)]
     kind: Option<String>,
+
+    /// Restrict to fields returning this type, ignoring `[]`/`!` wrappers —
+    /// `--returns Company` finds `myEmployer: Company`. Wildcards work
+    /// (`--returns '*Payload'`). With no QUERY, everything matching is listed.
+    #[arg(long, value_name = "TYPE")]
+    returns: Option<String>,
 
     /// Maximum number of results.
     #[arg(short, long, default_value_t = 20)]
@@ -173,8 +181,9 @@ fn fuzzy_matches<'a>(
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
+    returns: Option<&str>,
 ) -> (Vec<Match<'a>>, bool) {
-    let hits = search::search(query, records, kind, parent);
+    let hits = search::search(query, records, kind, parent, returns);
     let named = search::named_hit(query, &hits);
     let matches = hits
         .into_iter()
@@ -192,6 +201,7 @@ fn semantic_matches<'a>(
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
+    returns: Option<&str>,
     cli: &Cli,
 ) -> Vec<Match<'a>> {
     crate::semantic::search(
@@ -199,6 +209,7 @@ fn semantic_matches<'a>(
         records,
         kind,
         parent,
+        returns,
         cli.limit,
         cli.model.as_deref(),
         cli.refresh,
@@ -348,9 +359,16 @@ pub fn run() -> Result<()> {
     // The schema source. With `--warm` and no explicit source, the sole
     // positional is the schema (there's no query to warm), so `gqls --warm
     // schema.graphql` — and the background spawn — target the right file.
+    // `--returns` needs no QUERY of its own, so a lone positional beside it is
+    // the schema rather than a query — `gqls --returns Company schema.graphql`
+    // reads the way it looks. Same shape as the `--warm` rule.
+    let positional_is_source = cli.source.is_none()
+        && cli.returns.is_some()
+        && cli.query.as_deref().is_some_and(looks_like_source);
+
     let source = if let Some(s) = cli.source.clone() {
         s
-    } else if cli.warm {
+    } else if cli.warm || positional_is_source {
         match cli.query.clone() {
             Some(s) => s,
             None => load::discover()?,
@@ -386,11 +404,14 @@ pub fn run() -> Result<()> {
         }
     }
 
-    // clap guarantees a query unless --clear-cache/--completions/--warm.
-    let query = cli
-        .query
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("a QUERY is required (see --help)"))?;
+    // clap guarantees a query unless --clear-cache/--completions/--warm/--returns.
+    let query = match cli.query.as_deref() {
+        // a positional consumed as the schema above isn't the query
+        Some(q) if !positional_is_source => q,
+        // `--returns Company` on its own lists everything returning Company
+        _ if cli.returns.is_some() => "*",
+        _ => anyhow::bail!("a QUERY is required (see --help)"),
+    };
 
     // A wildcard query (`User.*`) enumerates rather than searches: the pattern
     // does its own scoping and every match is exact, so the qualifier rewrites
@@ -439,6 +460,7 @@ pub fn run() -> Result<()> {
             &records,
             kind,
             parent,
+            cli.returns.as_deref(),
             cli.code.as_deref(),
             cli.limit,
             output,
@@ -450,7 +472,7 @@ pub fn run() -> Result<()> {
     // meaningful total (cosine ranks every record), so it never shows one.
     let t_rank = std::time::Instant::now();
     let (matches, total): (Vec<Match>, usize) = if cli.fuzzy {
-        let (mut fuzzy, _) = fuzzy_matches(query, &records, kind, parent);
+        let (mut fuzzy, _) = fuzzy_matches(query, &records, kind, parent, cli.returns.as_deref());
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         (fuzzy, total)
@@ -460,7 +482,8 @@ pub fn run() -> Result<()> {
             if pattern {
                 crate::status!("--semantic ranks by meaning and ignores wildcards in {query:?}");
             }
-            let matches = semantic_matches(query, &records, kind, parent, &cli);
+            let matches =
+                semantic_matches(query, &records, kind, parent, cli.returns.as_deref(), &cli);
             let total = matches.len();
             (matches, total)
         }
@@ -479,7 +502,8 @@ pub fn run() -> Result<()> {
         // `name` → `lastName`) skips the combine outright: the user typed a
         // word that exists, so semantic ranking would only append lookalike
         // filler below it (and cost the model load).
-        let (mut fuzzy, named) = fuzzy_matches(query, &records, kind, parent);
+        let (mut fuzzy, named) =
+            fuzzy_matches(query, &records, kind, parent, cli.returns.as_deref());
         let total = fuzzy.len();
         fuzzy.truncate(cli.limit);
         #[cfg(feature = "_semantic")]
@@ -498,7 +522,8 @@ pub fn run() -> Result<()> {
                 crate::detail!("{why} — semantic ranking skipped (--semantic to force)");
                 (fuzzy, total)
             } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
-                let semantic = semantic_matches(query, &records, kind, parent, &cli);
+                let semantic =
+                    semantic_matches(query, &records, kind, parent, cli.returns.as_deref(), &cli);
                 (combine(fuzzy, semantic, cli.limit), total)
             } else {
                 spawn_background_warm(&source, &cli.header);
@@ -629,6 +654,7 @@ fn run_resolve(
     records: &[SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
+    returns: Option<&str>,
     code: Option<&str>,
     limit: usize,
     output: Output,
@@ -636,7 +662,7 @@ fn run_resolve(
     if code.is_none() {
         crate::status!("searching code in the current directory (--code to search elsewhere)");
     }
-    let Some(top) = search::search(query, records, kind, parent)
+    let Some(top) = search::search(query, records, kind, parent, returns)
         .into_iter()
         .next()
     else {
@@ -671,6 +697,18 @@ fn run_resolve(
     Ok(())
 }
 
+/// Whether a positional argument is a schema source rather than a query.
+/// Syntactic only (no filesystem check): schema sources are URLs or files with
+/// a schema extension, none of which is a legal GraphQL name, so this can't
+/// swallow a real query.
+fn looks_like_source(arg: &str) -> bool {
+    arg.starts_with("http://")
+        || arg.starts_with("https://")
+        || [".graphql", ".graphqls", ".gql", ".json"]
+            .iter()
+            .any(|ext| arg.to_ascii_lowercase().ends_with(ext))
+}
+
 /// `Query.user(id: ID!, first: Int)` — path plus a compact arg signature.
 fn display_path(r: &SchemaRecord) -> String {
     if r.args.is_empty() {
@@ -682,7 +720,19 @@ fn display_path(r: &SchemaRecord) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{summarize, DESCRIPTION_WIDTH};
+    use super::{looks_like_source, summarize, DESCRIPTION_WIDTH};
+
+    #[test]
+    fn recognizes_schema_sources_but_not_queries() {
+        assert!(looks_like_source("schema.graphql"));
+        assert!(looks_like_source("a/b/Schema.GraphQLS"));
+        assert!(looks_like_source("dump.json"));
+        assert!(looks_like_source("https://api.example.com/graphql"));
+        // legal GraphQL names must stay queries
+        assert!(!looks_like_source("User.email"));
+        assert!(!looks_like_source("Company"));
+        assert!(!looks_like_source("User.*"));
+    }
 
     #[test]
     fn collapses_block_descriptions_to_one_line() {

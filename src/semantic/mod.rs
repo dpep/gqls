@@ -45,11 +45,16 @@ fn bound_tail<T>(hits: &mut Vec<(f64, T)>) {
 /// (a thread dropped on a fuzzy-only exit), and joining always would erase
 /// the overlap. The exact-match skip in the CLI avoids the cost where it
 /// matters instead.
+// The three record filters (kind/parent/returns) plus the embedding knobs add
+// up; grouping the filters into one struct shared with `search::search` is the
+// tidy-up, worth doing when the next filter lands.
+#[allow(clippy::too_many_arguments)]
 pub fn search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
+    returns: Option<&str>,
     limit: usize,
     model: Option<&str>,
     refresh: bool,
@@ -150,10 +155,12 @@ pub fn search<'a>(
     }
 
     let query_vec = compress_matryoshka_vector(&embedder.embed(query));
+    let returns = returns.map(crate::search::glob::Pattern::new);
     let mut hits: Vec<(f64, &SchemaRecord)> = records
         .iter()
         .zip(&vectors)
         .filter(|(r, _)| kind.is_none_or(|k| r.kind == k))
+        .filter(|(r, _)| crate::search::matches_returns(r, returns.as_ref()))
         .filter(|(r, _)| {
             parent.is_none_or(|p| {
                 r.parent
@@ -203,7 +210,7 @@ pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
 /// Embed + cache every record's vector without running a real query — pre-warms
 /// the cache so the first search is instant. Returns the record count.
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
-    let _ = search("", records, None, None, 0, model, refresh);
+    let _ = search("", records, None, None, None, 0, model, refresh);
     records.len()
 }
 

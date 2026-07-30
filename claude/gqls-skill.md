@@ -54,6 +54,12 @@ JSON forms always carry the full text.
   alternates. Always quote the pattern (shell globbing). `*`/`?` span `.`,
   patterns are anchored, and semantic ranking is skipped — use this to
   enumerate rather than to search.
+- Return type: `gqls --returns Company` finds fields returning Company even
+  when the name doesn't say so (`Query.myEmployer: Company`), ignoring
+  `[]`/`!` wrappers; wildcards allowed (`--returns '*Payload'`). Add
+  `-k query` to find an entry point into a type. No QUERY needed — it lists
+  every match. This is the way to answer "what returns X", which a name
+  search cannot.
 - Kind: `gqls createUser -k mutation` — object, field, query, mutation, enum,
   scalar, input_object, interface, union, directive (plurals ok). A bad kind
   lists the valid ones.

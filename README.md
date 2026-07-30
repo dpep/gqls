@@ -52,6 +52,18 @@ gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
 ```
 
+### Filter by return type
+`--returns TYPE` keeps only fields whose type is `TYPE`, ignoring `[]`/`!` wrappers — the way to find a field when you know what it returns but not what it's called:
+
+```sh
+gqls --returns Company                  # every field returning a Company
+gqls --returns Company -k query         # ...just the root queries — an entry point
+gqls --returns '*Payload'               # wildcards work here too
+gqls employee --returns Employee        # combined with a name search
+```
+
+A name search can't answer this: `Query.myEmployer: Company` doesn't contain the word "Company" anywhere in its name or path. With no QUERY at all, `--returns` lists everything it matches.
+
 ### Wildcards
 A wildcard in the query switches from fuzzy search to enumeration — every match is exact, ordered by kind then alphabetically. **Quote the pattern** so your shell doesn't expand it against local filenames:
 

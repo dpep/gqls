@@ -121,6 +121,20 @@ pub struct SchemaRecord {
     pub directives: Vec<String>,
 }
 
+impl SchemaRecord {
+    /// The return/field type with GraphQL's list and non-null wrappers peeled
+    /// off — `[User!]!` → `User` — or `None` for a record that has no type
+    /// (a type definition itself, a directive). This is the name to compare
+    /// against when asking "what returns a `User`?".
+    pub fn base_type(&self) -> Option<&str> {
+        let base = self
+            .type_ref
+            .as_deref()?
+            .trim_matches(|c| matches!(c, '[' | ']' | '!' | ' '));
+        (!base.is_empty()).then_some(base)
+    }
+}
+
 /// The root operation type names (Query / Mutation / Subscription), used to
 /// classify a type's fields as root operations vs. plain object fields. Shared
 /// by the SDL and introspection loaders so that one rule lives in one place;

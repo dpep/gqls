@@ -107,11 +107,26 @@ pub fn search<'a>(
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
+    returns: Option<&str>,
 ) -> Vec<Hit<'a>> {
+    // Built once here rather than per record; a plain type name matches
+    // exactly (case-insensitive), and wildcards work for free.
+    let returns = returns.map(glob::Pattern::new);
+    let returns = returns.as_ref();
     if glob::is_pattern(query) {
-        return glob_search(query, records, kind);
+        return glob_search(query, records, kind, returns);
     }
-    fuzzy_search(query, records, kind, parent)
+    fuzzy_search(query, records, kind, parent, returns)
+}
+
+/// Whether a record's return type matches the `--returns` pattern. A record
+/// with no type (a type definition, a directive) never matches — asking what
+/// returns a `User` is asking about fields, not about types themselves.
+pub fn matches_returns(r: &SchemaRecord, returns: Option<&glob::Pattern>) -> bool {
+    match returns {
+        None => true,
+        Some(p) => r.base_type().is_some_and(|t| p.matches(t)),
+    }
 }
 
 /// Enumerate the records a wildcard pattern matches. A pattern containing `.`
@@ -119,7 +134,12 @@ pub fn search<'a>(
 /// leaf name (`get*`). Every match is exact by construction, so there's no
 /// quality tail to cut and no fuzzy score to rank by — order by kind (roots
 /// and types before leaves), then alphabetically, so listings read predictably.
-fn glob_search<'a>(pattern: &str, records: &'a [SchemaRecord], kind: Option<Kind>) -> Vec<Hit<'a>> {
+fn glob_search<'a>(
+    pattern: &str,
+    records: &'a [SchemaRecord],
+    kind: Option<Kind>,
+    returns: Option<&glob::Pattern>,
+) -> Vec<Hit<'a>> {
     use rayon::prelude::*;
     // Parsed once, then tested against every record.
     let pattern = glob::Pattern::new(pattern);
@@ -127,6 +147,7 @@ fn glob_search<'a>(pattern: &str, records: &'a [SchemaRecord], kind: Option<Kind
     let mut hits: Vec<Hit> = records
         .par_iter()
         .filter(|r| kind.is_none_or(|k| r.kind == k))
+        .filter(|r| matches_returns(r, returns))
         .filter(|r| {
             let text = if against_path { &r.path } else { &r.name };
             pattern.matches(text)
@@ -149,6 +170,7 @@ fn fuzzy_search<'a>(
     records: &'a [SchemaRecord],
     kind: Option<Kind>,
     parent: Option<&str>,
+    returns: Option<&glob::Pattern>,
 ) -> Vec<Hit<'a>> {
     use rayon::prelude::*;
     // Records score independently, so scan them in parallel — the win shows
@@ -157,6 +179,7 @@ fn fuzzy_search<'a>(
     let mut hits: Vec<Hit> = records
         .par_iter()
         .filter(|r| kind.is_none_or(|k| r.kind == k))
+        .filter(|r| matches_returns(r, returns))
         .filter(|r| {
             parent.is_none_or(|p| {
                 r.parent
@@ -186,6 +209,15 @@ mod tests {
     use super::*;
 
     fn rec(name: &str, parent: Option<&str>, kind: Kind) -> SchemaRecord {
+        typed_rec(name, parent, kind, None)
+    }
+
+    fn typed_rec(
+        name: &str,
+        parent: Option<&str>,
+        kind: Kind,
+        type_ref: Option<&str>,
+    ) -> SchemaRecord {
         let path = match parent {
             Some(p) => format!("{p}.{name}"),
             None => name.to_string(),
@@ -195,7 +227,7 @@ mod tests {
             name: name.into(),
             kind,
             parent: parent.map(Into::into),
-            type_ref: None,
+            type_ref: type_ref.map(Into::into),
             args: vec![],
             description: None,
             deprecated: None,
@@ -246,7 +278,7 @@ mod tests {
             rec("employees", Some("CompanyProfile"), Kind::Field),
             rec("employer", Some("CompanyMemberStats"), Kind::Field),
         ];
-        let hits = search("Company.employe", &records, None, Some("Company"));
+        let hits = search("Company.employe", &records, None, Some("Company"), None);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.path, "Company.employees");
     }
@@ -274,7 +306,7 @@ mod tests {
     #[test]
     fn named_hit_accepts_exact_and_boundary_words() {
         let records = vec![rec("name", Some("User"), Kind::Field)];
-        let hits = search("User.name", &records, None, None);
+        let hits = search("User.name", &records, None, None, None);
         assert!(named_hit("User.name", &hits));
         assert!(named_hit("user.NAME", &hits));
 
@@ -284,7 +316,7 @@ mod tests {
             rec("lastName", Some("User"), Kind::Field),
             rec("fullName", Some("User"), Kind::Field),
         ];
-        let hits = search("User.name", &variants, None, Some("User"));
+        let hits = search("User.name", &variants, None, Some("User"), None);
         assert!(named_hit("User.name", &hits));
     }
 
@@ -292,7 +324,7 @@ mod tests {
     fn named_hit_rejects_mid_word_and_scattered_matches() {
         let records = vec![rec("accountant", Some("User"), Kind::Field)];
         // `count` sits mid-word in accountant — a fuzzy match, not a naming
-        let hits = search("count", &records, None, None);
+        let hits = search("count", &records, None, None, None);
         assert!(!hits.is_empty());
         assert!(!named_hit("count", &hits));
     }
@@ -305,7 +337,7 @@ mod tests {
             rec("email", Some("UserProfile"), Kind::Field),
             rec("User", None, Kind::Object),
         ];
-        let paths: Vec<&str> = search("User.*", &records, None, None)
+        let paths: Vec<&str> = search("User.*", &records, None, None, None)
             .iter()
             .map(|h| h.record.path.as_str())
             .collect();
@@ -320,7 +352,7 @@ mod tests {
             rec("lastName", Some("User"), Kind::Field),
             rec("middleName", Some("User"), Kind::Field),
         ];
-        let paths: Vec<&str> = search("User.{first,last}Name", &records, None, None)
+        let paths: Vec<&str> = search("User.{first,last}Name", &records, None, None, None)
             .iter()
             .map(|h| h.record.path.as_str())
             .collect();
@@ -334,7 +366,7 @@ mod tests {
             rec("getCompany", Some("Query"), Kind::Query),
             rec("forget", Some("User"), Kind::Field),
         ];
-        let paths: Vec<&str> = search("get*", &records, None, None)
+        let paths: Vec<&str> = search("get*", &records, None, None, None)
             .iter()
             .map(|h| h.record.path.as_str())
             .collect();
@@ -350,7 +382,52 @@ mod tests {
             rec("user", Some("Query"), Kind::Query),
             rec("name", Some("User"), Kind::Field),
         ];
-        assert_eq!(search("*", &records, None, None).len(), 2);
+        assert_eq!(search("*", &records, None, None, None).len(), 2);
+    }
+
+    #[test]
+    fn returns_filter_finds_fields_by_return_type() {
+        let records = vec![
+            // the case a name search can't reach: the field isn't called Company
+            typed_rec("myEmployer", Some("Query"), Kind::Query, Some("Company")),
+            typed_rec(
+                "employees",
+                Some("Company"),
+                Kind::Field,
+                Some("[Employee!]!"),
+            ),
+            typed_rec("name", Some("Company"), Kind::Field, Some("String!")),
+            typed_rec("Company", None, Kind::Object, None),
+        ];
+        let paths: Vec<&str> = search("*", &records, None, None, Some("Company"))
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        // the field returning Company — not the Company type itself
+        assert_eq!(paths, ["Query.myEmployer"]);
+
+        // wrappers are peeled: [Employee!]! matches Employee
+        let paths: Vec<&str> = search("*", &records, None, None, Some("Employee"))
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths, ["Company.employees"]);
+    }
+
+    #[test]
+    fn returns_filter_accepts_wildcards_and_composes() {
+        let records = vec![
+            typed_rec("a", Some("Mutation"), Kind::Mutation, Some("APayload!")),
+            typed_rec("b", Some("Mutation"), Kind::Mutation, Some("BPayload!")),
+            typed_rec("c", Some("Mutation"), Kind::Mutation, Some("String")),
+            typed_rec("d", Some("Type"), Kind::Field, Some("APayload")),
+        ];
+        // wildcard return type, narrowed by kind
+        let paths: Vec<&str> = search("*", &records, Some(Kind::Mutation), None, Some("*Payload"))
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths, ["Mutation.a", "Mutation.b"]);
     }
 
     #[test]
@@ -361,7 +438,7 @@ mod tests {
             // matches `user` only as a scattered subsequence
             rec("uzszezr", Some("Query"), Kind::Query),
         ];
-        let paths: Vec<&str> = search("user", &records, None, None)
+        let paths: Vec<&str> = search("user", &records, None, None, None)
             .iter()
             .map(|h| h.record.path.as_str())
             .collect();
@@ -371,7 +448,7 @@ mod tests {
     #[test]
     fn weak_matches_survive_when_nothing_stronger_exists() {
         let records = vec![rec("uzszezr", Some("Query"), Kind::Query)];
-        assert_eq!(search("user", &records, None, None).len(), 1);
+        assert_eq!(search("user", &records, None, None, None).len(), 1);
     }
 
     #[test]
@@ -380,6 +457,6 @@ mod tests {
         let records: Vec<SchemaRecord> = (0..50)
             .map(|i| rec(&format!("user{i}"), Some("Query"), Kind::Query))
             .collect();
-        assert_eq!(search("user", &records, None, None).len(), 50);
+        assert_eq!(search("user", &records, None, None, None).len(), 50);
     }
 }
