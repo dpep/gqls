@@ -22,6 +22,16 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 step() { printf '\n=== %s\n' "$*"; }
 
+# Drop this crate's artifacts before checking anything. Cargo's fingerprint for
+# a crate can wedge "fresh" — observed here more than once — after which it
+# reports success without recompiling changed sources, and the gate cheerfully
+# validates code that isn't the code you wrote. Only gqls-cli is rebuilt (the
+# expensive dependencies stay cached), which costs about five seconds and makes
+# a green run mean what it says. `cargo clean -p` is also the manual fix if a
+# build ever reports an error that contradicts the source.
+step "clean (this crate only)"
+cargo clean -p gqls-cli
+
 step "fmt"
 cargo fmt --check
 
