@@ -48,12 +48,14 @@ JSON forms always carry the full text.
   misspellings snap to the unique closest type), results are hard-filtered to
   that type's members; otherwise it falls back to fuzzy-matching the whole
   query.
-- Wildcard: `gqls 'User.*'` lists every field on User, `gqls '*.email'` the
-  email field on every type, `gqls 'get*'` every name starting with "get",
-  `gqls 'User.?d'` matches one character, `gqls 'User.{first,last}Name'`
-  alternates. Always quote the pattern (shell globbing). `*`/`?` span `.`,
-  patterns are anchored, and semantic ranking is skipped — use this to
-  enumerate rather than to search.
+- Wildcard: `gqls User.` lists every field on User — a trailing dot is
+  shorthand for `.*` and needs no quoting, so prefer it. The general forms
+  are `gqls '*.email'` (that field on every type), `gqls 'get*'` (names
+  starting with "get"), `gqls 'User.?d'` (`?` = one character), and
+  `gqls 'User.{first,last}Name'` (alternatives) — quote those, since the
+  shell would expand `*`/`?`/`{}` first. `*`/`?` span `.`, patterns are
+  anchored, and semantic ranking is skipped: this enumerates, it doesn't
+  search.
 - Return type: `gqls --returns Company` finds fields returning Company even
   when the name doesn't say so (`Query.myEmployer: Company`), ignoring
   `[]`/`!` wrappers; wildcards allowed (`--returns '*Payload'`). Add

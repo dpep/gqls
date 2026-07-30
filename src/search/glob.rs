@@ -24,6 +24,10 @@ impl Pattern {
     /// before its `{`) are left literal rather than rejected — a query is a
     /// user's guess, not a program.
     pub fn new(pattern: &str) -> Self {
+        // `User.` is shorthand for `User.*` — a trailing dot reads as "and
+        // what's inside", and needs no shell quoting the way a bare `*` does.
+        let shorthand = trailing_dot(pattern).then(|| format!("{pattern}*"));
+        let pattern = shorthand.as_deref().unwrap_or(pattern);
         let mut alternatives = Vec::new();
         expand(pattern, &mut alternatives);
         // `expand` stops one past the cap, so this distinguishes "exactly at
@@ -61,10 +65,18 @@ pub fn is_pattern(query: &str) -> bool {
     }
     query.contains('*')
         || query.contains('?')
+        || trailing_dot(query)
         || query
             .find('{')
             .zip(query.rfind('}'))
             .is_some_and(|(open, close)| open < close)
+}
+
+/// Whether a query uses the `User.` shorthand for `User.*`. A lone `.` doesn't
+/// count — there's no type named there, so it stays an ordinary (fruitless)
+/// search rather than a pattern matching nothing.
+fn trailing_dot(query: &str) -> bool {
+    query.len() > 1 && query.ends_with('.')
 }
 
 /// Match a single brace-free pattern: linear two-pointer walk that backtracks
@@ -227,6 +239,18 @@ mod tests {
         assert!(!m("", "x"));
         assert!(m("**", "x"));
         assert!(m("a*", "a"));
+    }
+
+    #[test]
+    fn trailing_dot_is_shorthand_for_dot_star() {
+        assert!(is_pattern("User."));
+        assert!(m("User.", "User.email"));
+        assert!(m("User.", "User.posts.first"));
+        // same anchoring as the long form
+        assert!(!m("User.", "UserProfile.email"));
+        assert!(!m("User.", "User"));
+        // a lone dot isn't a pattern
+        assert!(!is_pattern("."));
     }
 
     #[test]

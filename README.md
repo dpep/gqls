@@ -68,6 +68,7 @@ A name search can't answer this: `Query.myEmployer: Company` doesn't contain the
 A wildcard in the query switches from fuzzy search to enumeration — every match is exact, ordered by kind then alphabetically. **Quote the pattern** so your shell doesn't expand it against local filenames:
 
 ```sh
+gqls User.                     # shorthand for 'User.*' — no quoting needed
 gqls 'User.*'                  # every field on User (nested paths included)
 gqls '*.email'                 # the email field on every type that has one
 gqls 'get*'                    # every name starting with "get"
@@ -77,11 +78,11 @@ gqls 'User.{first,last}Name'   # brace alternation, shell-style
 gqls '{Query,Mutation}.*'      # every root operation
 ```
 
-Three metacharacters, and nothing else: `*` (any run of characters), `?` (exactly one), and `{a,b}` (alternatives, nestable). `*` and `?` span `.`, so `'User.*'` reaches nested paths. Patterns are anchored, so `'User.*'` never wanders into `UserProfile`. There's no escape syntax — GraphQL names can't contain these characters anyway — and a query with whitespace is treated as prose, so a phrase ending in `?` stays a normal search.
+A trailing `.` is shorthand for `.*`, which is the form worth remembering: no shell quoting required. Beyond that, three metacharacters and nothing else: `*` (any run of characters), `?` (exactly one), and `{a,b}` (alternatives, nestable). `*` and `?` span `.`, so `'User.*'` reaches nested paths. Patterns are anchored, so `'User.*'` never wanders into `UserProfile`. There's no escape syntax — GraphQL names can't contain these characters anyway — and a query with whitespace is treated as prose, so a phrase ending in `?` stays a normal search.
 
 Wildcards skip semantic ranking (you asked for a list, not a guess); combine them with `-k` to narrow further (`gqls '*.email' -k input_field`).
 
-In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". A misspelled qualifier snaps to the unique closest type (`Compnay.` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching.
+In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". A misspelled qualifier snaps to the unique closest type (`Compnay.employe` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching. That correction applies to fuzzy queries, not to wildcards — patterns match literally, so `Compnay.` finds nothing rather than guessing.
 
 ### Semantic search — automatic, combined with fuzzy
 By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), MRL-compressed to 64 dimensions and cosine-ranked; the model is fetched once from the HuggingFace Hub, then cached offline.

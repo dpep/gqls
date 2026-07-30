@@ -19,7 +19,7 @@ EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
   gqls User.email                     qualified Type.field query
-  gqls 'User.*'                       wildcard — list a type's fields (quote it)
+  gqls User.                          list a type's fields (or 'User.*')
   gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
   gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
@@ -35,7 +35,7 @@ EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
   gqls User.email                     qualified Type.field query
-  gqls 'User.*'                       wildcard — list a type's fields (quote it)
+  gqls User.                          list a type's fields (or 'User.*')
   gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
   gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
@@ -63,9 +63,10 @@ Semantic search (--semantic, rank by meaning) is not compiled into this build. E
 )]
 struct Cli {
     /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
-    /// and `Type.field` queries match against the qualified path. Wildcards
-    /// (`*` any run, `?` one char, `{a,b}` alternatives) enumerate instead of
-    /// searching — quote them (`'User.*'`) so the shell doesn't expand first.
+    /// and `Type.field` queries match against the qualified path. A trailing
+    /// dot lists a type's fields (`User.`); the general wildcards (`*` any
+    /// run, `?` one char, `{a,b}` alternatives) enumerate too, but quote them
+    /// so the shell doesn't expand them first.
     #[arg(required_unless_present_any = ["clear_cache", "completions", "warm", "returns"])]
     query: Option<String>,
 
