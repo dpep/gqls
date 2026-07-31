@@ -763,8 +763,19 @@ fn run_resolve(
                     top.record.path
                 );
             }
+            // Say so when the best we have is a bare name search rather than a
+            // graphql-ruby convention: an unlabelled list invites trusting a
+            // top-ranked guess, which is worse than offering nothing.
+            if hits.first().is_some_and(|h| h.loose) {
+                crate::status!(
+                    "no graphql-ruby convention matched {} — these are name-similarity \
+                     guesses, not resolver lookups",
+                    top.record.path
+                );
+            }
             for h in &hits {
-                println!("{}:{}  {}  (via {})", h.file, h.line, h.name, h.via);
+                let flag = if h.loose { "  (guess)" } else { "" };
+                println!("{}:{}  {}  (via {}){flag}", h.file, h.line, h.name, h.via);
             }
         }
     }

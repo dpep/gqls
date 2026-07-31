@@ -36,6 +36,10 @@ pub struct RqHit {
     /// elsewhere in the monorepo.
     #[serde(default, skip_deserializing)]
     pub proximity: usize,
+    /// Whether the candidate that found this was a bare name search rather
+    /// than a graphql-ruby convention — a guess, and labelled as one.
+    #[serde(default, skip_deserializing)]
+    pub loose: bool,
     /// Index of the candidate query that surfaced this hit (0 = best).
     #[serde(skip)]
     candidate_rank: usize,
@@ -55,12 +59,13 @@ pub fn resolve(
     let mut seen = HashSet::new();
     let mut hits: Vec<RqHit> = Vec::new();
     for (idx, cand) in candidates(rec).into_iter().enumerate() {
-        let found = run_rq(&cand, code_dir)?;
-        crate::detail!("rq candidate {:?} -> {} hit(s)", cand, found.len());
+        let found = run_rq(&cand.query, code_dir)?;
+        crate::detail!("rq candidate {:?} -> {} hit(s)", cand.query, found.len());
         for mut hit in found {
             if seen.insert(format!("{}:{}", hit.file, hit.line)) {
-                hit.via = cand.clone();
+                hit.via = cand.query.clone();
                 hit.candidate_rank = idx;
+                hit.loose = cand.loose;
                 hits.push(hit);
             }
         }
@@ -82,10 +87,15 @@ pub fn resolve(
         }
     }
 
+    // Which convention matched comes first: a hit from `Mutations::VerbNoun`
+    // is evidence, while proximity is a tiebreak between equally-good matches.
+    // Ranking on proximity first let five unrelated files that happen to sit
+    // one directory closer bury a confident match.
     hits.sort_by(|a, b| {
-        b.proximity
-            .cmp(&a.proximity)
+        a.loose
+            .cmp(&b.loose)
             .then(a.candidate_rank.cmp(&b.candidate_rank))
+            .then(b.proximity.cmp(&a.proximity))
             .then(b.confidence.total_cmp(&a.confidence))
     });
     hits.truncate(limit);
@@ -116,7 +126,27 @@ fn shared_prefix(a: &Path, b: &Path) -> usize {
 
 /// graphql-ruby query candidates for a record, highest-priority first. Uses
 /// rq's qualified syntax (`Class#method`, `Module::Class`).
-pub fn candidates(rec: &SchemaRecord) -> Vec<String> {
+pub struct Candidate {
+    pub query: String,
+    /// A bare name search, matching any symbol anywhere in the repo rather than
+    /// a graphql-ruby convention. Kept because it's sometimes the only thing
+    /// that hits, ranked last, and reported — its hits are guesses.
+    pub loose: bool,
+}
+
+impl Candidate {
+    fn convention(query: String) -> Self {
+        Self {
+            query,
+            loose: false,
+        }
+    }
+    fn fallback(query: String) -> Self {
+        Self { query, loose: true }
+    }
+}
+
+pub fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
     let field = &rec.name;
     let snake = to_snake(field);
     let pascal = to_pascal(field);
@@ -124,30 +154,38 @@ pub fn candidates(rec: &SchemaRecord) -> Vec<String> {
 
     match rec.kind {
         Kind::Mutation => {
-            c.push(format!("Mutations::{pascal}"));
-            c.push(pascal.clone());
-            c.push(format!("{pascal}Mutation"));
+            c.push(Candidate::convention(format!("Mutations::{pascal}")));
+            c.push(Candidate::convention(format!("{pascal}Mutation")));
             if let Some(t) = &rec.parent {
-                c.push(format!("{t}Type#{snake}"));
+                // `MutationType#field`, and the bare root class name that
+                // federated subgraphs use (`…::Root::Mutation#field`).
+                c.push(Candidate::convention(format!("{t}Type#{snake}")));
+                c.push(Candidate::convention(format!("{t}#{snake}")));
             }
-            c.push(snake.clone());
+            c.push(Candidate::fallback(pascal.clone()));
+            c.push(Candidate::fallback(snake.clone()));
         }
         Kind::Query | Kind::Subscription => {
-            c.push(format!("Resolvers::{pascal}"));
-            c.push(format!("{pascal}Resolver"));
-            c.push(format!("Resolvers::{pascal}Resolver"));
+            c.push(Candidate::convention(format!("Resolvers::{pascal}")));
+            c.push(Candidate::convention(format!("{pascal}Resolver")));
+            c.push(Candidate::convention(format!(
+                "Resolvers::{pascal}Resolver"
+            )));
             if let Some(t) = &rec.parent {
-                c.push(format!("{t}Type#{snake}"));
+                // A federated subgraph names its root class `Query`, not
+                // `QueryType`, so try both rather than assuming the literal.
+                c.push(Candidate::convention(format!("{t}Type#{snake}")));
+                c.push(Candidate::convention(format!("{t}#{snake}")));
             }
-            c.push(snake.clone());
+            c.push(Candidate::fallback(snake.clone()));
         }
         Kind::Field | Kind::InputField => {
             if let Some(t) = &rec.parent {
-                c.push(format!("{t}Type#{snake}"));
-                c.push(format!("{t}#{snake}"));
-                c.push(format!("Types::{t}Type#{snake}"));
+                c.push(Candidate::convention(format!("{t}Type#{snake}")));
+                c.push(Candidate::convention(format!("{t}#{snake}")));
+                c.push(Candidate::convention(format!("Types::{t}Type#{snake}")));
             }
-            c.push(snake.clone());
+            c.push(Candidate::fallback(snake.clone()));
         }
         // a type: jump to its `XType` / `Types::X` class
         Kind::Object
@@ -157,14 +195,14 @@ pub fn candidates(rec: &SchemaRecord) -> Vec<String> {
         | Kind::Enum
         | Kind::Scalar => {
             let t = &rec.name;
-            c.push(format!("{t}Type"));
-            c.push(format!("Types::{t}"));
-            c.push(format!("Types::{t}Type"));
-            c.push(t.clone());
+            c.push(Candidate::convention(format!("{t}Type")));
+            c.push(Candidate::convention(format!("Types::{t}")));
+            c.push(Candidate::convention(format!("Types::{t}Type")));
+            c.push(Candidate::fallback(t.clone()));
         }
         Kind::EnumValue | Kind::Directive => {
-            c.push(pascal.clone());
-            c.push(snake.clone());
+            c.push(Candidate::fallback(pascal.clone()));
+            c.push(Candidate::fallback(snake.clone()));
         }
     }
     c
@@ -173,7 +211,10 @@ pub fn candidates(rec: &SchemaRecord) -> Vec<String> {
 fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
     let verbose = crate::logging::is_verbose();
     let mut cmd = Command::new("rq");
-    cmd.arg("--json").arg("--limit").arg("5");
+    // Ten, not five: the correct definition was being cut inside rq before
+    // gqls could rank it — two structurally identical fields differed only in
+    // where they fell in one noisy list. The final `limit` still applies.
+    cmd.arg("--json").arg("--limit").arg("10");
     // Mirror `gqls -v` into rq: it traces its own decisions (root, coverage,
     // warming) to stderr, which we let stream straight to the terminal. Without
     // -v we keep capturing rq's stderr so a failure can surface its message.
@@ -269,22 +310,43 @@ mod tests {
         assert_eq!(to_pascal("createUser"), "CreateUser");
     }
 
+    /// The queries a record produces, in order.
+    fn queries(rec: &SchemaRecord) -> Vec<String> {
+        candidates(rec).into_iter().map(|c| c.query).collect()
+    }
+
     #[test]
     fn root_query_prefers_resolver_then_type_method() {
-        let c = candidates(&rec("user", Some("Query"), Kind::Query));
+        let c = queries(&rec("user", Some("Query"), Kind::Query));
         assert_eq!(c[0], "Resolvers::User");
         assert!(c.contains(&"QueryType#user".to_string()));
+        // a federated subgraph's root class is `Query`, not `QueryType`
+        assert!(c.contains(&"Query#user".to_string()), "{c:?}");
     }
 
     #[test]
     fn mutation_prefers_mutation_class() {
-        let c = candidates(&rec("createUser", Some("Mutation"), Kind::Mutation));
+        let c = queries(&rec("createUser", Some("Mutation"), Kind::Mutation));
         assert_eq!(c[0], "Mutations::CreateUser");
     }
 
     #[test]
+    fn bare_name_searches_are_marked_loose_and_come_last() {
+        let c = candidates(&rec("user", Some("Query"), Kind::Query));
+        let first_loose = c.iter().position(|c| c.loose).expect("a fallback exists");
+        // every convention is tried before any bare-name guess
+        assert!(
+            c[..first_loose].iter().all(|c| !c.loose),
+            "{:?}",
+            c.iter().map(|c| (&c.query, c.loose)).collect::<Vec<_>>()
+        );
+        assert!(c[first_loose..].iter().all(|c| c.loose));
+        assert_eq!(c[first_loose].query, "user");
+    }
+
+    #[test]
     fn object_field_targets_the_type_method() {
-        let c = candidates(&rec("nameWithOwner", Some("Repository"), Kind::Field));
+        let c = queries(&rec("nameWithOwner", Some("Repository"), Kind::Field));
         assert_eq!(c[0], "RepositoryType#name_with_owner");
     }
 }

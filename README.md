@@ -137,7 +137,7 @@ The rules are deliberately conservative, because a wrong guess costs more than a
 - **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# add fields you need` marker per object-valued field.
 - **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
 - **Input objects and enums are expanded underneath** — every input type the arguments refer to, followed transitively through input fields, so you can fill in `"<EmployeeInput!>"` without opening the schema. Expansion is flat and each type appears once, so a self-referential filter (`Filter { and: [Filter!] }`) terminates.
-- **Abstract types become inline fragments.** A union has no fields of its own, so it's written as `... on Member { … }` over each concrete type — the only form a server accepts. Big unions list the first few and name the rest.
+- **Abstract types become inline fragments.** A union has no fields of its own, so it's written as `... on Member { … }` over each concrete type — the only form a server accepts. An interface selects its common fields once, then adds a fragment per implementor carrying only the fields that implementor *adds*, since those are otherwise unreachable. Big unions list the first few and name the rest.
 - **Deprecated fields are flagged, not dropped.** They stay in the selection marked `# deprecated: reason`, and a stderr line names them — silently omitting a field the schema still serves is its own surprise.
 - **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, the pick and the alternatives are both named on stderr. When none does, it's an error with a pointer to `--returns`, not a guess.
 
@@ -151,7 +151,9 @@ $ gqls Query.user schema.graphql -R --code ./app
 app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
 ```
 
-`gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates. When the schema is a local file, candidates are also ranked by package proximity to it — so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
+`gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates, best convention first; package proximity to the schema file breaks ties, so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
+
+**Its reliability varies by field kind, and it says so.** Mutations are the strong case: `Mutations::VerbNoun` is a near-universal convention. Root fields also try the bare root class (`Query#field`), since a federated subgraph names its root `Query` rather than `QueryType`. When no convention matches, gqls falls back to searching for the name alone — those results are marked `(guess)` and announced on stderr, because a name-similarity hit is not a resolver lookup. Fields declared purely as `field :name, Type` with no method body currently can't be found at all: `rq` locates definitions, and a macro call isn't one.
 
 ### Output
 Text results carry the path, the type, the kind, and the schema description — a match is usually confirmable without opening the schema:

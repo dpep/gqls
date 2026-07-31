@@ -119,7 +119,8 @@ it prints runs as-is. It selects one level of leaf fields, expands an `errors`
 block only when the payload really has one, and wraps a nested field in a root
 that returns its type. Object-valued fields become `# add fields you need`
 markers — `--depth N` expands them when you want more. A union is written as
-inline fragments over its members, and deprecated fields stay in the selection
+inline fragments over its members (an interface adds one per implementor for
+the fields it adds), and deprecated fields stay in the selection
 marked `# deprecated: reason` with a stderr warning naming them (tell the user
 rather than pasting one silently). Input
 objects and enums referenced by the arguments are expanded underneath, so a
@@ -144,8 +145,14 @@ gqls Query.user <source> -R --code <server-dir>
 ```
 
 Tries graphql-ruby conventions (resolver class, type method, mutation class) and
-ranks the candidates. Needs the `rq` CLI installed and a server dir that's a git
-repo `rq` has indexed.
+ranks the candidates, best convention first. Needs the `rq` CLI installed and a
+server dir that's a git repo `rq` has indexed.
+
+Trust it unevenly: mutations resolve reliably, root and object fields less so.
+Results marked `(guess)` came from a bare name search after every convention
+missed — report those as guesses rather than as the resolver, and note that a
+field declared only as `field :name, Type` (no method body) can't be found this
+way at all.
 
 ## Installing / updating the binary
 

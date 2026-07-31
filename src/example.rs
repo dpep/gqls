@@ -294,7 +294,7 @@ impl<'a> Schema<'a> {
         // is spelled with inline fragments over the concrete types.
         if let Some(rec) = self.types.get(type_name) {
             if rec.kind == Kind::Union {
-                return self.inline_fragments(rec, depth, deprecated);
+                return self.inline_fragments(rec, depth, deprecated, &[]);
             }
         }
 
@@ -338,6 +338,23 @@ impl<'a> Schema<'a> {
             }
         }
         lines.extend(deferred);
+
+        // An interface's own fields are only the common ones. Its implementors
+        // usually carry the fields you actually came for, and they're
+        // unreachable without fragments — so append what each one adds.
+        if let Some(rec) = self.types.get(type_name) {
+            if rec.kind == Kind::Interface {
+                let common: Vec<&str> = self
+                    .fields
+                    .get(type_name)
+                    .into_iter()
+                    .flatten()
+                    .map(|f| f.name.as_str())
+                    .collect();
+                lines.extend(self.inline_fragments(rec, depth, deprecated, &common));
+            }
+        }
+
         if lines.is_empty() {
             // A type this schema doesn't detail. `__typename` is always valid
             // and keeps the query runnable.
@@ -347,32 +364,54 @@ impl<'a> Schema<'a> {
     }
 
     /// `... on User { … }` for each of an abstract type's concrete types.
+    /// `skip` names fields already selected on the abstract type itself, so an
+    /// interface's fragments show only what each implementor adds.
     fn inline_fragments(
         &self,
         rec: &SchemaRecord,
         depth: usize,
         deprecated: &mut Vec<String>,
+        skip: &[&str],
     ) -> Vec<String> {
         /// Enough to show the shape without burying the query; a big union
         /// lists the rest as a comment instead.
         const MAX_MEMBERS: usize = 6;
 
         if rec.possible_types.is_empty() {
-            return vec![
-                "__typename".to_string(),
-                "# add inline fragments: ... on ConcreteType { … }".to_string(),
-            ];
+            // A union we can't detail is the only case with nothing to select.
+            return match rec.kind {
+                Kind::Union => vec![
+                    "__typename".to_string(),
+                    "# add inline fragments: ... on ConcreteType { … }".to_string(),
+                ],
+                _ => Vec::new(),
+            };
         }
-        let mut lines = vec!["__typename".to_string()];
+        let mut fragments = Vec::new();
         for member in rec.possible_types.iter().take(MAX_MEMBERS) {
-            let inner = self.selection(member, depth, deprecated);
+            let inner: Vec<String> = self
+                .selection(member, depth, deprecated)
+                .into_iter()
+                // Drop what the abstract type already selected, and the
+                // markers that come with it — repeating them adds nothing.
+                .filter(|l| {
+                    let name = l.split([' ', '{']).next().unwrap_or(l);
+                    !skip.contains(&name) && !(l.starts_with('#') && !skip.is_empty())
+                })
+                .collect();
             if inner.is_empty() {
-                continue;
+                continue; // this implementor adds nothing of its own
             }
-            lines.push(format!("... on {member} {{"));
-            lines.extend(inner.into_iter().map(|l| format!("  {l}")));
-            lines.push("}".to_string());
+            fragments.push(format!("... on {member} {{"));
+            fragments.extend(inner.into_iter().map(|l| format!("  {l}")));
+            fragments.push("}".to_string());
         }
+        if fragments.is_empty() {
+            return Vec::new();
+        }
+        // `__typename` is what makes the fragments interpretable in a response.
+        let mut lines = vec!["__typename".to_string()];
+        lines.append(&mut fragments);
         if rec.possible_types.len() > MAX_MEMBERS {
             lines.push(format!(
                 "# {} more: {}",

@@ -128,6 +128,41 @@ fn a_union_return_becomes_inline_fragments_over_its_members() {
 }
 
 #[test]
+fn an_interface_reaches_its_implementors_extra_fields() {
+    // The bundled schema has no interface, so this one is built inline: the
+    // interface's own fields are common to all implementors, and the fields
+    // worth querying usually live on the concrete types.
+    let sdl = "\
+        type Query { node(id: ID!): Node }\n\
+        interface Node { id: ID! createdAt: String! }\n\
+        type Article implements Node { id: ID! createdAt: String! headline: String! }\n\
+        type Video implements Node { id: ID! createdAt: String! streamUrl: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.node").unwrap();
+    let ex = example::build(target, &records, 1).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    // common fields selected once, on the interface itself
+    assert!(ex.operation.contains("\n    id\n"), "{}", ex.operation);
+    assert!(ex.operation.contains("createdAt"), "{}", ex.operation);
+    // and each implementor contributes only what it adds
+    assert!(
+        ex.operation.contains("... on Article {"),
+        "{}",
+        ex.operation
+    );
+    assert!(ex.operation.contains("headline"), "{}", ex.operation);
+    assert!(ex.operation.contains("streamUrl"), "{}", ex.operation);
+    // no repetition of the common fields inside the fragments
+    assert_eq!(
+        ex.operation.matches("createdAt").count(),
+        1,
+        "{}",
+        ex.operation
+    );
+}
+
+#[test]
 fn depth_expands_the_fields_that_level_one_leaves_as_markers() {
     let shallow = draft_deep("Query.user", 1);
     assert!(
