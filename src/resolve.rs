@@ -7,7 +7,7 @@
 //! codebase. Naming varies across apps, so we try several conventions and rank
 //! by (convention priority, then rq's own confidence) rather than guess one.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -26,6 +26,10 @@ pub struct RqHit {
     pub kind: String,
     #[serde(default)]
     pub confidence: f64,
+    /// The enclosing module/class rq reports, used to check that a hit really
+    /// sits where the candidate said it would.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// The graphql-ruby candidate query that surfaced this hit — set by gqls,
     /// not read from rq, but included in serialized output.
     #[serde(default, skip_deserializing)]
@@ -54,22 +58,35 @@ pub fn resolve(
     schema_path: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<RqHit>> {
-    // Collect every candidate's hits first (deduped), then rank as a whole —
-    // proximity can only reorder across candidates if we have them all.
-    let mut seen = HashSet::new();
-    let mut hits: Vec<RqHit> = Vec::new();
+    // Collect every candidate's hits first, then rank as a whole — proximity
+    // can only reorder across candidates once we have them all.
+    //
+    // The same location often turns up under several candidates. Keep the best
+    // account of it rather than the first: a fuzzy `Resolvers::User` may stumble
+    // onto the very definition that `Query#user` then names exactly, and
+    // recording it as a guess because the weaker query got there first would
+    // bury the right answer.
+    let mut best: HashMap<String, RqHit> = HashMap::new();
     for (idx, cand) in candidates(rec).into_iter().enumerate() {
         let found = run_rq(&cand.query, code_dir)?;
         crate::detail!("rq candidate {:?} -> {} hit(s)", cand.query, found.len());
         for mut hit in found {
-            if seen.insert(format!("{}:{}", hit.file, hit.line)) {
-                hit.via = cand.query.clone();
-                hit.candidate_rank = idx;
-                hit.loose = cand.loose;
-                hits.push(hit);
+            hit.via = cand.query.clone();
+            hit.candidate_rank = idx;
+            // A convention only counts if the hit actually sits where the
+            // convention said. Otherwise it's a name match wearing a
+            // convention's name.
+            hit.loose = cand.loose || !satisfies(&cand.query, &hit);
+            let key = format!("{}:{}", hit.file, hit.line);
+            match best.get(&key) {
+                Some(prev) if (prev.loose, prev.candidate_rank) <= (hit.loose, idx) => {}
+                _ => {
+                    best.insert(key, hit);
+                }
             }
         }
     }
+    let mut hits: Vec<RqHit> = best.into_values().collect();
 
     // Package proximity: shared leading path components between the schema's
     // directory and each hit's file. rq paths are repo-root-relative, so join
@@ -97,9 +114,36 @@ pub fn resolve(
             .then(a.candidate_rank.cmp(&b.candidate_rank))
             .then(b.proximity.cmp(&a.proximity))
             .then(b.confidence.total_cmp(&a.confidence))
+            // a total order, so equally-ranked hits don't shuffle between runs
+            .then_with(|| (&a.file, a.line).cmp(&(&b.file, b.line)))
     });
     hits.truncate(limit);
     Ok(hits)
+}
+
+/// Whether a hit actually satisfies the qualification the candidate asked for.
+///
+/// rq is a fuzzy navigator by design: a query for `Resolvers::User` will
+/// cheerfully return a bare `class User` in `app/models`, because the name
+/// matches even though the namespace doesn't. That's a fine search result and a
+/// terrible resolver answer — the whole point of asking for `Resolvers::User`
+/// was to test a convention, and a hit outside `Resolvers` didn't pass it. A
+/// bare candidate (`user`) qualifies nothing, so there's nothing to check.
+fn satisfies(candidate: &str, hit: &RqHit) -> bool {
+    let qualifier = match candidate.rsplit_once('#') {
+        Some((q, _)) => q,
+        None => match candidate.rsplit_once("::") {
+            Some((q, _)) => q,
+            None => return true,
+        },
+    };
+    let parent = hit.parent.as_deref().unwrap_or_default();
+    // Every segment asked for has to appear in the hit's own path — `Query`
+    // matches `SomeSubgraph::Schema::Root::Query`, `Resolvers` matches nothing
+    // at the top level of app/models.
+    qualifier
+        .split("::")
+        .all(|want| parent.split("::").any(|have| have == want))
 }
 
 /// The git repo root containing `dir` (or gqls's cwd) — rq's file paths are
@@ -328,6 +372,39 @@ mod tests {
     fn mutation_prefers_mutation_class() {
         let c = queries(&rec("createUser", Some("Mutation"), Kind::Mutation));
         assert_eq!(c[0], "Mutations::CreateUser");
+    }
+
+    fn hit(parent: Option<&str>) -> RqHit {
+        RqHit {
+            name: "user".into(),
+            file: "f.rb".into(),
+            line: 1,
+            kind: "method".into(),
+            confidence: 0.5,
+            parent: parent.map(Into::into),
+            via: String::new(),
+            loose: false,
+            proximity: 0,
+            candidate_rank: 0,
+        }
+    }
+
+    #[test]
+    fn a_hit_outside_the_namespace_asked_for_is_not_a_convention_match() {
+        // rq is fuzzy: `Resolvers::User` returns a bare `class User` in
+        // app/models. The name matches; the convention was not met.
+        assert!(!satisfies("Resolvers::User", &hit(None)));
+        assert!(satisfies("Resolvers::User", &hit(Some("Resolvers"))));
+
+        // a federated root class satisfies `Query#user` even when deeply nested
+        assert!(satisfies(
+            "Query#user",
+            &hit(Some("SomeSubgraph::Schema::Root::Query"))
+        ));
+        assert!(!satisfies("Query#user", &hit(Some("Types::UserType"))));
+
+        // a bare candidate qualifies nothing, so there's nothing to verify
+        assert!(satisfies("user", &hit(None)));
     }
 
     #[test]
