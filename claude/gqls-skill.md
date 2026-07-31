@@ -144,15 +144,21 @@ gqls Query.user <source> -R --code <server-dir>
 # -> app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
 ```
 
-Tries graphql-ruby conventions (resolver class, type method, mutation class) and
-ranks the candidates, best convention first. Needs the `rq` CLI installed and a
-server dir that's a git repo `rq` has indexed.
+Tries graphql-ruby conventions (resolver class, type method, mutation class)
+and ranks the candidates, best convention first — a hit only counts as a
+convention match if it really sits in the namespace the convention named, so a
+model class that merely shares a name can't pose as the resolver. Needs the
+`rq` CLI installed and a server dir that's a git repo `rq` has indexed.
 
-Trust it unevenly: mutations resolve reliably, root and object fields less so.
 Results marked `(guess)` came from a bare name search after every convention
-missed — report those as guesses rather than as the resolver, and note that a
-field declared only as `field :name, Type` (no method body) can't be found this
-way at all.
+missed — report those as guesses rather than as the resolver. Everything else
+is a verified match: mutations, root fields (including a federated subgraph's
+own `Query` class), fields with a custom method, and fields declared only as
+`field :name, Type`, which resolve to the declaration itself.
+
+That last case needs `rq` 0.35.2 or newer, which indexes `field` declarations
+as the methods they define. On an older `rq` those fields silently find
+nothing — check `rq --version` before concluding a field has no resolver.
 
 ## Installing / updating the binary
 
