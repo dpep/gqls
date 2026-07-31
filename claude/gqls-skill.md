@@ -108,7 +108,8 @@ the code", let gqls build it rather than assembling one by hand:
 
 ```sh
 gqls Mutation.updateEmployee -e          # operation + variables, as text
-gqls Company.employee -e --json          # {path, operation, variables}
+gqls Company.employee -e --json          # {path, operation, variables, ...}
+gqls Query.user -e --depth 2             # expand one more level of fields
 ```
 
 Each argument you must supply becomes a variable, with a `"<ID!>"` placeholder
@@ -117,7 +118,10 @@ schema default — is left out of the operation and listed underneath, so what
 it prints runs as-is. It selects one level of leaf fields, expands an `errors`
 block only when the payload really has one, and wraps a nested field in a root
 that returns its type. Object-valued fields become `# add fields you need`
-markers — fill those in from the schema rather than guessing depth. Input
+markers — `--depth N` expands them when you want more. A union is written as
+inline fragments over its members, and deprecated fields stay in the selection
+marked `# deprecated: reason` with a stderr warning naming them (tell the user
+rather than pasting one silently). Input
 objects and enums referenced by the arguments are expanded underneath, so a
 `"<SomeInput!>"` placeholder can be filled without a second lookup.
 

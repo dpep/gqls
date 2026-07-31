@@ -21,12 +21,16 @@ fn records() -> Vec<SchemaRecord> {
 }
 
 fn draft(path: &str) -> example::Example {
+    draft_deep(path, 1)
+}
+
+fn draft_deep(path: &str, depth: usize) -> example::Example {
     let records = records();
     let target = records
         .iter()
         .find(|r| r.path == path)
         .unwrap_or_else(|| panic!("{path} missing from {SCHEMA}"));
-    example::build(target, &records).expect("drafting should succeed")
+    example::build(target, &records, depth).expect("drafting should succeed")
 }
 
 #[test]
@@ -109,10 +113,56 @@ fn wraps_a_nested_field_in_a_root_that_returns_its_type() {
 }
 
 #[test]
-fn a_union_return_is_still_a_runnable_query() {
-    // Query.search returns SearchResult, a union — selecting its fields
-    // directly wouldn't parse, so it has to fall back to __typename
+fn a_union_return_becomes_inline_fragments_over_its_members() {
+    // Query.search returns SearchResult = User | Post. A union has no fields
+    // of its own, so the only form a server accepts is inline fragments.
     let ex = draft("Query.search");
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
     assert!(ex.operation.contains("__typename"), "{}", ex.operation);
+    assert!(ex.operation.contains("... on User {"), "{}", ex.operation);
+    assert!(ex.operation.contains("... on Post {"), "{}", ex.operation);
+    // each member selected to the same depth as any object return
+    assert!(ex.operation.contains("email"), "{}", ex.operation);
+    assert!(ex.operation.contains("title"), "{}", ex.operation);
+}
+
+#[test]
+fn depth_expands_the_fields_that_level_one_leaves_as_markers() {
+    let shallow = draft_deep("Query.user", 1);
+    assert!(
+        shallow
+            .operation
+            .contains("# posts: Post — add fields you need"),
+        "{}",
+        shallow.operation
+    );
+
+    let deep = draft_deep("Query.user", 2);
+    graphql_parser::parse_query::<String>(&deep.operation).expect("drafted invalid GraphQL");
+    // posts is now a real selection set, and its own object field is the
+    // marker at the new boundary
+    assert!(deep.operation.contains("posts {"), "{}", deep.operation);
+    assert!(deep.operation.contains("title"), "{}", deep.operation);
+    assert!(
+        deep.operation
+            .contains("# author: User — add fields you need"),
+        "{}",
+        deep.operation
+    );
+}
+
+#[test]
+fn a_deprecated_target_is_reported_and_still_drafted() {
+    // Mutation.deleteUser is @deprecated(reason: "use archiveUser") — flagged,
+    // not dropped: silently refusing to draft a field the schema still serves
+    // would be its own surprise.
+    let ex = draft("Mutation.deleteUser");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert_eq!(ex.deprecated, ["Mutation.deleteUser (use archiveUser)"]);
+    assert!(
+        ex.operation.contains("deleteUser(id: $id)"),
+        "{}",
+        ex.operation
+    );
 }

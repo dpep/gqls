@@ -216,6 +216,7 @@ fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
             description: opt_str(d, "description"),
             deprecated: None,
             directives: Vec::new(),
+            possible_types: Vec::new(),
         });
     }
     Ok(out)
@@ -250,6 +251,13 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
         description: opt_str(t, "description"),
         deprecated: None,
         directives: Vec::new(),
+        // Introspection reports a union's members and an interface's
+        // implementors the same way, so both arrive here.
+        possible_types: array(t, "possibleTypes")
+            .iter()
+            .filter_map(|p| p.get("name").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect(),
     });
 
     match type_kind {
@@ -267,6 +275,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     description: opt_str(f, "description"),
                     deprecated: deprecation(f),
                     directives: Vec::new(),
+                    possible_types: Vec::new(),
                 });
             }
         }
@@ -283,6 +292,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     description: opt_str(f, "description"),
                     deprecated: deprecation(f),
                     directives: Vec::new(),
+                    possible_types: Vec::new(),
                 });
             }
         }
@@ -299,6 +309,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     description: opt_str(v, "description"),
                     deprecated: deprecation(v),
                     directives: Vec::new(),
+                    possible_types: Vec::new(),
                 });
             }
         }
@@ -375,6 +386,7 @@ query IntrospectionQuery {
 }
 fragment FullType on __Type {
   kind name description
+  possibleTypes { kind name }
   fields(includeDeprecated: true) {
     name description
     args { ...InputValue }

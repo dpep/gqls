@@ -141,6 +141,11 @@ struct Cli {
     #[arg(short = 'e', long, conflicts_with = "resolve")]
     example: bool,
 
+    /// How many levels of fields --example selects. Deeper levels expand the
+    /// object-valued fields that level 1 leaves as markers.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    depth: usize,
+
     /// Jump the top match to its graphql-ruby resolver/method in code, via
     /// `rq` (must be installed).
     #[arg(short = 'R', long)]
@@ -474,7 +479,7 @@ pub fn run() -> Result<()> {
     }
 
     if cli.example {
-        return run_example(query, &records, filters, output);
+        return run_example(query, &records, filters, cli.depth, output);
     }
 
     // `total` is the fuzzy match count before the display limit, so the footer
@@ -658,13 +663,22 @@ fn run_example(
     query: &str,
     records: &[SchemaRecord],
     filters: search::Filters<'_>,
+    depth: usize,
     output: Output,
 ) -> Result<()> {
     let Some(top) = search::search(query, records, filters).into_iter().next() else {
         anyhow::bail!("no schema entity matches {query:?} to draft");
     };
     crate::status!("drafting an operation for {}", top.record.path);
-    let example = crate::example::build(top.record, records)?;
+    let example = crate::example::build(top.record, records, depth)?;
+    if !example.deprecated.is_empty() {
+        // Selected anyway and marked inline, but worth saying out loud —
+        // pasting a deprecated field is the kind of thing you want to know now.
+        crate::status!(
+            "deprecated: {} (flagged inline)",
+            example.deprecated.join(", ")
+        );
+    }
     if let Some(via) = &example.via {
         if example.alternatives.is_empty() {
             crate::detail!("reached through {via}");
@@ -684,6 +698,7 @@ fn run_example(
         "variables": example.variables,
         "optional_args": example.optional,
         "input_types": example.input_types,
+        "deprecated": example.deprecated,
     });
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&payload)?),

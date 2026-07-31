@@ -12,10 +12,17 @@
 //! * **A placeholder names its type.** `"<ID!>"` says both what to put there
 //!   and that it's required; `""` or `0` look like real values and get pasted
 //!   by accident.
-//! * **One level of selection, leaves only.** A scalar or enum return needs no
-//!   selection set at all. An object return gets its scalar/enum fields, and a
-//!   `# add fields you need` marker for the object-valued ones — guessing how
-//!   deep someone wants to go is worse than leaving a hole.
+//! * **One level of selection by default, leaves only.** A scalar or enum
+//!   return needs no selection set at all. An object return gets its scalar/enum
+//!   fields, and a `# add fields you need` marker for the object-valued ones —
+//!   guessing how deep someone wants to go is worse than leaving a hole, and
+//!   `--depth` asks for more when you do want it.
+//! * **Abstract types get inline fragments.** A union has no fields of its own,
+//!   so it's written as `... on Member { … }` over its concrete types — the only
+//!   form a server will accept.
+//! * **Deprecated fields are flagged, not dropped.** They're still selected and
+//!   marked `# deprecated: reason`, because silently omitting a field the schema
+//!   still serves is its own surprise.
 //! * **An `errors` block only when the schema has one.** The payload/errors
 //!   convention is widespread but not universal, so it's expanded only when
 //!   that field really exists.
@@ -45,6 +52,9 @@ pub struct Example {
     /// variables can be filled in without opening the schema. Each entry is a
     /// block of lines; nested input objects appear as their own entries.
     pub input_types: Vec<Vec<String>>,
+    /// Deprecated fields the draft touched — the target itself, or anything
+    /// selected. Flagged inline too; this is for the caller to warn about.
+    pub deprecated: Vec<String>,
     /// The root field a nested target was reached through, if it needed one.
     pub via: Option<String>,
     /// Other root fields that could have reached a nested target. Non-empty
@@ -53,7 +63,7 @@ pub struct Example {
 }
 
 /// Draft an operation that reaches `target`.
-pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example> {
+pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> Result<Example> {
     let schema = Schema::index(records);
 
     // The chain of fields to nest, outermost first. A root operation field is
@@ -100,7 +110,14 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example>
         .and_then(|r| r.base_type())
         .unwrap_or_default()
         .to_string();
-    let mut body = schema.selection(&leaf_type);
+    let mut deprecated = Vec::new();
+    if let Some(reason) = &target.deprecated {
+        deprecated.push(match reason.is_empty() {
+            true => target.path.clone(),
+            false => format!("{} ({reason})", target.path),
+        });
+    }
+    let mut body = schema.selection(&leaf_type, depth.max(1), &mut deprecated);
 
     for (depth, field) in chain.iter().enumerate().rev() {
         let args = vars.rendered_for(depth);
@@ -133,6 +150,7 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example>
         variables: vars.placeholders(),
         input_types: schema.input_types(&chain),
         optional,
+        deprecated,
         via,
         alternatives,
     })
@@ -142,6 +160,9 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord]) -> Result<Example>
 /// what fields a type has.
 struct Schema<'a> {
     kinds: HashMap<&'a str, Kind>,
+    /// The type definitions themselves, for what `kinds` can't answer —
+    /// chiefly a union's members.
+    types: HashMap<&'a str, &'a SchemaRecord>,
     fields: HashMap<&'a str, Vec<&'a SchemaRecord>>,
     roots: Vec<&'a SchemaRecord>,
 }
@@ -149,6 +170,7 @@ struct Schema<'a> {
 impl<'a> Schema<'a> {
     fn index(records: &'a [SchemaRecord]) -> Self {
         let mut kinds = HashMap::new();
+        let mut types = HashMap::new();
         let mut fields: HashMap<&str, Vec<&SchemaRecord>> = HashMap::new();
         let mut roots = Vec::new();
         for r in records {
@@ -166,11 +188,13 @@ impl<'a> Schema<'a> {
                 }
                 _ => {
                     kinds.insert(r.name.as_str(), r.kind);
+                    types.insert(r.name.as_str(), r);
                 }
             }
         }
         Self {
             kinds,
+            types,
             fields,
             roots,
         }
@@ -256,10 +280,24 @@ impl<'a> Schema<'a> {
 
     /// The selection set for `type_name`: its leaf fields, plus a marker for
     /// each object-valued field so the hole is visible. Empty for a leaf type.
-    fn selection(&self, type_name: &str) -> Vec<String> {
-        if type_name.is_empty() || self.is_leaf(type_name) {
+    fn selection(
+        &self,
+        type_name: &str,
+        depth: usize,
+        deprecated: &mut Vec<String>,
+    ) -> Vec<String> {
+        if type_name.is_empty() || self.is_leaf(type_name) || depth == 0 {
             return Vec::new();
         }
+        // An abstract type has no fields of its own to select — a union never,
+        // an interface only the common ones — so what the caller actually wants
+        // is spelled with inline fragments over the concrete types.
+        if let Some(rec) = self.types.get(type_name) {
+            if rec.kind == Kind::Union {
+                return self.inline_fragments(rec, depth, deprecated);
+            }
+        }
+
         let mut lines = Vec::new();
         let mut deferred = Vec::new();
         for f in self.fields.get(type_name).into_iter().flatten() {
@@ -267,18 +305,32 @@ impl<'a> Schema<'a> {
                 continue;
             }
             let Some(base) = f.base_type() else { continue };
-            if self.is_leaf(base) {
-                // A field with required arguments can't be selected bare.
-                if f.args.iter().any(|a| a.trim_end().ends_with('!')) {
-                    deferred.push(format!("# {}: {} — needs arguments", f.name, base));
-                } else {
-                    lines.push(f.name.clone());
+            // A field with required arguments can't be selected bare.
+            if f.args.iter().any(|a| a.trim_end().ends_with('!')) {
+                deferred.push(format!("# {}: {} — needs arguments", f.name, base));
+                continue;
+            }
+            let note = match &f.deprecated {
+                // Flagged where it's selected rather than dropped: silently
+                // omitting a field the schema still serves would be its own
+                // surprise. The caller also gets a warning.
+                Some(reason) if reason.is_empty() => {
+                    deprecated.push(f.path.clone());
+                    "  # deprecated".to_string()
                 }
-            } else if f.name.eq_ignore_ascii_case("errors") {
-                // The payload/errors convention, expanded only because this
-                // schema really has the field.
-                let inner = self.selection(base);
-                lines.push(format!("{} {{", f.name));
+                Some(reason) => {
+                    deprecated.push(f.path.clone());
+                    format!("  # deprecated: {reason}")
+                }
+                None => String::new(),
+            };
+            if self.is_leaf(base) {
+                lines.push(format!("{}{note}", f.name));
+            } else if depth > 1 || f.name.eq_ignore_ascii_case("errors") {
+                // Deeper levels on request; the payload/errors convention is
+                // always expanded, because a mutation without it reads wrong.
+                let inner = self.selection(base, depth.saturating_sub(1).max(1), deprecated);
+                lines.push(format!("{}{note} {{", f.name));
                 lines.extend(inner.into_iter().map(|l| format!("  {l}")));
                 lines.push("}".to_string());
             } else {
@@ -287,10 +339,46 @@ impl<'a> Schema<'a> {
         }
         lines.extend(deferred);
         if lines.is_empty() {
-            // A union (no fields of its own), or a type this schema doesn't
-            // detail. `__typename` is always valid and keeps the query runnable.
+            // A type this schema doesn't detail. `__typename` is always valid
+            // and keeps the query runnable.
             lines.push("__typename".to_string());
-            lines.push("# add inline fragments: ... on ConcreteType { … }".to_string());
+        }
+        lines
+    }
+
+    /// `... on User { … }` for each of an abstract type's concrete types.
+    fn inline_fragments(
+        &self,
+        rec: &SchemaRecord,
+        depth: usize,
+        deprecated: &mut Vec<String>,
+    ) -> Vec<String> {
+        /// Enough to show the shape without burying the query; a big union
+        /// lists the rest as a comment instead.
+        const MAX_MEMBERS: usize = 6;
+
+        if rec.possible_types.is_empty() {
+            return vec![
+                "__typename".to_string(),
+                "# add inline fragments: ... on ConcreteType { … }".to_string(),
+            ];
+        }
+        let mut lines = vec!["__typename".to_string()];
+        for member in rec.possible_types.iter().take(MAX_MEMBERS) {
+            let inner = self.selection(member, depth, deprecated);
+            if inner.is_empty() {
+                continue;
+            }
+            lines.push(format!("... on {member} {{"));
+            lines.extend(inner.into_iter().map(|l| format!("  {l}")));
+            lines.push("}".to_string());
+        }
+        if rec.possible_types.len() > MAX_MEMBERS {
+            lines.push(format!(
+                "# {} more: {}",
+                rec.possible_types.len() - MAX_MEMBERS,
+                rec.possible_types[MAX_MEMBERS..].join(", ")
+            ));
         }
         lines
     }
@@ -441,6 +529,7 @@ mod tests {
             description: None,
             deprecated: None,
             directives: vec![],
+            possible_types: vec![],
         }
     }
 
@@ -550,7 +639,7 @@ mod tests {
     fn build_for(path: &str) -> Example {
         let records = schema();
         let target = records.iter().find(|r| r.path == path).unwrap();
-        build(target, &records).unwrap()
+        build(target, &records, 1).unwrap()
     }
 
     #[test]
@@ -603,13 +692,14 @@ mod tests {
     fn nested_field_is_wrapped_in_a_root_that_returns_its_type() {
         let ex = build_for("User.posts");
         // User.posts isn't callable directly; Query.user returns a User
+        // Post has no fields in this fixture, so the selection falls back to
+        // __typename — always valid, and it keeps the query runnable.
         assert_eq!(
             ex.operation,
             "query Posts($id: ID!) {\n  \
                user(id: $id) {\n    \
                  posts {\n      \
-                   __typename\n      \
-                   # add inline fragments: ... on ConcreteType { … }\n    \
+                   __typename\n    \
                  }\n  \
                }\n\
              }\n"
@@ -625,7 +715,7 @@ mod tests {
             .position(|r| r.path == "UserError.message")
             .unwrap();
         let target = records.remove(target);
-        let err = build(&target, &records).unwrap_err().to_string();
+        let err = build(&target, &records, 1).unwrap_err().to_string();
         assert!(err.contains("no root field returns UserError"), "{err}");
     }
 
@@ -641,7 +731,7 @@ mod tests {
             &[],
         ));
         let target = records.iter().find(|r| r.path == "User.name").unwrap();
-        let ex = build(target, &records).unwrap();
+        let ex = build(target, &records, 1).unwrap();
         // both Query.user and Query.viewer return User
         assert_eq!(ex.alternatives.len(), 1);
     }
@@ -662,7 +752,7 @@ mod tests {
             ),
         ];
         let target = records.iter().find(|r| r.path == "Query.feed").unwrap();
-        let ex = build(target, &records).unwrap();
+        let ex = build(target, &records, 1).unwrap();
         assert_eq!(ex.operation, "query Feed {\n  feed\n}\n");
         assert_eq!(ex.variables, serde_json::json!({}));
         assert_eq!(
@@ -703,7 +793,7 @@ mod tests {
             ),
         ];
         let target = records.iter().find(|r| r.path == "Query.search").unwrap();
-        let ex = build(target, &records).unwrap();
+        let ex = build(target, &records, 1).unwrap();
         assert_eq!(
             ex.input_types,
             vec![vec![
@@ -764,7 +854,7 @@ mod tests {
             ),
         ];
         let target = records.iter().find(|r| r.path == "Thing.child").unwrap();
-        let ex = build(target, &records).unwrap();
+        let ex = build(target, &records, 1).unwrap();
         // the inner `id` collides with the root's, so it's prefixed
         assert!(
             ex.operation.contains("child(id: $childId, role: $role)"),

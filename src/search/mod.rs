@@ -252,6 +252,7 @@ mod tests {
             description: None,
             deprecated: None,
             directives: vec![],
+            possible_types: vec![],
         }
     }
 

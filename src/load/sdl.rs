@@ -201,12 +201,47 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
                 description: d.description.clone(),
                 deprecated: None,
                 directives: Vec::new(),
+                possible_types: Vec::new(),
             }),
             Definition::TypeExtension(te) => emit_type_extension(te, &roots, &mut out),
             _ => {}
         }
     }
+    attach_implementors(&doc, &mut out);
     Ok(out)
+}
+
+/// Fill in each interface's implementors. SDL states the relationship on the
+/// object (`type User implements Node`), so it can only be resolved once every
+/// definition has been seen — hence a second pass rather than inline.
+fn attach_implementors(
+    doc: &graphql_parser::schema::Document<'_, String>,
+    out: &mut [SchemaRecord],
+) {
+    let mut implementors: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+    for def in &doc.definitions {
+        let (name, interfaces) = match def {
+            Definition::TypeDefinition(TypeDefinition::Object(o)) => {
+                (&o.name, &o.implements_interfaces)
+            }
+            Definition::TypeExtension(TypeExtension::Object(o)) => {
+                (&o.name, &o.implements_interfaces)
+            }
+            _ => continue,
+        };
+        for iface in interfaces {
+            implementors
+                .entry(iface.as_str())
+                .or_default()
+                .push(name.clone());
+        }
+    }
+    for rec in out.iter_mut().filter(|r| r.kind == Kind::Interface) {
+        if let Some(objects) = implementors.get(rec.name.as_str()) {
+            rec.possible_types = objects.clone();
+        }
+    }
 }
 
 fn emit_type(td: &TypeDefinition<'_, String>, roots: &Roots, out: &mut Vec<SchemaRecord>) {
@@ -256,12 +291,11 @@ fn emit_type(td: &TypeDefinition<'_, String>, roots: &Roots, out: &mut Vec<Schem
             }
         }
         TypeDefinition::Union(u) => {
-            out.push(type_record(
-                &u.name,
-                Kind::Union,
-                &u.description,
-                &u.directives,
-            ));
+            let mut rec = type_record(&u.name, Kind::Union, &u.description, &u.directives);
+            // `union SearchResult = User | Post` — the members are the whole
+            // content of a union, and what an inline fragment has to name.
+            rec.possible_types = u.types.clone();
+            out.push(rec);
         }
         TypeDefinition::Scalar(s) => {
             out.push(type_record(
@@ -290,6 +324,7 @@ fn type_record(
         description: description.clone(),
         deprecated: None,
         directives: directive_names(directives),
+        possible_types: Vec::new(),
     }
 }
 
@@ -305,6 +340,7 @@ fn field_record(type_name: &str, f: &Field<'_, String>, roots: &Roots) -> Schema
         description: f.description.clone(),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
+        possible_types: Vec::new(),
     }
 }
 
@@ -350,6 +386,7 @@ fn input_field_record(type_name: &str, f: &InputValue<'_, String>) -> SchemaReco
         description: f.description.clone(),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
+        possible_types: Vec::new(),
     }
 }
 
@@ -364,6 +401,7 @@ fn enum_value_record(type_name: &str, v: &EnumValue<'_, String>) -> SchemaRecord
         description: v.description.clone(),
         deprecated: deprecated_reason(&v.directives),
         directives: directive_names(&v.directives),
+        possible_types: Vec::new(),
     }
 }
 
@@ -418,6 +456,32 @@ mod tests {
             .iter()
             .any(|r| r.path == "Query.me" && r.kind == Kind::Query));
         assert!(!recs.iter().any(|r| r.name == "link")); // the @link block yields nothing
+    }
+
+    #[test]
+    fn captures_union_members_and_interface_implementors() {
+        let sdl = "\
+            interface Node { id: ID! }\n\
+            type User implements Node { id: ID! }\n\
+            type Post implements Node { id: ID! }\n\
+            union SearchResult = User | Post\n\
+            type Query { search: SearchResult }\n";
+        let recs = from_sdl(sdl).expect("should parse");
+
+        let union = recs.iter().find(|r| r.name == "SearchResult").unwrap();
+        assert_eq!(union.possible_types, ["User", "Post"]);
+
+        // SDL states this on the object (`type User implements Node`), so it
+        // can only be resolved by looking at every definition
+        let node = recs.iter().find(|r| r.name == "Node").unwrap();
+        assert_eq!(node.possible_types, ["User", "Post"]);
+
+        // everything else stays empty
+        let user = recs
+            .iter()
+            .find(|r| r.name == "User" && r.kind == Kind::Object)
+            .unwrap();
+        assert!(user.possible_types.is_empty());
     }
 
     #[test]

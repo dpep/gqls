@@ -119,6 +119,12 @@ pub struct SchemaRecord {
     /// same schema can differ in this field between its SDL and its endpoint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub directives: Vec<String>,
+    /// What a union's or interface's abstract type can actually be at runtime:
+    /// a union's members, or the objects implementing an interface. Empty for
+    /// every other kind. This is what an inline fragment has to name, so a
+    /// query against an abstract type can't be written without it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub possible_types: Vec<String>,
 }
 
 impl SchemaRecord {

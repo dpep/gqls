@@ -129,6 +129,7 @@ fn encode(records: &[SchemaRecord]) -> Vec<u8> {
         put_opt(&mut buf, r.description.as_deref());
         put_opt(&mut buf, r.deprecated.as_deref());
         put_vec(&mut buf, &r.directives);
+        put_vec(&mut buf, &r.possible_types);
     }
     buf
 }
@@ -155,6 +156,7 @@ fn decode(buf: &[u8]) -> Option<Vec<SchemaRecord>> {
             description: rd.opt()?,
             deprecated: rd.opt()?,
             directives: rd.vec()?,
+            possible_types: rd.vec()?,
         });
     }
     (rd.off == buf.len()).then_some(out)
@@ -245,6 +247,7 @@ mod tests {
             description: None,
             deprecated: Some("use other".into()),
             directives: vec![],
+            possible_types: vec![],
         }
     }
 
