@@ -53,7 +53,10 @@ pub fn search<'a>(
     model: Option<&str>,
     refresh: bool,
 ) -> Vec<(f64, &'a SchemaRecord)> {
+    let mut model_span = crate::profile::span("semantic: model load");
     let embedder = default_embedder(model);
+    model_span.note(|| embedder.kind().to_string());
+    drop(model_span);
     // On the good path (onnx) this is verbose-only noise; a fall back to the
     // hash embedder means weaker results, so surface that unconditionally.
     if embedder.kind() == "onnx" {
@@ -67,6 +70,7 @@ pub fn search<'a>(
     // Per-record vectors are the expensive part; cache them keyed by schema
     // content + embedder + model, so editing the schema (or switching model)
     // changes the key and re-embeds automatically. `--refresh` forces a miss.
+    let mut vec_span = crate::profile::span("semantic: vectors");
     let cache_path = cache::path(records, embedder.kind(), model);
     let cached = if refresh {
         None
@@ -142,13 +146,20 @@ pub fn search<'a>(
         }
     };
 
+    vec_span.note(|| format!("{} vectors", vectors.len()));
+    drop(vec_span);
+
     // warm() calls with an empty query and limit 0 purely to populate the cache
     // above — there's nothing to rank, so skip the query embed + cosine pass.
     if query.is_empty() && limit == 0 {
         return Vec::new();
     }
 
+    let embed_span = crate::profile::span("semantic: query embed");
     let query_vec = compress_matryoshka_vector(&embedder.embed(query));
+    drop(embed_span);
+
+    let mut cosine_span = crate::profile::span("semantic: cosine");
     let predicate = filters.compile();
     let mut hits: Vec<(f64, &SchemaRecord)> = records
         .iter()
@@ -156,6 +167,9 @@ pub fn search<'a>(
         .filter(|(r, _)| predicate.accepts(r))
         .map(|(r, v)| (cosine_similarity(&query_vec, v) as f64, r))
         .collect();
+
+    cosine_span.note(|| format!("{} scored", hits.len()));
+    drop(cosine_span);
 
     hits.sort_by(|a, b| b.0.total_cmp(&a.0));
     bound_tail(&mut hits);

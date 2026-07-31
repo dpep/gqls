@@ -160,6 +160,10 @@ struct Cli {
     #[arg(short = 'H', long = "header", value_name = "NAME: VALUE")]
     header: Vec<String>,
 
+    /// Print a phase-by-phase timing breakdown to stderr (or into --json).
+    #[arg(long)]
+    profile: bool,
+
     /// Verbose stderr diagnostics: cache hits, rq candidates, and why the
     /// embedding model loaded or fell back.
     #[arg(short, long, conflicts_with = "quiet")]
@@ -194,7 +198,9 @@ fn fuzzy_matches<'a>(
     records: &'a [SchemaRecord],
     filters: search::Filters<'_>,
 ) -> (Vec<Match<'a>>, bool) {
+    let mut span = crate::profile::span("fuzzy scan");
     let hits = search::search(query, records, filters);
+    span.note(|| format!("{} of {} records matched", hits.len(), records.len()));
     let named = search::named_hit(query, &hits);
     let matches = hits
         .into_iter()
@@ -327,8 +333,12 @@ fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>> {
 }
 
 pub fn run() -> Result<()> {
+    let started = std::time::Instant::now();
     let cli = Cli::parse();
     crate::logging::init(cli.verbose, cli.quiet);
+    if cli.profile {
+        crate::profile::enable();
+    }
 
     if let Some(shell) = cli.completions {
         let mut cmd = Cli::command();
@@ -388,7 +398,12 @@ pub fn run() -> Result<()> {
         refresh: cli.refresh,
     };
     let t_load = std::time::Instant::now();
-    let records = load::load(&source, &load_opts)?;
+    let records = {
+        let mut span = crate::profile::span("load");
+        let records = load::load(&source, &load_opts)?;
+        span.note(|| format!("{} records", records.len()));
+        records
+    };
     crate::detail!(
         "loaded {} records in {:.1?}",
         records.len(),
@@ -554,11 +569,28 @@ pub fn run() -> Result<()> {
     };
 
     crate::detail!("ranked in {:.1?}", t_rank.elapsed());
+    let out_span = crate::profile::span("output");
 
     if matches.is_empty() {
         crate::status!("no matches for {query:?}");
     }
     output.write_matches(&matches)?;
+    drop(out_span);
+    if crate::profile::enabled() {
+        // Always to stderr, so stdout stays exactly the results — and as JSON
+        // when the caller asked for JSON, so a baseline can be stored and
+        // diffed rather than eyeballed.
+        match output {
+            Output::Json | Output::Ndjson => {
+                eprintln!("{}", crate::profile::json(started.elapsed()));
+            }
+            Output::Text { .. } => {
+                for line in crate::profile::report(started.elapsed()) {
+                    eprintln!("{line}");
+                }
+            }
+        }
+    }
     if total > matches.len() {
         crate::detail!(
             "{total} matches; showing top {} (-l to adjust)",

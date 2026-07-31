@@ -177,6 +177,9 @@ Source + issues: <https://github.com/dpep/gqls>.
 - The resolver jump (`-R`) is graphql-ruby-specific and shells out to `rq`.
 - `-v`/`--verbose` shows diagnostics (cache hits, rq candidates, why the model
   loaded or fell back); `-q`/`--quiet` silences the stderr status lines.
+- `--profile` reports where a query's time went, as a table on stderr or as
+  JSON on stderr alongside `-j`. Reach for it when asked why gqls is slow on a
+  schema, rather than guessing.
 - `gqls -h` prints full help with examples.
 
 To install this skill for Claude Code, copy it to `~/.claude/skills/gqls/SKILL.md`.

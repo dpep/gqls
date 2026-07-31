@@ -172,6 +172,21 @@ gqls repository schema.json -J | jq -r '.path'
 
 `-q`/`--quiet` silences the stderr status lines (results and hard errors still print); `-v`/`--verbose` adds diagnostics — cache hits/misses, the `rq` candidates `-R` tried, and why the embedding model loaded or fell back to the hash embedder. Under `-R`, verbose also passes `-v` through to `rq` and streams its trace.
 
+`--profile` prints a phase-by-phase breakdown to stderr — where a query's time actually goes, with counts alongside the timings:
+
+```sh
+$ gqls user big.graphql --fuzzy --profile
+  load          9.4ms  48501 records
+  fuzzy scan    6.5ms  2464 of 48501 records matched
+  output        0.0ms
+  ──────────
+  total        16.3ms
+```
+
+With `-j`/`-J` the same data goes to stderr as JSON, so stdout stays exactly the results and a baseline can be stored and diffed. Profiling costs nothing when off: a disabled span reads no clock, takes no lock and allocates nothing, which measures as no difference across 30 runs.
+
+`script/bench.sh` runs a fixed query set against a generated 48k-record schema and prints medians per phase; `--save NAME` stores a baseline and `--diff NAME` compares against it, so a change's effect is a diff rather than a memory.
+
 Shell completions: `gqls --completions zsh` (or `bash`/`fish`/…).
 
 ## Using with Claude Code
