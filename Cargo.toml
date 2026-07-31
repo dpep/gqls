@@ -1,6 +1,6 @@
 [package]
 name = "gqls-cli"  # crates.io name (`gqls` is taken); the binary is still `gqls`
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 rust-version = "1.82"  # `Option::is_none_or`
 description = "Fuzzy and semantic search over a GraphQL schema (SDL, introspection JSON, or a live endpoint), plus a field-to-resolver jump."
