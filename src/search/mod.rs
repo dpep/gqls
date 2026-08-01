@@ -201,13 +201,37 @@ fn fuzzy_search<'a>(
     predicate: &Predicate<'_>,
 ) -> Vec<Hit<'a>> {
     use rayon::prelude::*;
+    // A multi-word query is matched word by word: no single name contains
+    // "cancel a subscription" as one subsequence, so scoring it whole is a
+    // guaranteed zero. Each word scores independently and the counts decide.
+    let tokens = score::phrase_tokens(query);
     // Records score independently, so scan them in parallel — the win shows
     // on large schemas (tens of thousands of records), and rayon's overhead
     // is microseconds on small ones.
-    let mut hits: Vec<Hit> = records
+    let scored: Vec<(usize, Hit)> = records
         .par_iter()
         .filter(|r| predicate.accepts(r))
-        .filter_map(|r| score::score(query, r).map(|score| Hit { record: r, score }))
+        .filter_map(|r| {
+            let (matched, score) = if tokens.is_empty() {
+                (1, score::score(query, r)?)
+            } else {
+                score::score_phrase(&tokens, r)?
+            };
+            Some((matched, Hit { record: r, score }))
+        })
+        .collect();
+
+    // Intersect where the schema allows it, union where it doesn't: keep only
+    // the records matching the most words of the phrase. `cancelSubscription`
+    // covers both words of "cancel a subscription" and buries the many records
+    // that merely echo one of them; when nothing covers both, the single-word
+    // matches are all there is and they all stand. (Single-word queries are one
+    // uniform group, so this is a no-op for them.)
+    let best = scored.iter().map(|(m, _)| *m).max().unwrap_or(0);
+    let mut hits: Vec<Hit> = scored
+        .into_iter()
+        .filter(|(m, _)| *m == best)
+        .map(|(_, hit)| hit)
         .collect();
 
     // highest score first; break ties toward the shorter path (the more
@@ -485,6 +509,62 @@ mod tests {
         .map(|h| h.record.path.as_str())
         .collect();
         assert_eq!(paths, ["Mutation.a", "Mutation.b"]);
+    }
+
+    #[test]
+    fn phrase_query_matches_each_word_and_prefers_full_coverage() {
+        let records = vec![
+            rec("cancelSubscription", Some("Mutation"), Kind::Mutation),
+            rec("subscriptionPlan", Some("Billing"), Kind::Field),
+            rec("cancelOrder", Some("Mutation"), Kind::Mutation),
+        ];
+        // the phrase is no longer a hard zero, and the record covering both
+        // words wins outright — the noise word "a" changes nothing
+        for query in ["cancel a subscription", "cancel subscription"] {
+            let paths: Vec<&str> = search(query, &records, Default::default())
+                .iter()
+                .map(|h| h.record.path.as_str())
+                .collect();
+            assert_eq!(paths, ["Mutation.cancelSubscription"], "query {query:?}");
+        }
+    }
+
+    #[test]
+    fn qualified_queries_stay_off_the_phrase_path() {
+        // Only whitespace opens the phrase path, so `Type.field` never takes it
+        // — and `User name` doesn't either: spaced_qualifier rewrites it to the
+        // dotted form first. Both stay precise navigation, not prose.
+        let records = vec![
+            rec("name", Some("User"), Kind::Field),
+            rec("username", Some("Account"), Kind::Field),
+        ];
+        assert!(score::phrase_tokens("User.name").is_empty());
+        assert_eq!(
+            spaced_qualifier("User name", &records).as_deref(),
+            Some("User.name")
+        );
+        // scoring `User.name` whole keeps the qualifier boost: User's field wins
+        let paths: Vec<&str> = search("User.name", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths.first(), Some(&"User.name"));
+    }
+
+    #[test]
+    fn phrase_query_falls_back_to_single_word_matches() {
+        let records = vec![
+            rec("subscriptionPlan", Some("Billing"), Kind::Field),
+            rec("cancelOrder", Some("Mutation"), Kind::Mutation),
+            rec("id", Some("Billing"), Kind::Field),
+        ];
+        // nothing covers both words, so every one-word match stands
+        let mut paths: Vec<&str> = search("cancel subscription", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["Billing.subscriptionPlan", "Mutation.cancelOrder"]);
     }
 
     #[test]

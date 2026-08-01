@@ -87,7 +87,10 @@ needed. A strong name match — exact, or the word whole at a boundary (`name`
 → `lastName`) — skips the semantic combine (fuzzy found what you typed;
 lookalike fields would just pad the list) — `--semantic` forces it back on.
 The space form `'User name'` is the loose variant of `User.name`: same type
-filter, but semantic stays on so nearby fields (`lastName`) surface too:
+filter, but semantic stays on so nearby fields (`lastName`) surface too.
+Fuzzy matches a phrase word by word (noise words dropped, best coverage
+wins), so multi-word queries still return something when the semantic index
+is cold or the build is fuzzy-only:
 
 ```sh
 gqls 'cancel a subscription' <source>     # combined fuzzy + semantic

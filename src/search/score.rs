@@ -62,6 +62,49 @@ pub fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     Some(total.round() as i64)
 }
 
+/// Words too common to narrow a phrase: they subsequence-match nearly every
+/// name, so they'd lift every record's word count by one and tell us nothing.
+const STOPWORDS: &[&str] = &[
+    "a", "an", "the", "of", "for", "to", "in", "on", "at", "and", "or", "by", "with", "is", "that",
+    "from", "as", "into",
+];
+
+/// Split a phrase query into the words worth matching on their own, or empty
+/// when the query is a single word (the caller then scores it whole). Stopwords
+/// and lone characters are dropped — unless that would leave nothing, in which
+/// case the raw words stand.
+pub(crate) fn phrase_tokens(query: &str) -> Vec<&str> {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    if words.len() < 2 {
+        return Vec::new();
+    }
+    let kept: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|w| w.chars().count() > 1 && !STOPWORDS.contains(&w.to_ascii_lowercase().as_str()))
+        .collect();
+    if kept.is_empty() {
+        words
+    } else {
+        kept
+    }
+}
+
+/// Score a phrase against a record word by word: how many words matched, and
+/// their summed quality. `None` when no word matches. Callers rank on the count
+/// first — a name covering the whole phrase beats one echoing a single word.
+pub fn score_phrase(tokens: &[&str], rec: &SchemaRecord) -> Option<(usize, i64)> {
+    let mut matched = 0;
+    let mut total = 0;
+    for token in tokens {
+        if let Some(s) = score(token, rec) {
+            matched += 1;
+            total += s;
+        }
+    }
+    (matched > 0).then_some((matched, total))
+}
+
 /// Split a query into its leaf name and the optional enclosing type typed
 /// before the last `.`: `User.email` → (`email`, `Some("User")`), a plain
 /// `user` → (`user`, `None`). A leading/trailing `.` is an ordinary query.
@@ -339,6 +382,39 @@ mod tests {
         assert!(clean > typo, "clean {clean} > typo {typo}");
         // nonsense still doesn't match
         assert!(score("xqzw", &rec("User", "Query.user", Kind::Object)).is_none());
+    }
+
+    #[test]
+    fn phrase_tokens_drops_noise_words_but_never_everything() {
+        assert_eq!(
+            phrase_tokens("cancel a subscription"),
+            ["cancel", "subscription"]
+        );
+        // a lone word isn't a phrase — scored whole
+        assert!(phrase_tokens("cancelSubscription").is_empty());
+        // nothing survives the filter, so the raw words stand
+        assert_eq!(phrase_tokens("of the"), ["of", "the"]);
+    }
+
+    #[test]
+    fn phrase_scoring_counts_the_words_a_record_matches() {
+        let both = score_phrase(
+            &["cancel", "subscription"],
+            &rec(
+                "cancelSubscription",
+                "Mutation.cancelSubscription",
+                Kind::Mutation,
+            ),
+        );
+        let one = score_phrase(
+            &["cancel", "subscription"],
+            &rec("subscriptionPlan", "T.subscriptionPlan", Kind::Field),
+        );
+        assert_eq!(both.unwrap().0, 2);
+        assert_eq!(one.unwrap().0, 1);
+        assert!(
+            score_phrase(&["cancel", "subscription"], &rec("id", "T.id", Kind::Field)).is_none()
+        );
     }
 
     #[test]

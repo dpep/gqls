@@ -50,7 +50,10 @@ Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `
 ```sh
 gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
+gqls 'cancel a subscription'     # a phrase — matched word by word
 ```
+
+A multi-word query is matched one word at a time, so a phrase isn't a hard zero when semantic ranking is unavailable or still warming. Noise words (`a`, `the`, `of`, …) are dropped, and the records covering the most words win outright — `cancelSubscription` beats the many that merely echo `subscription`. When nothing covers the whole phrase, every single-word match stands. Only whitespace opens this path: `User.email` is still scored whole, and `User email` becomes the qualified form before the search runs.
 
 ### Filter by return type
 `--returns TYPE` keeps only fields whose type is `TYPE`, ignoring `[]`/`!` wrappers — the way to find a field when you know what it returns but not what it's called:
@@ -88,7 +91,7 @@ In a qualified query, a `Type` that names a schema type (any case) becomes a har
 By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), MRL-compressed to 64 dimensions and cosine-ranked; the model is fetched once from the HuggingFace Hub, then cached offline.
 
 ```sh
-gqls 'delete a repository'    # a phrase — semantic dominates
+gqls 'delete a repository'    # a phrase — semantic leads, fuzzy matches per word
 gqls usr                      # an identifier — fuzzy leads, semantic fills in
 gqls user --semantic          # force semantic only  (--fuzzy forces fuzzy only)
 ```
