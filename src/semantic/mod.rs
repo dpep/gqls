@@ -177,17 +177,49 @@ pub fn search<'a>(
     hits
 }
 
+/// Split an identifier into the words it's built from: `cancelSubscription` →
+/// `cancel Subscription`, `first_name` → `first name`, `Mutation.cancelUser` →
+/// `Mutation cancel User`. The embedding model's tokenizer shreds camelCase into
+/// meaningless word pieces (`cancelSubscription` is not a word it has ever seen),
+/// so handing it real words is the difference between embedding the concept and
+/// embedding spelling. Word boundaries come from the fuzzy scorer, so the two
+/// halves of gqls agree on where a name's words start.
+fn humanize(ident: &str) -> String {
+    let chars: Vec<char> = ident.chars().collect();
+    let boundary = crate::search::score::boundaries(&chars);
+    let mut out = String::with_capacity(ident.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_alphanumeric() {
+            // `.` / `_` / stray punctuation are separators, not signal
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+            continue;
+        }
+        if boundary[i] && !out.is_empty() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
+}
+
 /// The natural-language signal a semantic query matches against: the path plus
-/// the human description and the type.
+/// the human description and the type. Identifiers are split into words and the
+/// type's `[]`/`!` wrappers dropped — punctuation and subword fragments are
+/// tokens the model has to spend attention on for no meaning.
 fn record_text(r: &SchemaRecord) -> String {
-    let mut s = r.path.clone();
+    let mut s = humanize(&r.path);
     if let Some(d) = &r.description {
         s.push_str(" — ");
         s.push_str(d);
     }
-    if let Some(t) = &r.type_ref {
+    if let Some(t) = r.base_type() {
         s.push_str(" : ");
-        s.push_str(t);
+        s.push_str(&humanize(t));
     }
     s
 }
@@ -216,7 +248,38 @@ pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usi
 
 #[cfg(test)]
 mod tests {
-    use super::bound_tail;
+    use super::{bound_tail, humanize, record_text};
+    use crate::model::{Kind, SchemaRecord};
+
+    #[test]
+    fn humanize_splits_identifiers_into_words() {
+        assert_eq!(humanize("cancelSubscription"), "cancel Subscription");
+        assert_eq!(humanize("Mutation.cancelUser"), "Mutation cancel User");
+        assert_eq!(humanize("first_name"), "first name");
+        // acronym runs break where the word does, not on every capital
+        assert_eq!(humanize("URLSlug"), "URL Slug");
+        assert_eq!(humanize("id"), "id");
+    }
+
+    #[test]
+    fn record_text_drops_type_wrappers_and_splits_names() {
+        let rec = SchemaRecord {
+            path: "Query.myEmployer".into(),
+            name: "myEmployer".into(),
+            kind: Kind::Query,
+            parent: Some("Query".into()),
+            type_ref: Some("[CompanyProfile!]!".into()),
+            description: Some("The employer".into()),
+            deprecated: None,
+            directives: vec![],
+            possible_types: vec![],
+            args: vec![],
+        };
+        assert_eq!(
+            record_text(&rec),
+            "Query my Employer — The employer : Company Profile"
+        );
+    }
 
     #[test]
     fn bounds_the_weak_tail_relative_to_the_top() {
