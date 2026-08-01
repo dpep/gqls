@@ -1,8 +1,8 @@
 //! Semantic (embedding) search over schema records.
 //!
 //! Embeds `path + description + type` per record and the query with a local
-//! `all-MiniLM-L6-v2` model (pipeline borrowed from ae), compresses to 64-d
-//! Matryoshka vectors, and ranks by cosine. Falls back to a deterministic hash
+//! `all-MiniLM-L6-v2` model (pipeline borrowed from ae), truncates to 64-d
+//! vectors, and ranks by cosine. Falls back to a deterministic hash
 //! embedder when the model can't be fetched, so it always runs.
 //!
 //! v0 embeds every record per invocation (fine at schema scale). A persistent

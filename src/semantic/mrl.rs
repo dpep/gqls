@@ -1,12 +1,19 @@
-//! Matryoshka Representation Learning (MRL) vector compression.
+//! Vector truncation to a fixed prefix width. Named (and borrowed verbatim)
+//! from ae (`~/code/lib/rust/ae/src/mrl.rs`) — keep in sync.
 //!
-//! Borrowed verbatim from ae (`~/code/lib/rust/ae/src/mrl.rs`) — keep in sync.
+//! The MRL name is inherited, and overstates the theory: `all-MiniLM-L6-v2` is
+//! *not* Matryoshka-trained (contrastive learning over 1B sentence pairs, 2021;
+//! its model card claims no truncation support). So this is plain prefix
+//! truncation — which, measured, works anyway for what gqls asks of it.
 //!
-//! MRL-trained embeddings keep their most significant information in the
-//! leading coordinates, so a high-dimensional vector can be truncated to a
-//! short prefix and still retrieve well. We truncate to 64 dimensions and
-//! L2-normalize, which shrinks the stored vector ~6× versus a 384-d float
-//! payload while keeping the bulk of the semantic signal.
+//! On a 10168-record schema, 23 labelled queries: retrieval AUC is 0.982 at 64
+//! dims against 0.991 at the full 384, so *ranking* survives truncation nearly
+//! intact and 64 dims costs ~6× less cache. What truncation does cost is
+//! *calibration* — the mean cosine of unanswerable queries climbs from 0.367
+//! (384-d) to 0.510 (64-d) while real answers barely move (0.673 → 0.696), as
+//! fewer dimensions crowd everything toward everything. Below ~256 dims an
+//! absolute "is this hit any good?" threshold isn't meaningful; relative
+//! ranking is. Ranking is all we use it for, so 64 stands.
 
 /// The compressed embedding width every stored/queried vector is reduced to.
 pub const MRL_DIMS: usize = 64;
