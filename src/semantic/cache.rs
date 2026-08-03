@@ -244,14 +244,18 @@ fn reusable_in(dir: &Path, prefix: &str, refresh: bool) -> HashMap<Key, Vec<f32>
     map
 }
 
-/// Write keyed vectors to `path` (best-effort — a cache write failure is never
-/// fatal). `keys` and `vectors` are parallel and record-ordered.
-pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) {
+/// Write keyed vectors to `path`. Best-effort — a cache write failure is never
+/// fatal — but it reports whether the file actually landed, because
+/// [`consolidate`] must not retire a file's predecessors on the strength of a
+/// successor that was never written. `keys` and `vectors` are parallel and
+/// record-ordered.
+#[must_use = "a failed write must not be treated as a successor for consolidation"]
+pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) -> bool {
     let Some(parent) = path.parent() else {
-        return;
+        return false;
     };
     if keys.len() != vectors.len() || std::fs::create_dir_all(parent).is_err() {
-        return;
+        return false;
     }
     let mut buf = Vec::with_capacity(HEADER + vectors.len() * (KEY_BYTES + MRL_DIMS * 4));
     buf.extend_from_slice(&MAGIC.to_le_bytes());
@@ -273,7 +277,9 @@ pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) {
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     if std::fs::write(&tmp, &buf).is_err() || std::fs::rename(&tmp, path).is_err() {
         let _ = std::fs::remove_file(&tmp);
+        return false;
     }
+    true
 }
 
 /// Delete the files the freshly written one has superseded: any file for the
@@ -432,7 +438,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("a.vecs");
         let keys = vec![key("one"), key("two")];
-        store(&p, &keys, &vecs(2));
+        assert!(store(&p, &keys, &vecs(2)));
 
         assert_eq!(load(&p, 2), Some(vecs(2)));
         // a count that doesn't match the file is a miss, not a wrong answer
@@ -450,10 +456,18 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
 
         // two states of the same schema, same embedder config
-        store(&dir.join("aaaa-0001.vecs"), &[key("kept")], &vecs(1));
-        store(&dir.join("aaaa-0002.vecs"), &[key("added")], &vecs(1));
+        assert!(store(&dir.join("aaaa-0001.vecs"), &[key("kept")], &vecs(1)));
+        assert!(store(
+            &dir.join("aaaa-0002.vecs"),
+            &[key("added")],
+            &vecs(1)
+        ));
         // a different embedder config — its vectors are NOT interchangeable
-        store(&dir.join("bbbb-0001.vecs"), &[key("other")], &vecs(1));
+        assert!(store(
+            &dir.join("bbbb-0001.vecs"),
+            &[key("other")],
+            &vecs(1)
+        ));
 
         let map = reusable_in(&dir, "aaaa-", false);
         assert!(map.contains_key(&key("kept")), "reuses the previous state");
@@ -473,6 +487,25 @@ mod tests {
     }
 
     #[test]
+    fn store_reports_whether_the_file_landed() {
+        // Consolidation retires a file's predecessors on the strength of its
+        // successor, so it has to be able to tell that the successor exists.
+        // Silently swallowing a failed write here once meant a full disk could
+        // delete the only copies of a schema's vectors.
+        let dir = std::env::temp_dir().join("gqls-cache-test-store");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+
+        assert!(store(&dir.join("ok.vecs"), &[key("a")], &vecs(1)));
+        // parent is a file, so the directory can't be created
+        let blocked = dir.join("ok.vecs").join("nested.vecs");
+        assert!(!store(&blocked, &[key("a")], &vecs(1)));
+        // keys and vectors must correspond
+        assert!(!store(&dir.join("bad.vecs"), &[key("a")], &vecs(2)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn consolidation_collects_superseded_files_only() {
         let dir = std::env::temp_dir().join("gqls-cache-test-consolidate");
         let _ = std::fs::remove_dir_all(&dir);
@@ -482,11 +515,11 @@ mod tests {
         let removed = dir.join("aaaa-0002.vecs"); // holds a key the new one lacks
         let foreign = dir.join("bbbb-0003.vecs"); // another embedder entirely
         let new = dir.join("aaaa-0004.vecs");
-        store(&old, &[key("a"), key("b")], &vecs(2));
-        store(&removed, &[key("a"), key("gone")], &vecs(2));
-        store(&foreign, &[key("a")], &vecs(1));
+        assert!(store(&old, &[key("a"), key("b")], &vecs(2)));
+        assert!(store(&removed, &[key("a"), key("gone")], &vecs(2)));
+        assert!(store(&foreign, &[key("a")], &vecs(1)));
         let live = [key("a"), key("b"), key("c")];
-        store(&new, &live, &vecs(3));
+        assert!(store(&new, &live, &vecs(3)));
 
         assert_eq!(consolidate_in(&dir, &new, &live, "aaaa-"), 1);
         assert!(!old.exists(), "a superseded state must be collected");
@@ -508,7 +541,7 @@ mod tests {
         // four files, newest last written; each is one entry (~272 bytes)
         let paths: Vec<PathBuf> = (0..4).map(|i| dir.join(format!("p-{i}.vecs"))).collect();
         for (i, p) in paths.iter().enumerate() {
-            store(p, &[key(&i.to_string())], &vecs(1));
+            assert!(store(p, &[key(&i.to_string())], &vecs(1)));
             // distinct, increasing mtimes so "newest" is unambiguous
             let t =
                 std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 + i as u64);

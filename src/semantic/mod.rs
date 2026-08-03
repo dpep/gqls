@@ -186,13 +186,20 @@ pub fn search<'a>(
                 })
                 .collect();
             if let Some(p) = cache_path.as_deref() {
-                cache::store(p, &keys, &v);
-                // This file contains every vector its donors held that's still
-                // live, so those donors are now pure duplication — collect them
-                // before falling back to blunt least-recently-used eviction.
-                let collapsed = cache::consolidate(p, &keys, embedder.kind(), model);
-                if collapsed > 0 {
-                    crate::detail!("vector cache: collapsed {collapsed} superseded file(s)");
+                // Only a write that landed supersedes anything. If the store
+                // failed — a full disk is exactly the condition a 13MB write
+                // provokes — collecting the predecessors would destroy the only
+                // copies of these vectors on behalf of a file that isn't there.
+                if cache::store(p, &keys, &v) {
+                    // This file contains every vector its donors held that's
+                    // still live, so those donors are now pure duplication —
+                    // collect them before falling back to blunt LRU eviction.
+                    let collapsed = cache::consolidate(p, &keys, embedder.kind(), model);
+                    if collapsed > 0 {
+                        crate::detail!("vector cache: collapsed {collapsed} superseded file(s)");
+                    }
+                } else {
+                    crate::detail!("vector cache: write failed, keeping existing files");
                 }
                 cache::prune(cache::max_files()); // evict least-recently-used
             }

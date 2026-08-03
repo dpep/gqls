@@ -6,6 +6,28 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## 0.18.1 — 2026-08-03
+
+### Fixed
+- A failed vector-cache write no longer retires the files it was replacing. The
+  new file was assumed to exist, so a write that failed — a full disk being the
+  likeliest cause, and the one a large write provokes — could delete the only
+  copies of a schema's vectors and force a full re-embed. Introduced in 0.18.0.
+- An introspection response is validated before it's cached. A server answering
+  `200` with an `errors` body (expired token, introspection disabled) had that
+  response cached and replayed for the rest of the hour, turning a transient
+  failure into a persistent one that only `--refresh` could clear.
+- A cached introspection response that no longer parses is treated as a miss
+  and refetched, rather than reported as an error until it expires. Responses
+  are written via a temp file and renamed, so a reader never sees half of one.
+
+### Changed
+- Cached introspection responses are deleted after a week; nothing evicted them
+  before, and they run to megabytes.
+- The parsed-record cache keeps 8 files rather than 32. It has no consolidation,
+  so an actively edited schema left a full copy per edit, and a miss only costs
+  a re-parse.
+
 ## 0.18.0 — 2026-08-03
 
 ### Changed

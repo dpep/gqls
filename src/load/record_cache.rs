@@ -26,8 +26,11 @@ const MAGIC: u32 = 0x4751_5232; // "GQR2"
 /// schema stays a single chunk and pays nothing for the machinery.
 const CHUNK: usize = 4096;
 
-/// Keep at most this many cache files (LRU by mtime, pruned on write).
-const MAX_FILES: usize = 32;
+/// Keep at most this many cache files (LRU by mtime, pruned on write). Small
+/// on purpose: unlike the vector cache there's no consolidation here, so an
+/// actively edited schema leaves a full copy per edit, and a miss only costs a
+/// re-parse (tens of ms). Hoarding old states buys nothing worth the disk.
+const MAX_FILES: usize = 8;
 
 /// Cached records for this source (SDL text or introspection JSON bytes), or
 /// `None` on any miss (absent, stale magic, corrupt).
@@ -82,6 +85,11 @@ pub fn clear() -> usize {
 }
 
 fn path(source: &[u8]) -> Option<PathBuf> {
+    // `DefaultHasher` on purpose, where the vector cache deliberately avoids it:
+    // its algorithm is unspecified across Rust releases, so a toolchain bump can
+    // silently rename every file here. That matters there — a lost vector file
+    // costs minutes of inference — and not here, where a miss costs a re-parse.
+    // The hash is a filename, not a format. Don't "fix" this for symmetry.
     let mut h = DefaultHasher::new();
     MAGIC.hash(&mut h);
     // Keyed by the crate version as well as the source, because the records

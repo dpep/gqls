@@ -20,20 +20,65 @@ const TIMEOUT_SECS: u64 = 30;
 /// Default introspection-response cache lifetime for remote endpoints; see [`ttl`].
 const DEFAULT_TTL: Duration = Duration::from_secs(60 * 60);
 
+/// Age at which a cached response is deleted rather than merely ignored. The
+/// TTL decides what's *servable*; this bounds what accumulates, since an
+/// endpoint queried once leaves a file (often megabytes) behind forever.
+const STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 /// POST the introspection query to `url` and flatten the result. Honors
 /// `opts.headers` (e.g. an `Authorization` token) and a TTL response cache
 /// (1h for remote endpoints, never for localhost) so repeated queries against a
 /// remote endpoint don't refetch all day.
 pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
-    let raw = fetch_or_cached(url, opts)?;
+    let ttl = ttl(url);
+    // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
+    // neither read nor write, so a schema you're actively editing is never stale.
+    let path = (!ttl.is_zero()).then(|| cache_path(url)).flatten();
+
+    if !opts.refresh {
+        if let Some(p) = path.as_deref() {
+            if let Some(bytes) = read_if_fresh(p, ttl) {
+                match records_from(&bytes, url, opts.refresh) {
+                    Ok(records) => {
+                        crate::detail!("introspection cache hit: {}", crate::paths::display(p));
+                        return Ok(records);
+                    }
+                    // A cached body that no longer yields a schema is a miss, not
+                    // a failure: bailing here would make one bad file poison every
+                    // run for the rest of the TTL, with `--refresh` the only way
+                    // out and no hint that it's needed.
+                    Err(e) => {
+                        crate::detail!("cached response unusable ({e}) — refetching");
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+            }
+        }
+    }
+
+    crate::detail!("introspecting {url}");
+    let bytes = fetch(url, &opts.headers)?;
+    // Parse and validate *before* caching. Servers answer 200 with an `errors`
+    // body for an expired token or disabled introspection; caching that would
+    // turn a transient failure into an hour of them.
+    let records = records_from(&bytes, url, opts.refresh)?;
+    if let Some(p) = path.as_deref() {
+        store_response(p, &bytes);
+    }
+    Ok(records)
+}
+
+/// Records from a raw introspection response, or an error if it isn't one.
+/// This is the validation gate: nothing reaches the cache without passing it.
+fn records_from(raw: &[u8], url: &str, refresh: bool) -> Result<Vec<SchemaRecord>> {
     // The parsed records depend only on the response bytes, so the record
     // cache short-circuits the (large) JSON parse on repeat queries.
-    if !opts.refresh {
-        if let Some(records) = super::record_cache::load(&raw) {
+    if !refresh {
+        if let Some(records) = super::record_cache::load(raw) {
             return Ok(records);
         }
     }
-    let body: Value = serde_json::from_slice(&raw)
+    let body: Value = serde_json::from_slice(raw)
         .with_context(|| format!("parsing introspection response from {url}"))?;
 
     // Only a non-empty errors array is a real failure — many servers send
@@ -48,35 +93,34 @@ pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
         .pointer("/data/__schema")
         .ok_or_else(|| anyhow!("no data.__schema in response from {url}"))?;
     let records = from_introspection(schema)?;
-    super::record_cache::store(&raw, &records);
+    super::record_cache::store(raw, &records);
     Ok(records)
 }
 
-/// The raw introspection response for `url` — a cached copy if one exists and is
-/// younger than the [`ttl`], otherwise a fresh POST (which is then cached).
-/// `opts.refresh` skips the cache read and forces a live fetch.
-fn fetch_or_cached(url: &str, opts: &LoadOptions) -> Result<Vec<u8>> {
-    let ttl = ttl(url);
-    // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
-    // neither read nor write, so a schema you're actively editing is never stale.
-    let path = (!ttl.is_zero()).then(|| cache_path(url)).flatten();
-    if !opts.refresh {
-        if let Some(p) = path.as_deref() {
-            if let Some(bytes) = read_if_fresh(p, ttl) {
-                crate::detail!("introspection cache hit: {}", crate::paths::display(p));
-                return Ok(bytes);
+/// Cache a validated response, and drop long-expired ones while we're here —
+/// nothing else ever deletes them, and introspection bodies run to megabytes.
+/// Written via a temp file and renamed, so a concurrent reader either sees the
+/// previous response or this one, never half of either.
+fn store_response(path: &Path, bytes: &[u8]) {
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, bytes).is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let expired = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t.elapsed().is_ok_and(|d| d > STALE_AFTER));
+            if e.path() != path && expired.unwrap_or(false) {
+                let _ = std::fs::remove_file(e.path());
             }
         }
     }
-    crate::detail!("introspecting {url}");
-    let bytes = fetch(url, &opts.headers)?;
-    if let Some(p) = path.as_deref() {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(p, &bytes);
-    }
-    Ok(bytes)
 }
 
 fn fetch(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
@@ -406,7 +450,25 @@ fragment TypeRef on __Type {
 
 #[cfg(test)]
 mod tests {
-    use super::is_localhost;
+    use super::{is_localhost, records_from};
+
+    #[test]
+    fn a_response_that_is_not_a_schema_is_rejected_before_it_can_be_cached() {
+        // Servers answer 200 with an errors body for an expired token or
+        // introspection turned off. `from_url` only caches what survives this,
+        // so a bad response can't wedge the cache for the rest of the TTL.
+        let errors = br#"{"errors":[{"message":"introspection is disabled"}]}"#;
+        assert!(records_from(errors, "http://x/graphql", true).is_err());
+
+        let no_schema = br#"{"data":{}}"#;
+        assert!(records_from(no_schema, "http://x/graphql", true).is_err());
+
+        assert!(records_from(b"not json at all", "http://x/graphql", true).is_err());
+
+        // an empty errors array alongside real data is not a failure
+        let ok = br#"{"errors":[],"data":{"__schema":{"types":[]}}}"#;
+        assert!(records_from(ok, "http://x/graphql", true).is_ok());
+    }
 
     #[test]
     fn localhost_urls_are_detected() {
