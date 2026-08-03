@@ -6,7 +6,7 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
-## Unreleased
+## 0.18.0 — 2026-08-03
 
 ### Changed
 - A schema edit now re-embeds **only what changed**. Vectors are keyed per
