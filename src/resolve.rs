@@ -66,9 +66,27 @@ pub fn resolve(
     // onto the very definition that `Query#user` then names exactly, and
     // recording it as a guess because the weaker query got there first would
     // bury the right answer.
+    // The candidates are independent probes of different naming conventions —
+    // nothing about `Resolvers::Employee` depends on `Query#employee` — and each
+    // pays rq's process spawn and repo detection before it does any work. Run
+    // them at once so a lookup costs the slowest candidate rather than the sum,
+    // then merge below in the original candidate order, which is the order the
+    // ranking is defined against. Under `-v` this interleaves the candidates'
+    // rq traces on stderr, since those stream straight through.
+    let cands = candidates(rec);
+    let found: Vec<Result<Vec<RqHit>>> = {
+        use rayon::prelude::*;
+        cands
+            .par_iter()
+            .map(|cand| run_rq(&cand.query, code_dir))
+            .collect()
+    };
+
     let mut best: HashMap<String, RqHit> = HashMap::new();
-    for (idx, cand) in candidates(rec).into_iter().enumerate() {
-        let found = run_rq(&cand.query, code_dir)?;
+    for (idx, (cand, found)) in cands.iter().zip(found).enumerate() {
+        // Reported in candidate order, not completion order, so the first
+        // failure is the same one the sequential version would have raised.
+        let found = found?;
         crate::detail!("rq candidate {:?} -> {} hit(s)", cand.query, found.len());
         for mut hit in found {
             hit.via = cand.query.clone();
