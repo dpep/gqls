@@ -101,7 +101,8 @@ gqls user --fuzzy                          # force fuzzy-only (skip semantic)
 Semantic ranking uses a local model (all-MiniLM-L6-v2, ONNX). The first time
 gqls sees a schema it returns fuzzy results immediately and embeds the vectors
 in the background, so the next run is combined and instant; `gqls --warm
-<source>` pre-embeds up front. It ships in the default `cargo install` and the
+<source>` pre-embeds up front. Editing the schema re-embeds only the records
+that changed, so a schema under active development stays cheap. It ships in the default `cargo install` and the
 Homebrew build (a `--no-default-features` build is fuzzy-only).
 
 ## Draft a query to paste (`-e`)
