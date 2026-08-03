@@ -104,7 +104,7 @@ pub fn search<'a>(
                 .iter()
                 .map(|r| cache::key(&record_text(r)))
                 .collect();
-            let reusable = cache::reusable(embedder.kind(), model);
+            let reusable = cache::reusable(embedder.kind(), model, refresh);
             let pending: Vec<usize> = (0..records.len())
                 .filter(|i| !reusable.contains_key(&keys[*i]))
                 .collect();

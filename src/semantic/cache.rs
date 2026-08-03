@@ -15,16 +15,14 @@
 //! Format: `MAGIC u32 | dims u32 | count u64 | count * (key u128 | dims f32)`,
 //! all little-endian — 272 bytes/record (64 f32 + key), dependency-free.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::mrl::MRL_DIMS;
 use crate::model::SchemaRecord;
 
-const MAGIC: u32 = 0x4751_4C32; // "GQL2" — GQL1 lacked per-record keys
+const MAGIC: u32 = 0x4751_4C33; // "GQL3" — GQL1 had no keys, GQL2 hashed unstably
 
 /// Keep at most this many cache files; the oldest (by mtime) are pruned on
 /// write, so switching between a handful of schemas stays cheap and stale
@@ -45,19 +43,38 @@ const KEY_BYTES: usize = 16;
 /// colliding onto each other's vector.
 pub type Key = (u64, u64);
 
-/// Hash the exact text that gets embedded. Two independently salted 64-bit
-/// hashes; `DefaultHasher` is not cryptographic, but this only has to survive
-/// accidental collision, not an adversary.
+// FNV-1a, vendored in ten lines rather than taken as a dependency (this module
+// is otherwise dependency-free) and used in place of `DefaultHasher` because
+// these hashes are an *on-disk format*, not an in-memory one. `DefaultHasher`'s
+// algorithm is explicitly unspecified across Rust releases, so a toolchain bump
+// could silently rename every cache file and strand every vector behind a dead
+// config prefix — reintroducing the full re-embed this module exists to avoid.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a_update(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+fn fnv1a(salt: u64, bytes: &[u8]) -> u64 {
+    fnv1a_update(FNV_OFFSET ^ salt, bytes)
+}
+
+/// Separator folded in between concatenated fields so that adjacent values
+/// can't alias (`"ab" + "c"` must not hash like `"a" + "bc"`).
+const SEP: &[u8] = &[0xff];
+
+/// Hash the exact text that gets embedded, as two independently salted 64-bit
+/// hashes. Not cryptographic: this only has to survive accidental collision,
+/// and 128 bits over a schema's records makes that vanishingly unlikely.
 pub fn key(text: &str) -> Key {
-    let hash_with = |salt: u64| {
-        let mut h = DefaultHasher::new();
-        salt.hash(&mut h);
-        text.hash(&mut h);
-        h.finish()
-    };
     (
-        hash_with(0xA5A5_A5A5_5A5A_5A5A),
-        hash_with(0x1234_5678_9ABC_DEF0),
+        fnv1a(0xA5A5_A5A5_5A5A_5A5A, text.as_bytes()),
+        fnv1a(0x1234_5678_9ABC_DEF0, text.as_bytes()),
     )
 }
 
@@ -65,12 +82,11 @@ pub fn key(text: &str) -> Key {
 /// own text: format, width, embedder, model. Files sharing this prefix hold
 /// vectors that are interchangeable by content key.
 fn cfg_key(embedder_kind: &str, model: Option<&str>) -> u64 {
-    let mut h = DefaultHasher::new();
-    MAGIC.hash(&mut h);
-    (MRL_DIMS as u32).hash(&mut h);
-    embedder_kind.hash(&mut h);
-    model.unwrap_or("").hash(&mut h);
-    h.finish()
+    let mut h = fnv1a(0x0C0F_0C0F_0C0F_0C0F, &MAGIC.to_le_bytes());
+    h = fnv1a_update(h, &(MRL_DIMS as u32).to_le_bytes());
+    h = fnv1a_update(h, embedder_kind.as_bytes());
+    h = fnv1a_update(h, SEP);
+    fnv1a_update(h, model.unwrap_or("").as_bytes())
 }
 
 /// Cache file path for this (schema, embedder, model) triple, or `None` if no
@@ -78,19 +94,15 @@ fn cfg_key(embedder_kind: &str, model: Option<&str>) -> u64 {
 /// unchanged schema hits outright, while a changed one can still find its
 /// predecessors by the shared config prefix.
 pub fn path(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) -> Option<PathBuf> {
-    let mut h = DefaultHasher::new();
-    records.len().hash(&mut h);
+    let mut h = fnv1a(0x5EED_5EED_5EED_5EED, &(records.len() as u64).to_le_bytes());
     // Key on exactly what gets embedded (super::record_text), so the key can
     // never drift from the embedding text — improve the text and the key moves
     // with it, no silent stale vectors.
     for r in records {
-        super::record_text(r).hash(&mut h);
+        h = fnv1a_update(h, super::record_text(r).as_bytes());
+        h = fnv1a_update(h, SEP);
     }
-    let name = format!(
-        "{:016x}-{:016x}.vecs",
-        cfg_key(embedder_kind, model),
-        h.finish()
-    );
+    let name = format!("{:016x}-{h:016x}.vecs", cfg_key(embedder_kind, model));
     Some(cache_dir()?.join(name))
 }
 
@@ -153,17 +165,28 @@ pub fn load(path: &Path, count: usize) -> Option<Vec<Vec<f32>>> {
 /// the most recent files for this embedder config — their vectors are valid for
 /// any record whose embedded text is unchanged, whichever schema state wrote
 /// them.
-pub fn reusable(embedder_kind: &str, model: Option<&str>) -> HashMap<Key, Vec<f32>> {
+/// `refresh` is the user's "distrust the cache" flag: it must suppress *reuse*,
+/// not merely the whole-file hit. Mining donors under `--refresh` would hand
+/// back the very vectors it was asked to rebuild — the flag exists for changes
+/// the content key cannot see, like model weights replaced under the same name.
+pub fn reusable(embedder_kind: &str, model: Option<&str>, refresh: bool) -> HashMap<Key, Vec<f32>> {
     let Some(dir) = cache_dir() else {
         return HashMap::new();
     };
-    reusable_in(&dir, &format!("{:016x}-", cfg_key(embedder_kind, model)))
+    reusable_in(
+        &dir,
+        &format!("{:016x}-", cfg_key(embedder_kind, model)),
+        refresh,
+    )
 }
 
 /// [`reusable`] against an explicit directory and file prefix — the seam the
 /// tests drive, so they never touch the real cache dir.
-fn reusable_in(dir: &Path, prefix: &str) -> HashMap<Key, Vec<f32>> {
+fn reusable_in(dir: &Path, prefix: &str, refresh: bool) -> HashMap<Key, Vec<f32>> {
     let mut map = HashMap::new();
+    if refresh {
+        return map;
+    }
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
             .flatten()
@@ -204,7 +227,16 @@ pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) {
             buf.extend_from_slice(&x.to_le_bytes());
         }
     }
-    let _ = std::fs::write(path, &buf);
+    // Write-then-rename, because `gqls --warm` runs detached and can be writing
+    // while a foreground query reads. A reader already treats a torn file as a
+    // miss (the length check in `read_entries`), so this isn't about wrong
+    // answers — it's that a half-written file would send the foreground into a
+    // pointless re-embed. Rename is atomic within a filesystem, so readers only
+    // ever observe a complete file. The pid keeps two writers off one temp.
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, &buf).is_err() || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// Refresh a cache file's mtime on a hit, so an actively-used schema survives
@@ -220,6 +252,26 @@ pub fn prune(keep: usize) {
     let Some(dir) = cache_dir() else {
         return;
     };
+    // Sweep temp files a crashed writer left behind — they carry a `.tmp<pid>`
+    // extension, so they're invisible to every other path in this module and
+    // would otherwise accumulate silently.
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let stale = e
+                .path()
+                .extension()
+                .is_some_and(|x| x.to_string_lossy().starts_with("tmp"));
+            if stale {
+                let old = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(|t| t.elapsed().is_ok_and(|d| d.as_secs() > 3600));
+                if old.unwrap_or(false) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd
             .flatten()
@@ -298,14 +350,40 @@ mod tests {
         // a different embedder config — its vectors are NOT interchangeable
         store(&dir.join("bbbb-0001.vecs"), &[key("other")], &vecs(1));
 
-        let map = reusable_in(&dir, "aaaa-");
+        let map = reusable_in(&dir, "aaaa-", false);
         assert!(map.contains_key(&key("kept")), "reuses the previous state");
         assert!(map.contains_key(&key("added")), "mines every recent file");
         assert!(
             !map.contains_key(&key("other")),
             "a different embedder's vectors must never be reused"
         );
+
+        // --refresh must suppress reuse, not just the whole-file hit: otherwise
+        // it hands back the very vectors the user asked to rebuild.
+        assert!(
+            reusable_in(&dir, "aaaa-", true).is_empty(),
+            "refresh must reuse nothing"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn content_keys_are_stable_across_builds() {
+        // These are an on-disk format, not just an in-memory hash — if this
+        // assertion ever fails, every user's cache silently invalidates and the
+        // full re-embed this module exists to prevent comes back. Change the
+        // hash only with a MAGIC bump.
+        // Published FNV-1a 64 vectors — these check the algorithm is actually
+        // FNV, not merely that it agrees with yesterday's build.
+        assert_eq!(fnv1a(0, b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(0, b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(0, b"foobar"), 0x8594_4171_f739_67e8);
+        // A frozen key, so a change to the salts or the composition can't slip
+        // through unnoticed.
+        assert_eq!(
+            key("Query.user"),
+            (0xc093_f72a_7006_68de, 0xc39c_d88a_c01d_7f54)
+        );
     }
 
     #[test]
