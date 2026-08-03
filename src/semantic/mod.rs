@@ -2,13 +2,15 @@
 //!
 //! Embeds `path + description + type` per record and the query with a local
 //! `all-MiniLM-L6-v2` model (pipeline borrowed from ae), truncates to 64-d
-//! vectors, and ranks by cosine. Falls back to a deterministic hash
-//! embedder when the model can't be fetched, so it always runs.
+//! vectors, and ranks by cosine. Identifiers are split into words first — see
+//! [`humanize`] — because the tokenizer shreds camelCase into word pieces the
+//! model has never seen. Falls back to a deterministic hash embedder when the
+//! model can't be fetched, so it always runs.
 //!
-//! v0 embeds every record per invocation (fine at schema scale). A persistent
-//! embedding cache keyed by schema hash — like ae's SQLite store — is the
-//! follow-up for very large / federated schemas; the embed and rank steps are
-//! kept separable here so that cache drops in cleanly.
+//! Embedding is the expensive step, so vectors are cached per record and keyed
+//! by the exact text they came from; see [`cache`] for how a drifting schema
+//! re-embeds only what changed. The embed and rank steps are kept separable so
+//! that cache stays a detail of this module.
 
 mod cache;
 mod embed;
