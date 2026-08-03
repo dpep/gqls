@@ -3,6 +3,8 @@
 //! feature is about argument routing and stream shape — the parts a library
 //! test can't see. Fuzzy queries only, so this holds on every feature build.
 
+mod common;
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -10,6 +12,9 @@ const SCHEMA: &str = "examples/schema.graphql";
 
 /// Run the binary with `stdin` piped in, returning stdout.
 fn run(args: &[&str], stdin: &str) -> String {
+    // Cargo will occasionally hand back a binary older than the source and
+    // swear it's current; without this the failures look like real bugs.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let mut child = Command::new(env!("CARGO_BIN_EXE_gqls"))
         .args(args)
         // --fuzzy keeps this off the embedding model: batch routing is what's
