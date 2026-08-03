@@ -185,6 +185,13 @@ pub fn search<'a>(
                 .collect();
             if let Some(p) = cache_path.as_deref() {
                 cache::store(p, &keys, &v);
+                // This file contains every vector its donors held that's still
+                // live, so those donors are now pure duplication — collect them
+                // before falling back to blunt least-recently-used eviction.
+                let collapsed = cache::consolidate(p, &keys, embedder.kind(), model);
+                if collapsed > 0 {
+                    crate::detail!("vector cache: collapsed {collapsed} superseded file(s)");
+                }
                 cache::prune(cache::max_files()); // evict least-recently-used
             }
             v

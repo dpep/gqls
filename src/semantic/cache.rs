@@ -12,6 +12,11 @@
 //! actually new. Routine drift (a few fields a week) costs a few inferences
 //! rather than a full re-embed.
 //!
+//! Each write then collects the files it superseded — a file whose keys the new
+//! one wholly contains is pure duplication — so a schema that keeps gaining
+//! fields keeps one file, not one per edit. What survives that is bounded by
+//! both a file count and a byte budget, since one file scales with the schema.
+//!
 //! Format: `MAGIC u32 | dims u32 | count u64 | count * (key u128 | dims f32)`,
 //! all little-endian — 272 bytes/record (64 f32 + key), dependency-free.
 
@@ -33,6 +38,12 @@ const MAX_FILES: usize = 32;
 /// One covers the common case (this schema, one edit ago); a few more cover
 /// alternating between schemas without unbounded read cost.
 const MAX_DONORS: usize = 4;
+
+/// Total bytes of vectors to retain. A file count alone doesn't bound disk:
+/// one 49k-record schema is ~13MB per state, so 32 of them is ~430MB.
+/// Consolidation removes most of that redundancy and this backstops the rest —
+/// many distinct schemas, or states kept because fields were removed.
+const MAX_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Bytes of fixed header, and per-entry key width.
 const HEADER: usize = 16;
@@ -119,6 +130,27 @@ fn cache_dir() -> Option<PathBuf> {
 /// Parse a cache file into its `(key, vector)` entries, or `None` if absent /
 /// stale / malformed.
 fn read_entries(path: &Path) -> Option<Vec<(Key, Vec<f32>)>> {
+    let buf = read_validated(path)?;
+    let n = entry_count(&buf)?;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut off = HEADER + i * (KEY_BYTES + MRL_DIMS * 4);
+        let k = entry_key(&buf, i)?;
+        off += KEY_BYTES;
+        let mut v = Vec::with_capacity(MRL_DIMS);
+        for _ in 0..MRL_DIMS {
+            v.push(f32::from_le_bytes(buf[off..off + 4].try_into().ok()?));
+            off += 4;
+        }
+        out.push((k, v));
+    }
+    Some(out)
+}
+
+/// Read a cache file and validate its header, or `None` if it's absent, stale,
+/// or torn. Every read path funnels through here, which is what makes a
+/// half-written file a clean miss rather than a wrong answer.
+fn read_validated(path: &Path) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     std::fs::File::open(path).ok()?.read_to_end(&mut buf).ok()?;
     if buf.len() < HEADER {
@@ -128,29 +160,34 @@ fn read_entries(path: &Path) -> Option<Vec<(Key, Vec<f32>)>> {
     let dims = u32::from_le_bytes(buf[4..8].try_into().ok()?) as usize;
     let n = u64::from_le_bytes(buf[8..16].try_into().ok()?) as usize;
     // Guard the length math against a corrupt/torn `count` — checked so a bogus
-    // value can't wrap and trigger a huge `with_capacity` alloc below.
+    // value can't wrap and trigger a huge allocation downstream.
     let expected = dims
         .checked_mul(4)
         .and_then(|x| x.checked_add(KEY_BYTES))
         .and_then(|x| x.checked_mul(n))
         .and_then(|x| x.checked_add(HEADER));
-    if magic != MAGIC || dims != MRL_DIMS || expected != Some(buf.len()) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(n);
-    let mut off = HEADER;
-    for _ in 0..n {
-        let k0 = u64::from_le_bytes(buf[off..off + 8].try_into().ok()?);
-        let k1 = u64::from_le_bytes(buf[off + 8..off + 16].try_into().ok()?);
-        off += KEY_BYTES;
-        let mut v = Vec::with_capacity(dims);
-        for _ in 0..dims {
-            v.push(f32::from_le_bytes(buf[off..off + 4].try_into().ok()?));
-            off += 4;
-        }
-        out.push(((k0, k1), v));
-    }
-    Some(out)
+    (magic == MAGIC && dims == MRL_DIMS && expected == Some(buf.len())).then_some(buf)
+}
+
+fn entry_count(buf: &[u8]) -> Option<usize> {
+    Some(u64::from_le_bytes(buf[8..16].try_into().ok()?) as usize)
+}
+
+fn entry_key(buf: &[u8], i: usize) -> Option<Key> {
+    let off = HEADER + i * (KEY_BYTES + MRL_DIMS * 4);
+    let k0 = u64::from_le_bytes(buf.get(off..off + 8)?.try_into().ok()?);
+    let k1 = u64::from_le_bytes(buf.get(off + 8..off + 16)?.try_into().ok()?);
+    Some((k0, k1))
+}
+
+/// Just the content keys a file holds, striding past the vectors. Enough to
+/// decide whether a newer file has superseded this one, without paying to
+/// materialise thousands of vectors we'd only throw away.
+fn keys_in(path: &Path) -> Option<Vec<Key>> {
+    let buf = read_validated(path)?;
+    (0..entry_count(&buf)?)
+        .map(|i| entry_key(&buf, i))
+        .collect()
 }
 
 /// Read cached vectors for an exact whole-schema hit, in file order (which is
@@ -239,6 +276,61 @@ pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) {
     }
 }
 
+/// Delete the files the freshly written one has superseded: any file for the
+/// same config whose keys it wholly contains. Returns how many were collapsed.
+///
+/// Files are otherwise near-duplicates — a schema that gains a field writes a
+/// complete new copy and leaves the old one behind, so a lineage accumulates
+/// one full file per edit. In that ordinary case the previous state is a strict
+/// subset and collapses away here, leaving one file per lineage instead of one
+/// per edit. Reverting to the older schema stays instant even so: every vector
+/// it needs is present in the file that replaced it, so mining finds them all
+/// and embeds nothing. A file holding keys the new one lacks — fields were
+/// removed — is not superseded, and is kept.
+pub fn consolidate(
+    written: &Path,
+    keys: &[Key],
+    embedder_kind: &str,
+    model: Option<&str>,
+) -> usize {
+    let Some(dir) = cache_dir() else {
+        return 0;
+    };
+    consolidate_in(
+        &dir,
+        written,
+        keys,
+        &format!("{:016x}-", cfg_key(embedder_kind, model)),
+    )
+}
+
+/// [`consolidate`] against an explicit directory and prefix — the test seam.
+fn consolidate_in(dir: &Path, written: &Path, keys: &[Key], prefix: &str) -> usize {
+    let live: std::collections::HashSet<Key> = keys.iter().copied().collect();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut collapsed = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        if p == written
+            || p.extension().is_none_or(|x| x != "vecs")
+            || !e.file_name().to_string_lossy().starts_with(prefix)
+        {
+            continue;
+        }
+        // Unreadable/stale files are left to the LRU rather than deleted here —
+        // this function's remit is redundancy, not corruption.
+        let Some(theirs) = keys_in(&p) else {
+            continue;
+        };
+        if theirs.iter().all(|k| live.contains(k)) && std::fs::remove_file(&p).is_ok() {
+            collapsed += 1;
+        }
+    }
+    collapsed
+}
+
 /// Refresh a cache file's mtime on a hit, so an actively-used schema survives
 /// LRU pruning even though its vectors didn't need rewriting.
 pub fn touch(path: &Path) {
@@ -272,20 +364,33 @@ pub fn prune(keep: usize) {
             }
         }
     }
-    let mut files: Vec<(std::time::SystemTime, PathBuf)> = match std::fs::read_dir(&dir) {
+    prune_in(&dir, keep, MAX_BYTES);
+}
+
+/// [`prune`] against an explicit directory and budget — the test seam. Evicts
+/// by recency on two independent limits: a file count, and a total byte budget
+/// (a count can't bound disk when one file scales with schema size). The newest
+/// file always survives, even if it alone exceeds the budget — evicting the
+/// cache you just wrote would guarantee a re-embed on the very next run.
+fn prune_in(dir: &Path, keep: usize, max_bytes: u64) {
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|x| x == "vecs"))
-            .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                Some((m.modified().ok()?, m.len(), e.path()))
+            })
             .collect(),
         Err(_) => return,
     };
-    if files.len() <= keep {
-        return;
-    }
     files.sort_by_key(|f| std::cmp::Reverse(f.0)); // newest first
-    for (_, p) in files.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(p);
+    let mut total = 0u64;
+    for (i, (_, size, p)) in files.iter().enumerate() {
+        total = total.saturating_add(*size);
+        if i > 0 && (i >= keep || total > max_bytes) {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 
@@ -364,6 +469,60 @@ mod tests {
             reusable_in(&dir, "aaaa-", true).is_empty(),
             "refresh must reuse nothing"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn consolidation_collects_superseded_files_only() {
+        let dir = std::env::temp_dir().join("gqls-cache-test-consolidate");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+
+        let old = dir.join("aaaa-0001.vecs"); // the previous state: a subset
+        let removed = dir.join("aaaa-0002.vecs"); // holds a key the new one lacks
+        let foreign = dir.join("bbbb-0003.vecs"); // another embedder entirely
+        let new = dir.join("aaaa-0004.vecs");
+        store(&old, &[key("a"), key("b")], &vecs(2));
+        store(&removed, &[key("a"), key("gone")], &vecs(2));
+        store(&foreign, &[key("a")], &vecs(1));
+        let live = [key("a"), key("b"), key("c")];
+        store(&new, &live, &vecs(3));
+
+        assert_eq!(consolidate_in(&dir, &new, &live, "aaaa-"), 1);
+        assert!(!old.exists(), "a superseded state must be collected");
+        assert!(
+            removed.exists(),
+            "a file holding keys the new one lacks is not superseded"
+        );
+        assert!(foreign.exists(), "another embedder's file is untouchable");
+        assert!(new.exists(), "never collect the file just written");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pruning_honours_both_the_count_and_the_byte_budget() {
+        let dir = std::env::temp_dir().join("gqls-cache-test-prune");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+
+        // four files, newest last written; each is one entry (~272 bytes)
+        let paths: Vec<PathBuf> = (0..4).map(|i| dir.join(format!("p-{i}.vecs"))).collect();
+        for (i, p) in paths.iter().enumerate() {
+            store(p, &[key(&i.to_string())], &vecs(1));
+            // distinct, increasing mtimes so "newest" is unambiguous
+            let t =
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 + i as u64);
+            let _ = std::fs::File::open(p).map(|f| f.set_modified(t));
+        }
+        // byte budget admits about two files; the count limit is not the binding one
+        prune_in(&dir, 99, 600);
+        assert!(paths[3].exists(), "newest survives");
+        assert!(paths[2].exists(), "second-newest fits the budget");
+        assert!(!paths[0].exists() && !paths[1].exists(), "oldest evicted");
+
+        // a budget smaller than a single file must still leave the newest
+        prune_in(&dir, 99, 1);
+        assert!(paths[3].exists(), "never evict the only current cache");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
