@@ -95,8 +95,33 @@ pub fn search<'a>(
             use std::io::IsTerminal;
             use std::sync::atomic::{AtomicUsize, Ordering};
 
-            let total = records.len();
-            crate::status!("embedding {total} records (one-time; may take a minute)…");
+            // A whole-schema miss doesn't mean the vectors are worthless: adding
+            // a field invalidates the file's name, not the other 49,000 records'
+            // embeddings. Reload recent files for this embedder and reuse every
+            // vector whose text is unchanged, so routine drift costs inference
+            // on the delta instead of the schema.
+            let keys: Vec<cache::Key> = records
+                .iter()
+                .map(|r| cache::key(&record_text(r)))
+                .collect();
+            let reusable = cache::reusable(embedder.kind(), model);
+            let pending: Vec<usize> = (0..records.len())
+                .filter(|i| !reusable.contains_key(&keys[*i]))
+                .collect();
+
+            let total = pending.len();
+            let reused = records.len() - total;
+            crate::detail!(
+                "vector cache: {reused} of {} vectors reused, {total} to embed",
+                records.len()
+            );
+            if total > 0 {
+                if reused > 0 {
+                    crate::status!("embedding {total} new/changed records ({reused} reused)…");
+                } else {
+                    crate::status!("embedding {total} records (one-time; may take a minute)…");
+                }
+            }
             let done = AtomicUsize::new(0);
 
             // One embedder per worker thread, built on first use and reused for
@@ -111,7 +136,7 @@ pub fn search<'a>(
             thread_local! {
                 static EMBEDDER: RefCell<Option<Box<dyn Embedder>>> = const { RefCell::new(None) };
             }
-            let v: Vec<Vec<f32>> = std::thread::scope(|scope| {
+            let fresh: Vec<Vec<f32>> = std::thread::scope(|scope| {
                 let show_progress =
                     std::io::stderr().is_terminal() && total > 500 && !crate::logging::is_quiet();
                 if show_progress {
@@ -125,21 +150,41 @@ pub fn search<'a>(
                         }
                     });
                 }
-                records
+                pending
                     .par_iter()
-                    .map(|r| {
+                    .map(|&i| {
                         let out = EMBEDDER.with(|cell| {
                             let mut slot = cell.borrow_mut();
                             let emb = slot.get_or_insert_with(|| default_embedder(model));
-                            compress_matryoshka_vector(&emb.embed(&record_text(r)))
+                            compress_matryoshka_vector(&emb.embed(&record_text(&records[i])))
                         });
                         done.fetch_add(1, Ordering::Relaxed);
                         out
                     })
                     .collect()
             });
+
+            // Reassemble in record order from the two sources: freshly embedded
+            // for the delta, reused for the rest. Two records with identical
+            // text share a key and simply share the vector — reuse is a lookup,
+            // not a removal, so the duplicate resolves the same way. Neither
+            // branch can miss by construction; embed on the spot if one somehow
+            // does, so a bug degrades to slow rather than to a zero vector that
+            // would silently score as unrelated to everything.
+            let mut minted: std::collections::HashMap<usize, Vec<f32>> =
+                pending.into_iter().zip(fresh).collect();
+            let v: Vec<Vec<f32>> = (0..records.len())
+                .map(|i| {
+                    minted
+                        .remove(&i)
+                        .or_else(|| reusable.get(&keys[i]).cloned())
+                        .unwrap_or_else(|| {
+                            compress_matryoshka_vector(&embedder.embed(&record_text(&records[i])))
+                        })
+                })
+                .collect();
             if let Some(p) = cache_path.as_deref() {
-                cache::store(p, &v);
+                cache::store(p, &keys, &v);
                 cache::prune(cache::max_files()); // evict least-recently-used
             }
             v
