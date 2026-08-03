@@ -38,15 +38,225 @@ fn bound_tail<T>(hits: &mut Vec<(f64, T)>) {
     hits.retain(|(s, _)| *s >= floor);
 }
 
-/// Embed the query and each record, rank by cosine. Returns `(score, record)`
-/// pairs, best first — the caller formats them exactly like fuzzy hits, so
-/// `--json` / `--ndjson` work identically in both modes.
+/// A loaded model plus one schema's vectors: everything a semantic query needs
+/// that isn't the query. Ranking against it embeds the query and takes cosines,
+/// returning `(score, record)` pairs best first — the caller formats them
+/// exactly like fuzzy hits, so `--json`/`--ndjson` work identically either way.
 ///
 /// The model load is deliberately synchronous, not overlapped on a thread:
 /// ONNX Runtime's C++ one-time init segfaults if the process exits mid-load
 /// (a thread dropped on a fuzzy-only exit), and joining always would erase
 /// the overlap. The exact-match skip in the CLI avoids the cost where it
-/// matters instead.
+/// matters instead; holding a session across queries avoids paying it twice.
+pub struct Session {
+    embedder: Box<dyn Embedder>,
+    vectors: Vec<Vec<f32>>,
+}
+
+impl Session {
+    /// Load the model and this schema's vectors — everything a semantic query
+    /// needs that doesn't depend on the query. This is the expensive part (the
+    /// model load alone dwarfs the ranking), so a caller answering many queries
+    /// builds one session and reuses it.
+    pub fn new(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> Session {
+        let mut model_span = crate::profile::span("semantic: model load");
+        let embedder = default_embedder(model);
+        model_span.note(|| embedder.kind().to_string());
+        drop(model_span);
+        // On the good path (onnx) this is verbose-only noise; a fall back to the
+        // hash embedder means weaker results, so surface that unconditionally.
+        if embedder.kind() == "onnx" {
+            crate::detail!("semantic search via onnx embeddings");
+        } else {
+            crate::status!(
+                "embedding model unavailable — semantic results will be weaker (-v for why)"
+            );
+        }
+
+        // Per-record vectors are the expensive part; cache them keyed by schema
+        // content + embedder + model, so editing the schema (or switching model)
+        // changes the key and re-embeds automatically. `--refresh` forces a miss.
+        let mut vec_span = crate::profile::span("semantic: vectors");
+        let cache_path = cache::path(records, embedder.kind(), model);
+        let cached = if refresh {
+            None
+        } else {
+            cache_path
+                .as_deref()
+                .and_then(|p| cache::load(p, records.len()))
+        };
+        let vectors = match cached {
+            Some(v) => {
+                if let Some(p) = cache_path.as_deref() {
+                    crate::detail!("vector cache hit: {}", crate::paths::display(p));
+                    cache::touch(p); // LRU: mark this schema as recently used
+                }
+                v
+            }
+            None => {
+                if let Some(p) = cache_path.as_deref() {
+                    crate::detail!("vector cache miss: {}", crate::paths::display(p));
+                }
+                use rayon::prelude::*;
+                use std::io::IsTerminal;
+                use std::sync::atomic::{AtomicUsize, Ordering};
+
+                // A whole-schema miss doesn't mean the vectors are worthless: adding
+                // a field invalidates the file's name, not the other 49,000 records'
+                // embeddings. Reload recent files for this embedder and reuse every
+                // vector whose text is unchanged, so routine drift costs inference
+                // on the delta instead of the schema.
+                let keys: Vec<cache::Key> = records
+                    .iter()
+                    .map(|r| cache::key(&record_text(r)))
+                    .collect();
+                let reusable = cache::reusable(embedder.kind(), model, refresh);
+                let pending: Vec<usize> = (0..records.len())
+                    .filter(|i| !reusable.contains_key(&keys[*i]))
+                    .collect();
+
+                let total = pending.len();
+                let reused = records.len() - total;
+                crate::detail!(
+                    "vector cache: {reused} of {} vectors reused, {total} to embed",
+                    records.len()
+                );
+                if total > 0 {
+                    if reused > 0 {
+                        crate::status!("embedding {total} new/changed records ({reused} reused)…");
+                    } else {
+                        crate::status!("embedding {total} records (one-time; may take a minute)…");
+                    }
+                }
+                let done = AtomicUsize::new(0);
+
+                // One embedder per worker thread, built on first use and reused for
+                // every record that thread handles. rayon's `map_init` rebuilt it per
+                // job-split (≈ once per record), reloading the ONNX session tens of
+                // thousands of times on a large schema; a `thread_local` caps it at
+                // one per worker. `model` is constant for the process, so the workers
+                // all resolve the same embedder kind (no mixed onnx/hash vectors), and
+                // caching on "already built?" alone is safe. Order-preserving
+                // `collect` keeps vectors index-aligned with `records`.
+                use std::cell::RefCell;
+                thread_local! {
+                    static EMBEDDER: RefCell<Option<Box<dyn Embedder>>> = const { RefCell::new(None) };
+                }
+                let fresh: Vec<Vec<f32>> = std::thread::scope(|scope| {
+                    let show_progress = std::io::stderr().is_terminal()
+                        && total > 500
+                        && !crate::logging::is_quiet();
+                    if show_progress {
+                        scope.spawn(|| loop {
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                            let d = done.load(Ordering::Relaxed);
+                            eprint!("\rgqls: embedded {d}/{total}…    ");
+                            if d >= total {
+                                eprintln!();
+                                break;
+                            }
+                        });
+                    }
+                    pending
+                        .par_iter()
+                        .map(|&i| {
+                            let out = EMBEDDER.with(|cell| {
+                                let mut slot = cell.borrow_mut();
+                                let emb = slot.get_or_insert_with(|| default_embedder(model));
+                                compress_matryoshka_vector(&emb.embed(&record_text(&records[i])))
+                            });
+                            done.fetch_add(1, Ordering::Relaxed);
+                            out
+                        })
+                        .collect()
+                });
+
+                // Reassemble in record order from the two sources: freshly embedded
+                // for the delta, reused for the rest. Two records with identical
+                // text share a key and simply share the vector — reuse is a lookup,
+                // not a removal, so the duplicate resolves the same way. Neither
+                // branch can miss by construction; embed on the spot if one somehow
+                // does, so a bug degrades to slow rather than to a zero vector that
+                // would silently score as unrelated to everything.
+                let mut minted: std::collections::HashMap<usize, Vec<f32>> =
+                    pending.into_iter().zip(fresh).collect();
+                let v: Vec<Vec<f32>> = (0..records.len())
+                    .map(|i| {
+                        minted
+                            .remove(&i)
+                            .or_else(|| reusable.get(&keys[i]).cloned())
+                            .unwrap_or_else(|| {
+                                compress_matryoshka_vector(
+                                    &embedder.embed(&record_text(&records[i])),
+                                )
+                            })
+                    })
+                    .collect();
+                if let Some(p) = cache_path.as_deref() {
+                    // Only a write that landed supersedes anything. If the store
+                    // failed — a full disk is exactly the condition a 13MB write
+                    // provokes — collecting the predecessors would destroy the only
+                    // copies of these vectors on behalf of a file that isn't there.
+                    if cache::store(p, &keys, &v) {
+                        // This file contains every vector its donors held that's
+                        // still live, so those donors are now pure duplication —
+                        // collect them before falling back to blunt LRU eviction.
+                        let collapsed = cache::consolidate(p, &keys, embedder.kind(), model);
+                        if collapsed > 0 {
+                            crate::detail!(
+                                "vector cache: collapsed {collapsed} superseded file(s)"
+                            );
+                        }
+                    } else {
+                        crate::detail!("vector cache: write failed, keeping existing files");
+                    }
+                    cache::prune(cache::max_files()); // evict least-recently-used
+                }
+                v
+            }
+        };
+
+        vec_span.note(|| format!("{} vectors", vectors.len()));
+        drop(vec_span);
+        Session { embedder, vectors }
+    }
+
+    /// Rank `records` against `query`. `records` must be the slice the session
+    /// was built from — the vectors are index-aligned with it.
+    pub fn rank<'a>(
+        &self,
+        query: &str,
+        records: &'a [SchemaRecord],
+        filters: crate::search::Filters<'_>,
+        limit: usize,
+    ) -> Vec<(f64, &'a SchemaRecord)> {
+        let embedder = &self.embedder;
+        let vectors = self.vectors.as_slice();
+        let embed_span = crate::profile::span("semantic: query embed");
+        let query_vec = compress_matryoshka_vector(&embedder.embed(query));
+        drop(embed_span);
+
+        let mut cosine_span = crate::profile::span("semantic: cosine");
+        let predicate = filters.compile();
+        let mut hits: Vec<(f64, &SchemaRecord)> = records
+            .iter()
+            .zip(vectors)
+            .filter(|(r, _)| predicate.accepts(r))
+            .map(|(r, v)| (cosine_similarity(&query_vec, v) as f64, r))
+            .collect();
+
+        cosine_span.note(|| format!("{} scored", hits.len()));
+        drop(cosine_span);
+
+        hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+        bound_tail(&mut hits);
+        hits.truncate(limit);
+        hits
+    }
+}
+
+/// One-shot semantic search: build a session and ask it one question. The
+/// batch path builds the session itself and keeps it.
 pub fn search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
@@ -55,187 +265,7 @@ pub fn search<'a>(
     model: Option<&str>,
     refresh: bool,
 ) -> Vec<(f64, &'a SchemaRecord)> {
-    let mut model_span = crate::profile::span("semantic: model load");
-    let embedder = default_embedder(model);
-    model_span.note(|| embedder.kind().to_string());
-    drop(model_span);
-    // On the good path (onnx) this is verbose-only noise; a fall back to the
-    // hash embedder means weaker results, so surface that unconditionally.
-    if embedder.kind() == "onnx" {
-        crate::detail!("semantic search via onnx embeddings");
-    } else {
-        crate::status!(
-            "embedding model unavailable — semantic results will be weaker (-v for why)"
-        );
-    }
-
-    // Per-record vectors are the expensive part; cache them keyed by schema
-    // content + embedder + model, so editing the schema (or switching model)
-    // changes the key and re-embeds automatically. `--refresh` forces a miss.
-    let mut vec_span = crate::profile::span("semantic: vectors");
-    let cache_path = cache::path(records, embedder.kind(), model);
-    let cached = if refresh {
-        None
-    } else {
-        cache_path
-            .as_deref()
-            .and_then(|p| cache::load(p, records.len()))
-    };
-    let vectors = match cached {
-        Some(v) => {
-            if let Some(p) = cache_path.as_deref() {
-                crate::detail!("vector cache hit: {}", crate::paths::display(p));
-                cache::touch(p); // LRU: mark this schema as recently used
-            }
-            v
-        }
-        None => {
-            if let Some(p) = cache_path.as_deref() {
-                crate::detail!("vector cache miss: {}", crate::paths::display(p));
-            }
-            use rayon::prelude::*;
-            use std::io::IsTerminal;
-            use std::sync::atomic::{AtomicUsize, Ordering};
-
-            // A whole-schema miss doesn't mean the vectors are worthless: adding
-            // a field invalidates the file's name, not the other 49,000 records'
-            // embeddings. Reload recent files for this embedder and reuse every
-            // vector whose text is unchanged, so routine drift costs inference
-            // on the delta instead of the schema.
-            let keys: Vec<cache::Key> = records
-                .iter()
-                .map(|r| cache::key(&record_text(r)))
-                .collect();
-            let reusable = cache::reusable(embedder.kind(), model, refresh);
-            let pending: Vec<usize> = (0..records.len())
-                .filter(|i| !reusable.contains_key(&keys[*i]))
-                .collect();
-
-            let total = pending.len();
-            let reused = records.len() - total;
-            crate::detail!(
-                "vector cache: {reused} of {} vectors reused, {total} to embed",
-                records.len()
-            );
-            if total > 0 {
-                if reused > 0 {
-                    crate::status!("embedding {total} new/changed records ({reused} reused)…");
-                } else {
-                    crate::status!("embedding {total} records (one-time; may take a minute)…");
-                }
-            }
-            let done = AtomicUsize::new(0);
-
-            // One embedder per worker thread, built on first use and reused for
-            // every record that thread handles. rayon's `map_init` rebuilt it per
-            // job-split (≈ once per record), reloading the ONNX session tens of
-            // thousands of times on a large schema; a `thread_local` caps it at
-            // one per worker. `model` is constant for the process, so the workers
-            // all resolve the same embedder kind (no mixed onnx/hash vectors), and
-            // caching on "already built?" alone is safe. Order-preserving
-            // `collect` keeps vectors index-aligned with `records`.
-            use std::cell::RefCell;
-            thread_local! {
-                static EMBEDDER: RefCell<Option<Box<dyn Embedder>>> = const { RefCell::new(None) };
-            }
-            let fresh: Vec<Vec<f32>> = std::thread::scope(|scope| {
-                let show_progress =
-                    std::io::stderr().is_terminal() && total > 500 && !crate::logging::is_quiet();
-                if show_progress {
-                    scope.spawn(|| loop {
-                        std::thread::sleep(std::time::Duration::from_millis(300));
-                        let d = done.load(Ordering::Relaxed);
-                        eprint!("\rgqls: embedded {d}/{total}…    ");
-                        if d >= total {
-                            eprintln!();
-                            break;
-                        }
-                    });
-                }
-                pending
-                    .par_iter()
-                    .map(|&i| {
-                        let out = EMBEDDER.with(|cell| {
-                            let mut slot = cell.borrow_mut();
-                            let emb = slot.get_or_insert_with(|| default_embedder(model));
-                            compress_matryoshka_vector(&emb.embed(&record_text(&records[i])))
-                        });
-                        done.fetch_add(1, Ordering::Relaxed);
-                        out
-                    })
-                    .collect()
-            });
-
-            // Reassemble in record order from the two sources: freshly embedded
-            // for the delta, reused for the rest. Two records with identical
-            // text share a key and simply share the vector — reuse is a lookup,
-            // not a removal, so the duplicate resolves the same way. Neither
-            // branch can miss by construction; embed on the spot if one somehow
-            // does, so a bug degrades to slow rather than to a zero vector that
-            // would silently score as unrelated to everything.
-            let mut minted: std::collections::HashMap<usize, Vec<f32>> =
-                pending.into_iter().zip(fresh).collect();
-            let v: Vec<Vec<f32>> = (0..records.len())
-                .map(|i| {
-                    minted
-                        .remove(&i)
-                        .or_else(|| reusable.get(&keys[i]).cloned())
-                        .unwrap_or_else(|| {
-                            compress_matryoshka_vector(&embedder.embed(&record_text(&records[i])))
-                        })
-                })
-                .collect();
-            if let Some(p) = cache_path.as_deref() {
-                // Only a write that landed supersedes anything. If the store
-                // failed — a full disk is exactly the condition a 13MB write
-                // provokes — collecting the predecessors would destroy the only
-                // copies of these vectors on behalf of a file that isn't there.
-                if cache::store(p, &keys, &v) {
-                    // This file contains every vector its donors held that's
-                    // still live, so those donors are now pure duplication —
-                    // collect them before falling back to blunt LRU eviction.
-                    let collapsed = cache::consolidate(p, &keys, embedder.kind(), model);
-                    if collapsed > 0 {
-                        crate::detail!("vector cache: collapsed {collapsed} superseded file(s)");
-                    }
-                } else {
-                    crate::detail!("vector cache: write failed, keeping existing files");
-                }
-                cache::prune(cache::max_files()); // evict least-recently-used
-            }
-            v
-        }
-    };
-
-    vec_span.note(|| format!("{} vectors", vectors.len()));
-    drop(vec_span);
-
-    // warm() calls with an empty query and limit 0 purely to populate the cache
-    // above — there's nothing to rank, so skip the query embed + cosine pass.
-    if query.is_empty() && limit == 0 {
-        return Vec::new();
-    }
-
-    let embed_span = crate::profile::span("semantic: query embed");
-    let query_vec = compress_matryoshka_vector(&embedder.embed(query));
-    drop(embed_span);
-
-    let mut cosine_span = crate::profile::span("semantic: cosine");
-    let predicate = filters.compile();
-    let mut hits: Vec<(f64, &SchemaRecord)> = records
-        .iter()
-        .zip(&vectors)
-        .filter(|(r, _)| predicate.accepts(r))
-        .map(|(r, v)| (cosine_similarity(&query_vec, v) as f64, r))
-        .collect();
-
-    cosine_span.note(|| format!("{} scored", hits.len()));
-    drop(cosine_span);
-
-    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
-    bound_tail(&mut hits);
-    hits.truncate(limit);
-    hits
+    Session::new(records, model, refresh).rank(query, records, filters, limit)
 }
 
 /// Split an identifier into the words it's built from: `cancelSubscription` →
@@ -303,7 +333,9 @@ pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
 /// Embed + cache every record's vector without running a real query — pre-warms
 /// the cache so the first search is instant. Returns the record count.
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
-    let _ = search("", records, Default::default(), 0, model, refresh);
+    // Building the session *is* the warm: it loads the model and fills the
+    // vector cache. There's no query to answer, so nothing else runs.
+    let _ = Session::new(records, model, refresh);
     records.len()
 }
 

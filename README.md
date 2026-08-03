@@ -53,6 +53,16 @@ gqls User.email                  # qualified — filters to fields on User
 gqls 'cancel a subscription'     # a phrase — matched word by word
 ```
 
+### Many queries at once
+Pipe queries on stdin, one per line, and a single run answers them all — the schema, the embedding model and the vectors load once instead of once per query. On a 10k-record schema, 20 meaning-based queries drop from 1.83s to 0.52s:
+
+```sh
+cat queries.txt | gqls schema.graphql -J
+printf 'cancel a subscription\ndispute a transaction\n' | gqls schema.graphql -J
+```
+
+Every row carries the `query` that produced it, so one stream stays untangleable, and a query that matched nothing still reports `{"query": …, "status": "no_matches"}` rather than vanishing. A single query's output is unchanged — no `query` field — so existing callers parse exactly what they always did. An explicit query beats a pipe, and `--resolve`/`--example` take one query only.
+
 A multi-word query is matched one word at a time, so a phrase isn't a hard zero when semantic ranking is unavailable or still warming. Noise words (`a`, `the`, `of`, …) are dropped, and the records covering the most words win outright — `cancelSubscription` beats the many that merely echo `subscription`. When nothing covers the whole phrase, every single-word match stands. Only whitespace opens this path: `User.email` is still scored whole, and `User email` becomes the qualified form before the search runs.
 
 ### Filter by return type

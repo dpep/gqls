@@ -6,6 +6,16 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Added
+- Queries piped on stdin, one per line, are answered by a single run — the
+  schema, the embedding model and the vectors load once rather than once per
+  query. 20 meaning-based queries against a 10k-record schema: 1.83s to 0.52s.
+  Every row carries the `query` that produced it, and a query that matched
+  nothing reports `{"query": …, "status": "no_matches"}` instead of vanishing
+  from the stream. A single query's output is unchanged.
+
 ## 0.18.1 — 2026-08-03
 
 ### Fixed
