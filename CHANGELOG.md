@@ -6,7 +6,7 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
-## Unreleased
+## 0.19.0 — 2026-08-03
 
 ### Added
 - Queries piped on stdin, one per line, are answered by a single run — the
