@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::{Kind, SchemaRecord};
 
 /// One code definition rq found, plus the candidate query that surfaced it.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RqHit {
     pub name: String,
     pub file: String,
@@ -67,26 +67,19 @@ pub fn resolve(
     // recording it as a guess because the weaker query got there first would
     // bury the right answer.
     // The candidates are independent probes of different naming conventions —
-    // nothing about `Resolvers::Employee` depends on `Query#employee` — and each
-    // pays rq's process spawn and repo detection before it does any work. Run
-    // them at once so a lookup costs the slowest candidate rather than the sum,
-    // then merge below in the original candidate order, which is the order the
-    // ranking is defined against. Under `-v` this interleaves the candidates'
-    // rq traces on stderr, since those stream straight through.
+    // nothing about `Resolvers::Employee` depends on `Query#employee` — so they
+    // all go to rq at once, on one stdin. That pays rq's setup (store, repo
+    // resolution, staleness) once for the lookup rather than once per
+    // convention. Results come back tagged with the query that found them, and
+    // are merged below in the original candidate order, which is the order the
+    // ranking is defined against.
     let cands = candidates(rec);
-    let found: Vec<Result<Vec<RqHit>>> = {
-        use rayon::prelude::*;
-        cands
-            .par_iter()
-            .map(|cand| run_rq(&cand.query, code_dir))
-            .collect()
-    };
+    let queries: Vec<&str> = cands.iter().map(|c| c.query.as_str()).collect();
+    let found = run_rq(&queries, code_dir)?;
 
     let mut best: HashMap<String, RqHit> = HashMap::new();
-    for (idx, (cand, found)) in cands.iter().zip(found).enumerate() {
-        // Reported in candidate order, not completion order, so the first
-        // failure is the same one the sequential version would have raised.
-        let found = found?;
+    for (idx, cand) in cands.iter().enumerate() {
+        let found = found.get(cand.query.as_str()).cloned().unwrap_or_default();
         crate::detail!("rq candidate {:?} -> {} hit(s)", cand.query, found.len());
         for mut hit in found {
             hit.via = cand.query.clone();
@@ -270,20 +263,30 @@ pub fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
     c
 }
 
-fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
+/// Ask rq every candidate at once, returning each one's hits keyed by query.
+///
+/// One invocation, queries piped in on stdin — rq answers a stream in a single
+/// run, so its setup (opening the store, resolving the repo, checking whether
+/// the worktree moved) is paid once for the whole lookup instead of once per
+/// naming convention. Rows come back tagged with the query that produced them.
+fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<HashMap<String, Vec<RqHit>>> {
+    use std::io::Write;
     let verbose = crate::logging::is_verbose();
     let mut cmd = Command::new("rq");
     // Ten, not five: the correct definition was being cut inside rq before
     // gqls could rank it — two structurally identical fields differed only in
     // where they fell in one noisy list. The final `limit` still applies.
-    cmd.arg("--json").arg("--limit").arg("10");
+    cmd.arg("--ndjson").arg("--limit").arg("10");
+    // Ranking is gqls's job here, and a batch is machine input by definition:
+    // don't let these probes teach rq's learned boosts.
+    cmd.arg("--no-record");
     // Mirror `gqls -v` into rq: it traces its own decisions (root, coverage,
     // warming) to stderr, which we let stream straight to the terminal. Without
     // -v we keep capturing rq's stderr so a failure can surface its message.
     if verbose {
         cmd.arg("--verbose");
     }
-    cmd.arg(query);
+    cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(if verbose {
         Stdio::inherit()
@@ -295,10 +298,8 @@ fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
-    let output = match cmd.spawn() {
-        Ok(child) => child
-            .wait_with_output()
-            .map_err(|e| anyhow!("running rq: {e}"))?,
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
             "--resolve needs `rq` (a code-navigation CLI), which isn't installed. Install it:\n  \
              brew install dpep/tools/rq\n  \
@@ -307,19 +308,51 @@ fn run_rq(query: &str, dir: Option<&str>) -> Result<Vec<RqHit>> {
         ),
         Err(e) => bail!("running rq: {e}"),
     };
-    // rq: exit 0 = hits (JSON array), 1 = no match (a `{status}` object) — both
-    // are normal. Any other code is a real rq failure (not a repo, bad flag):
-    // surface it instead of silently reporting "no resolver found".
-    match output.status.code() {
-        Some(0) | Some(1) => Ok(serde_json::from_slice(&output.stdout).unwrap_or_default()),
-        other => {
-            let msg = String::from_utf8_lossy(&output.stderr);
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(queries.join("\n").as_bytes());
+        let _ = stdin.write_all(b"\n");
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| anyhow!("running rq: {e}"))?;
+    // rq: exit 0 = hits, 1 = nothing matched (both normal for a batch of
+    // speculative convention probes). Any other code is a real failure.
+    if !matches!(output.status.code(), Some(0) | Some(1)) {
+        let msg = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "rq failed (exit {:?}): {}",
+            output.status.code(),
+            msg.lines().next().unwrap_or("").trim()
+        );
+    }
+
+    let mut by_query: HashMap<String, Vec<RqHit>> = HashMap::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            // An rq too old for batch queries reads the empty argument list as
+            // a bare invocation and prints its help to stdout. Say so, rather
+            // than reporting a resolver that simply isn't there.
             bail!(
-                "rq failed (exit {other:?}) for {query:?}: {}",
-                msg.lines().next().unwrap_or("").trim()
-            )
+                "`rq` doesn't support batch queries — --resolve needs rq 0.38.0 or newer. \
+                 Upgrade it:\n  brew upgrade dpep/tools/rq\n  \
+                 cargo install --git https://github.com/dpep/rq"
+            );
+        };
+        let Some(query) = value.get("query").and_then(|q| q.as_str()) else {
+            continue;
+        };
+        // `{"query": …, "status": …}` marks a query that matched nothing (or an
+        // index still warming) — no hit to record, and not an error.
+        if value.get("status").is_some() {
+            by_query.entry(query.to_string()).or_default();
+            continue;
+        }
+        if let Ok(hit) = serde_json::from_value::<RqHit>(value.clone()) {
+            by_query.entry(query.to_string()).or_default().push(hit);
         }
     }
+    Ok(by_query)
 }
 
 /// GraphQL `nameWithOwner` → Ruby `name_with_owner`.
