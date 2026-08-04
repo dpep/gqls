@@ -6,6 +6,16 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## 0.20.0 — 2026-08-03
+
+### Changed
+- `--resolve` asks rq all its naming-convention candidates in one call rather
+  than one process each. Same answers and the same wall clock — the previous
+  version already ran them concurrently — but a fifth of the CPU (1.74s to
+  0.32s over five lookups), since six processes were each opening the store,
+  resolving the repo and checking the worktree to answer six one-line
+  questions. Needs rq 0.38.0 or newer.
+
 ## 0.19.0 — 2026-08-03
 
 ### Added
