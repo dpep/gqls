@@ -330,14 +330,7 @@ fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<HashMap<String, Vec<RqH
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            // An rq too old for batch queries reads the empty argument list as
-            // a bare invocation and prints its help to stdout. Say so, rather
-            // than reporting a resolver that simply isn't there.
-            bail!(
-                "`rq` doesn't support batch queries — --resolve needs rq 0.38.0 or newer. \
-                 Upgrade it:\n  brew upgrade dpep/tools/rq\n  \
-                 cargo install --git https://github.com/dpep/rq"
-            );
+            continue;
         };
         let Some(query) = value.get("query").and_then(|q| q.as_str()) else {
             continue;
