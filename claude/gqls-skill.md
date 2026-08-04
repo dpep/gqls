@@ -105,6 +105,24 @@ in the background, so the next run is combined and instant; `gqls --warm
 that changed, so a schema under active development stays cheap. It ships in the default `cargo install` and the
 Homebrew build (a `--no-default-features` build is fuzzy-only).
 
+## Many queries at once
+
+Answering a list of questions about one schema? Pipe them on stdin, one per
+line, and a single run answers them all — the schema, the embedding model and
+the vectors load once instead of per query. 20 meaning-based queries against a
+10k-record schema: 1.83s against 0.52s.
+
+```sh
+printf 'cancel a subscription\ndispute a transaction\n' | gqls schema.graphql -J
+gqls schema.graphql -J < questions.txt
+```
+
+Each row carries the `query` that produced it, so one stream stays
+attributable, and a query that matched nothing still reports
+`{"query": …, "status": "no_matches"}` rather than dropping out. A single
+query's output is unchanged, so existing parsing is unaffected. An explicit
+query beats a pipe; `-R` and `-e` take one query only.
+
 ## Draft a query to paste (`-e`)
 
 When the goal isn't "where is this field" but "give me something I can put in
