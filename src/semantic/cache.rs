@@ -108,9 +108,16 @@ fn cfg_key(embedder_kind: &str, model: Option<&str>) -> u64 {
 /// a given schema shares it, so a run computes it once and passes it around
 /// rather than rebuilding it per question asked.
 pub fn schema_key(records: &[SchemaRecord]) -> u64 {
+    use rayon::prelude::*;
+
+    // Building the texts is the cost — a string per record, with identifiers
+    // split into words — and it parallelises; the hash itself is a sequential
+    // fold over the same bytes in the same order, so the key is unchanged and
+    // no cached vectors are orphaned by this.
+    let texts: Vec<String> = records.par_iter().map(super::record_text).collect();
     let mut h = fnv1a(0x5EED_5EED_5EED_5EED, &(records.len() as u64).to_le_bytes());
-    for r in records {
-        h = fnv1a_update(h, super::record_text(r).as_bytes());
+    for t in &texts {
+        h = fnv1a_update(h, t.as_bytes());
         h = fnv1a_update(h, SEP);
     }
     h
