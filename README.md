@@ -222,6 +222,8 @@ cp claude/gqls-skill.md ~/.claude/skills/gqls/SKILL.md
 
 `script/check.sh` is the gate — formatting, clippy, and tests across every feature configuration gqls ships (default/semantic, fuzzy-only, and the `semantic-dynamic` build Homebrew uses). Run it before pushing.
 
+`script/release.sh <version | major | minor | patch>` cuts a release: bump, changelog heading, gate, commit, tag, push, `cargo publish`, Homebrew formula (tarball sha, build, test, audit, tap push), the GitHub release page from the changelog section, and the plugin skill copy. `--dry-run` prints the plan without touching anything, and `--summary "…"` sets the commit subject and release title. Every step checks whether it has already happened, so a run interrupted at step twelve is re-run with the same arguments and resumes.
+
 ## How it works
 
 Layered so the core is one idea — flatten every schema entity to a searchable record, and let search and output touch nothing but records:
