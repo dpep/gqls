@@ -39,7 +39,7 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 - **SDL file** — `gqls user schema.graphql`
 - **Introspection JSON dump** — `gqls user schema.json`
 - **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query; add auth with `-H "Authorization: Bearer …"`, repeatable). Remote responses are cached ~1h so repeat queries don't refetch all day; a `localhost` endpoint is never cached (you're likely editing that schema). Tune with `GQLS_INTROSPECT_TTL` (seconds; `0` disables), `--refresh` to bypass, `--clear-cache` to wipe.
-- **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`; in a federated monorepo, a `supergraph*` schema wins when several exist).
+- **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`; in a federated monorepo, a `supergraph*` schema wins when several exist). The tree is searched in parallel, hidden directories and known build/dependency directories (`node_modules`, `target`, `venv`, `coverage`, …) are skipped whole, and a candidate is only opened when nothing already found outranks it — so a repo with a `schema.graphql` at a sensible place is found without reading a single file. The answer is then remembered per directory for an hour so repeat runs skip the walk entirely, which is otherwise the most expensive thing a warm query does. If nothing is found beneath you, the search widens rather than failing: first to the enclosing git repository (so `gqls user` in `repo/src/components` finds the repo's schema), then to the generated directories it skipped, so a schema written by a build step is still found. Dependency directories are never searched — a schema in `node_modules` describes someone else's API. A remembered answer is dropped once the schema it names moves; `--refresh` re-walks, `GQLS_DISCOVER_TTL` (seconds; `0` disables) tunes it, and `-v` says which schema answered either way.
 
 ### Federated schemas (Apollo Federation v2)
 `gqls` parses subgraph SDL directly — the `extend schema @link(...)` header and `@key`/`@shareable` directives that trip up plain GraphQL parsers — so you can `cd` into a subgraph package and search its own schema. Auto-discovery follows suit: at the repo root it prefers the composed `supergraph*` schema, but run from inside a subgraph it uses that subgraph's local schema.
@@ -201,7 +201,9 @@ $ gqls user big.graphql --fuzzy --profile
   total        16.3ms
 ```
 
-With `-j`/`-J` the same data goes to stderr as JSON, so stdout stays exactly the results and a baseline can be stored and diffed. Profiling costs nothing when off: a disabled span reads no clock, takes no lock and allocates nothing, which measures as no difference across 30 runs.
+The phases have to add up. When they don't, the report says so on an `unaccounted` line rather than leaving you to subtract — un-instrumented work is exactly what a profile is for, and a report that quietly omits it points you at the phases that are fast instead of the seconds that aren't. Nested phases (`cache: read` inside `load`) are shown but not double-counted.
+
+With `-j`/`-J` the same data goes to stderr as JSON — including `unaccounted_ms` and each phase's nesting `depth` — so stdout stays exactly the results and a baseline can be stored and diffed. Profiling costs nothing when off: a disabled span reads no clock, takes no lock and allocates nothing, which measures as no difference across 30 runs.
 
 `script/bench.sh` runs a fixed query set against a generated 48k-record schema and prints medians per phase; `--save NAME` stores a baseline and `--diff NAME` compares against it, so a change's effect is a diff rather than a memory.
 

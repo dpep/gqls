@@ -8,6 +8,51 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Fixed
+- `--profile` accounts for the whole run. Schema auto-discovery — the tree walk
+  that dominates a query when no source is passed — was not instrumented at
+  all, so a report could show 10ms of phases under a 3.5s total and point the
+  reader at everything except the problem. It's a phase now, and the report
+  ends with an `unaccounted` line whenever the phases don't add up to the
+  total, so the next gap announces itself.
+
+### Changed
+- Schema auto-discovery is much faster, picking the same schema throughout.
+  Sibling directories are searched in parallel; files are ruled out by name
+  without building a path or allocating per entry; a candidate is only *read*
+  when nothing already found outranks it, so a repo with a `schema.graphql`
+  now opens no files at all; and the SDL sniff reads a bounded head rather
+  than whole files. `venv`, `coverage` and `__pycache__` join the skipped
+  directories. On a tree of 197 repos the search went 1,970ms to ~200ms
+  (28,572 directories and 6,212 file reads, to 16,566 and none). A single
+  monorepo was never dominated by the reads, so its ~30ms is unchanged —
+  3,000 directories is what it costs — but see the next entry.
+  The `.json` sniff still reads only the first 4KB: a real introspection dump
+  names `__schema` at the top, and reading further only collects JSON that
+  mentions it in passing.
+- `-v`'s "N other schema file(s) elsewhere" now counts only candidates that
+  were confirmed, which is all of them only when the search had to read
+  everything. It can undercount; everything it names really is a schema.
+- Discovery's answer is remembered per directory for an hour, so repeat runs
+  skip the walk entirely: a warm query in that monorepo is 31ms to 5.6ms, and
+  in the big tree 3.2s to 4.8ms. The remembered answer is dropped if the schema
+  it names has moved, a directory with no schema is never remembered, and
+  `--refresh` re-walks. `GQLS_DISCOVER_TTL` (seconds, `0` disables) tunes it.
+
+### Added
+- Auto-discovery widens its search rather than giving up. A directory with no
+  schema beneath it now falls back to the enclosing git repository, so `gqls
+  user` inside `repo/src/components` finds the repo's schema instead of
+  reporting that this particular subdirectory hasn't got one. Searching *down*
+  from where you stand is still the rule — it's what lets a federated subgraph
+  resolve to its own schema — and the fallback only happens where the answer
+  was otherwise an error.
+- When nothing turns up anywhere, a last pass searches the generated
+  directories (`build`, `dist`, `target`, `tmp`, `coverage`) that are skipped
+  on the way in, so a schema written by a build step is found rather than
+  reported missing. Dependency directories (`node_modules`, `vendor`, `venv`)
+  stay excluded even then: a schema in one describes someone else's API.
+
 ### Changed
 - `-e` and `-R` act only on a field the query names — the name itself, or a
   small misspelling of it, in which case `Did you mean <path>?` heads the

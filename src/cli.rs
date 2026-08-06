@@ -351,11 +351,15 @@ pub fn run() -> Result<()> {
     if cli.clear_cache {
         let introspect = crate::load::introspect::clear_cache();
         let records = crate::load::record_cache::clear();
+        let discoveries = crate::load::discover_cache::clear();
         #[cfg(feature = "_semantic")]
         let vectors = crate::semantic::clear_cache();
         #[cfg(not(feature = "_semantic"))]
         let vectors = 0;
-        crate::status!("cleared {} cached file(s)", introspect + records + vectors);
+        crate::status!(
+            "cleared {} cached file(s)",
+            introspect + records + discoveries + vectors
+        );
         return Ok(());
     }
 
@@ -397,10 +401,10 @@ pub fn run() -> Result<()> {
     } else if cli.warm || positional_is_source {
         match cli.query.clone() {
             Some(s) => s,
-            None => load::discover()?,
+            None => load::discover(cli.refresh)?,
         }
     } else {
-        load::discover()?
+        load::discover(cli.refresh)?
     };
     let load_opts = load::LoadOptions {
         headers: parse_headers(&cli.header)?,
