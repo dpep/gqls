@@ -17,6 +17,13 @@ early entries are terser than what follows.
   total, so the next gap announces itself.
 
 ### Changed
+- A semantic query hashes the schema once rather than twice. Deciding whether
+  the vector cache is warm builds an embedding-text hash of every record
+  (~10ms on a 10k-record schema); the session then built the same hash again to
+  name the same file. It's computed once per run now and shown as its own
+  `semantic: schema key` phase — it was previously unattributed, which is how
+  it went unnoticed. In batch mode it was paid per query and is now paid once:
+  five phrase queries against a 10k-record schema, 50ms of hashing to 10ms.
 - Schema auto-discovery is much faster, picking the same schema throughout.
   Sibling directories are searched in parallel; files are ruled out by name
   without building a path or allocating per entry; a candidate is only *read*

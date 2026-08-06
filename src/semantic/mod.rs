@@ -58,7 +58,15 @@ impl Session {
     /// needs that doesn't depend on the query. This is the expensive part (the
     /// model load alone dwarfs the ranking), so a caller answering many queries
     /// builds one session and reuses it.
-    pub fn new(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> Session {
+    /// `schema` is [`cache::schema_key`] for `records`, computed by the caller
+    /// so a run that has already asked whether the cache is warm doesn't hash
+    /// the whole schema a second time to answer the same question.
+    pub fn new(
+        records: &[SchemaRecord],
+        model: Option<&str>,
+        refresh: bool,
+        schema: u64,
+    ) -> Session {
         let mut model_span = crate::profile::span("semantic: model load");
         let embedder = default_embedder(model);
         model_span.note(|| embedder.kind().to_string());
@@ -77,7 +85,7 @@ impl Session {
         // content + embedder + model, so editing the schema (or switching model)
         // changes the key and re-embeds automatically. `--refresh` forces a miss.
         let mut vec_span = crate::profile::span("semantic: vectors");
-        let cache_path = cache::path(records, embedder.kind(), model);
+        let cache_path = cache::path(schema, embedder.kind(), model);
         let cached = if refresh {
             None
         } else {
@@ -265,7 +273,7 @@ pub fn search<'a>(
     model: Option<&str>,
     refresh: bool,
 ) -> Vec<(f64, &'a SchemaRecord)> {
-    Session::new(records, model, refresh).rank(query, records, filters, limit)
+    Session::new(records, model, refresh, schema_key(records)).rank(query, records, filters, limit)
 }
 
 /// Split an identifier into the words it's built from: `cancelSubscription` →
@@ -326,8 +334,17 @@ pub fn clear_cache() -> usize {
 /// treating a stale `hash` cache as "warm" while the run picks `onnx` would
 /// trigger exactly the surprise foreground embed this gate exists to avoid.
 /// Checked without loading a model.
-pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
-    cache::exists(records, "onnx", model)
+pub fn is_cached(schema: u64, model: Option<&str>) -> bool {
+    cache::exists(schema, "onnx", model)
+}
+
+/// The cache identity of this schema — hash it once per run and hand it to
+/// [`is_cached`] and [`Session::new`], which would otherwise each rebuild it.
+pub fn schema_key(records: &[SchemaRecord]) -> u64 {
+    let mut span = crate::profile::span("semantic: schema key");
+    let key = cache::schema_key(records);
+    span.note(|| format!("{} records", records.len()));
+    key
 }
 
 /// Embed + cache every record's vector without running a real query — pre-warms
@@ -335,7 +352,7 @@ pub fn is_cached(records: &[SchemaRecord], model: Option<&str>) -> bool {
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
     // Building the session *is* the warm: it loads the model and fills the
     // vector cache. There's no query to answer, so nothing else runs.
-    let _ = Session::new(records, model, refresh);
+    let _ = Session::new(records, model, refresh, schema_key(records));
     records.len()
 }
 

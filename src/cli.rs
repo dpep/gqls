@@ -222,9 +222,10 @@ fn semantic_matches<'a>(
     filters: search::Filters<'_>,
     cli: &Cli,
     session: &mut Option<crate::semantic::Session>,
+    schema_key: u64,
 ) -> Vec<Match<'a>> {
     let session = session.get_or_insert_with(|| {
-        crate::semantic::Session::new(records, cli.model.as_deref(), cli.refresh)
+        crate::semantic::Session::new(records, cli.model.as_deref(), cli.refresh, schema_key)
     });
     session
         .rank(query, records, filters, cli.limit)
@@ -467,9 +468,13 @@ pub fn run() -> Result<()> {
 
     // Built on the first query that needs it, then reused: loading the model is
     // the dominant cost of a semantic query, and paying it per line would undo
-    // the batch entirely.
+    // the batch entirely. Same for the schema's cache identity — hashing every
+    // record's embedding text is ~10ms on a 10k-record schema, and it's the
+    // same answer for every query in the run.
     #[cfg(feature = "_semantic")]
     let mut session: Option<crate::semantic::Session> = None;
+    #[cfg(feature = "_semantic")]
+    let mut schema_key: Option<u64> = None;
 
     for query in &queries {
         let query = query.as_str();
@@ -556,7 +561,8 @@ pub fn run() -> Result<()> {
                         "--semantic ranks by meaning and ignores wildcards in {query:?}"
                     );
                 }
-                let matches = semantic_matches(query, &records, filters, &cli, &mut session);
+                let key = *schema_key.get_or_insert_with(|| crate::semantic::schema_key(&records));
+                let matches = semantic_matches(query, &records, filters, &cli, &mut session, key);
                 let total = matches.len();
                 (matches, total)
             }
@@ -593,8 +599,13 @@ pub fn run() -> Result<()> {
                 if let Some(why) = skip {
                     crate::detail!("{why} — semantic ranking skipped (--semantic to force)");
                     (fuzzy, total)
-                } else if crate::semantic::is_cached(&records, cli.model.as_deref()) {
-                    let semantic = semantic_matches(query, &records, filters, &cli, &mut session);
+                } else if crate::semantic::is_cached(
+                    *schema_key.get_or_insert_with(|| crate::semantic::schema_key(&records)),
+                    cli.model.as_deref(),
+                ) {
+                    let key = schema_key.expect("computed by the check above");
+                    let semantic =
+                        semantic_matches(query, &records, filters, &cli, &mut session, key);
                     (combine(fuzzy, semantic, cli.limit), total)
                 } else {
                     spawn_background_warm(&source, &cli.header);

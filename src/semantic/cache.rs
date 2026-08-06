@@ -100,27 +100,35 @@ fn cfg_key(embedder_kind: &str, model: Option<&str>) -> u64 {
     fnv1a_update(h, model.unwrap_or("").as_bytes())
 }
 
-/// Cache file path for this (schema, embedder, model) triple, or `None` if no
-/// cache dir is resolvable. The name is `<config>-<schema state>` so that an
-/// unchanged schema hits outright, while a changed one can still find its
-/// predecessors by the shared config prefix.
-pub fn path(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) -> Option<PathBuf> {
+/// The schema's half of the cache key: a hash of exactly what gets embedded
+/// (`super::record_text`), so the key can never drift from the embedding text —
+/// improve the text and the key moves with it, no silent stale vectors.
+///
+/// This is the expensive half — a string built per record — and every path for
+/// a given schema shares it, so a run computes it once and passes it around
+/// rather than rebuilding it per question asked.
+pub fn schema_key(records: &[SchemaRecord]) -> u64 {
     let mut h = fnv1a(0x5EED_5EED_5EED_5EED, &(records.len() as u64).to_le_bytes());
-    // Key on exactly what gets embedded (super::record_text), so the key can
-    // never drift from the embedding text — improve the text and the key moves
-    // with it, no silent stale vectors.
     for r in records {
         h = fnv1a_update(h, super::record_text(r).as_bytes());
         h = fnv1a_update(h, SEP);
     }
-    let name = format!("{:016x}-{h:016x}.vecs", cfg_key(embedder_kind, model));
+    h
+}
+
+/// Cache file path for this (schema, embedder, model) triple, or `None` if no
+/// cache dir is resolvable. The name is `<config>-<schema state>` so that an
+/// unchanged schema hits outright, while a changed one can still find its
+/// predecessors by the shared config prefix.
+pub fn path(schema: u64, embedder_kind: &str, model: Option<&str>) -> Option<PathBuf> {
+    let name = format!("{:016x}-{schema:016x}.vecs", cfg_key(embedder_kind, model));
     Some(cache_dir()?.join(name))
 }
 
 /// Whether a cache file for this (schema, embedder, model) triple exists — a
 /// cheap "is it warm?" check that reads no vectors.
-pub fn exists(records: &[SchemaRecord], embedder_kind: &str, model: Option<&str>) -> bool {
-    path(records, embedder_kind, model).is_some_and(|p| p.is_file())
+pub fn exists(schema: u64, embedder_kind: &str, model: Option<&str>) -> bool {
+    path(schema, embedder_kind, model).is_some_and(|p| p.is_file())
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -601,7 +609,10 @@ mod tests {
         };
         let before = vec![rec("email")];
         let after = vec![rec("email"), rec("phone")];
-        let (Some(a), Some(b)) = (path(&before, "onnx", None), path(&after, "onnx", None)) else {
+        let (Some(a), Some(b)) = (
+            path(schema_key(&before), "onnx", None),
+            path(schema_key(&after), "onnx", None),
+        ) else {
             return; // no cache dir in this environment
         };
         assert_ne!(a, b, "a schema edit must not reuse the file wholesale");
@@ -614,7 +625,7 @@ mod tests {
             "same embedder config must share a prefix so vectors can be mined"
         );
         // a different embedder must not share the prefix
-        let other = path(&before, "hash", None).unwrap();
+        let other = path(schema_key(&before), "hash", None).unwrap();
         assert_ne!(prefix(&a), prefix(&other));
     }
 }
