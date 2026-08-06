@@ -60,15 +60,22 @@ impl Session {
     /// builds one session and reuses it.
     /// `schema` is [`cache::schema_key`] for `records`, computed by the caller
     /// so a run that has already asked whether the cache is warm doesn't hash
-    /// the whole schema a second time to answer the same question.
+    /// the whole schema a second time to answer the same question. That same
+    /// answer decides `workload`: a session about to fill the cache must not
+    /// hold a multi-threaded model of its own (see [`Workload`]).
     pub fn new(
         records: &[SchemaRecord],
         model: Option<&str>,
         refresh: bool,
         schema: u64,
+        workload: Workload,
     ) -> Session {
         let mut model_span = crate::profile::span("semantic: model load");
-        let embedder = default_embedder(model);
+        // A whole-schema fill runs on its own per-worker embedders — see the
+        // `EMBEDDER` thread-locals below — but this one still exists while it
+        // runs, and an idle ONNX pool spin-waits: giving it threads it isn't
+        // using cost the fill 19% (8.35s to 9.92s on a 1300-record schema).
+        let embedder = default_embedder(model, workload);
         model_span.note(|| embedder.kind().to_string());
         drop(model_span);
         // On the good path (onnx) this is verbose-only noise; a fall back to the
@@ -170,7 +177,8 @@ impl Session {
                         .map(|&i| {
                             let out = EMBEDDER.with(|cell| {
                                 let mut slot = cell.borrow_mut();
-                                let emb = slot.get_or_insert_with(|| default_embedder(model));
+                                let emb = slot
+                                    .get_or_insert_with(|| default_embedder(model, Workload::Bulk));
                                 compress_matryoshka_vector(&emb.embed(&record_text(&records[i])))
                             });
                             done.fetch_add(1, Ordering::Relaxed);
@@ -273,7 +281,8 @@ pub fn search<'a>(
     model: Option<&str>,
     refresh: bool,
 ) -> Vec<(f64, &'a SchemaRecord)> {
-    Session::new(records, model, refresh, schema_key(records)).rank(query, records, filters, limit)
+    Session::new(records, model, refresh, schema_key(records), Workload::Bulk)
+        .rank(query, records, filters, limit)
 }
 
 /// Split an identifier into the words it's built from: `cancelSubscription` →
@@ -328,6 +337,8 @@ pub fn clear_cache() -> usize {
     cache::clear()
 }
 
+pub use embed::Workload;
+
 /// Whether the schema's real (ONNX) vectors are cached, so the default combine
 /// path can run without a foreground embed. Deliberately ignores hash-fallback
 /// vectors: a run re-selects the embedder and keys the cache on *its* kind, so
@@ -352,7 +363,7 @@ pub fn schema_key(records: &[SchemaRecord]) -> u64 {
 pub fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool) -> usize {
     // Building the session *is* the warm: it loads the model and fills the
     // vector cache. There's no query to answer, so nothing else runs.
-    let _ = Session::new(records, model, refresh, schema_key(records));
+    let _ = Session::new(records, model, refresh, schema_key(records), Workload::Bulk);
     records.len()
 }
 

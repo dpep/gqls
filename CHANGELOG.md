@@ -17,6 +17,14 @@ early entries are terser than what follows.
   total, so the next gap announces itself.
 
 ### Changed
+- Embedding a query is ~2.5x faster (21.9ms to 8.7ms on a 10k-record schema),
+  which takes a warm phrase query from ~119ms to ~108ms and compounds in batch
+  mode, where every line pays it. ONNX Runtime was pinned to one thread — right
+  for embedding a whole schema, where rayon already runs an inference per core,
+  and wrong for embedding a single query, where the other cores sit idle. The
+  session is now told which it's for. It has to be told rather than always
+  taking the cores: an idle multi-threaded session spin-waits, and holding one
+  during a whole-schema fill cost that fill 19%.
 - A semantic query hashes the schema once rather than twice. Deciding whether
   the vector cache is warm builds an embedding-text hash of every record
   (~10ms on a 10k-record schema); the session then built the same hash again to

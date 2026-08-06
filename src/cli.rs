@@ -223,9 +223,16 @@ fn semantic_matches<'a>(
     cli: &Cli,
     session: &mut Option<crate::semantic::Session>,
     schema_key: u64,
+    workload: crate::semantic::Workload,
 ) -> Vec<Match<'a>> {
     let session = session.get_or_insert_with(|| {
-        crate::semantic::Session::new(records, cli.model.as_deref(), cli.refresh, schema_key)
+        crate::semantic::Session::new(
+            records,
+            cli.model.as_deref(),
+            cli.refresh,
+            schema_key,
+            workload,
+        )
     });
     session
         .rank(query, records, filters, cli.limit)
@@ -562,7 +569,16 @@ pub fn run() -> Result<()> {
                     );
                 }
                 let key = *schema_key.get_or_insert_with(|| crate::semantic::schema_key(&records));
-                let matches = semantic_matches(query, &records, filters, &cli, &mut session, key);
+                // A cold cache means this session embeds the whole schema
+                // before it answers anything, and that fill wants the cores
+                // for rayon rather than for one model.
+                let workload =
+                    match !cli.refresh && crate::semantic::is_cached(key, cli.model.as_deref()) {
+                        true => crate::semantic::Workload::Query,
+                        false => crate::semantic::Workload::Bulk,
+                    };
+                let matches =
+                    semantic_matches(query, &records, filters, &cli, &mut session, key, workload);
                 let total = matches.len();
                 (matches, total)
             }
@@ -604,8 +620,17 @@ pub fn run() -> Result<()> {
                     cli.model.as_deref(),
                 ) {
                     let key = schema_key.expect("computed by the check above");
-                    let semantic =
-                        semantic_matches(query, &records, filters, &cli, &mut session, key);
+                    // Warm by the check above, so this session only answers
+                    // queries — it can have the cores.
+                    let semantic = semantic_matches(
+                        query,
+                        &records,
+                        filters,
+                        &cli,
+                        &mut session,
+                        key,
+                        crate::semantic::Workload::Query,
+                    );
                     (combine(fuzzy, semantic, cli.limit), total)
                 } else {
                     spawn_background_warm(&source, &cli.header);

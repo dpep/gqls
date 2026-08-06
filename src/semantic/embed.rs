@@ -14,7 +14,7 @@
 
 mod onnx;
 
-pub use onnx::OnnxEmbedder;
+pub use onnx::{OnnxEmbedder, Workload};
 
 use super::mrl::MRL_DIMS;
 
@@ -33,13 +33,13 @@ pub trait Embedder: Send + Sync {
 
 /// The best embedder available: the ONNX model if it loads, else the hash
 /// fallback. `model` is an optional `--model` request (path or name).
-pub fn default_embedder(model: Option<&str>) -> Box<dyn Embedder> {
+pub fn default_embedder(model: Option<&str>, workload: Workload) -> Box<dyn Embedder> {
     // Built once per worker thread (see `semantic::search`'s thread_local pool),
     // so announce the chosen backend only on the first construction in the
     // process — otherwise `-v` repeats this line once per core. (A small local
     // divergence from ae, which never runs under a verbose logger.)
     static ANNOUNCED: std::sync::Once = std::sync::Once::new();
-    match OnnxEmbedder::load(model) {
+    match OnnxEmbedder::load(model, workload) {
         Some(e) => {
             ANNOUNCED.call_once(|| log::info!("using ONNX embedder ({} dims)", e.dims()));
             Box::new(e)

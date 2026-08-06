@@ -37,11 +37,11 @@ impl OnnxEmbedder {
     /// Load the embedder. `spec` is an optional `--model` request: a path (to a
     /// model dir or `.onnx` file) or a bare `org/name` Hub id. Returns `None`
     /// (→ hash fallback) if nothing usable loads.
-    pub fn load(spec: Option<&str>) -> Option<Self> {
+    pub fn load(spec: Option<&str>, workload: Workload) -> Option<Self> {
         ensure_ort_dylib();
 
         if let Some(spec) = spec {
-            return match resolve(spec).and_then(|(m, t)| Self::from_files(&m, &t)) {
+            return match resolve(spec).and_then(|(m, t)| Self::from_files(&m, &t, workload)) {
                 Some(e) => Some(e),
                 None => {
                     log::debug!("--model {spec}: could not load");
@@ -52,26 +52,30 @@ impl OnnxEmbedder {
 
         if let Some(dir) = std::env::var_os("GQLS_MODEL_DIR") {
             let dir = PathBuf::from(dir);
-            return Self::from_files(&dir.join("model.onnx"), &dir.join("tokenizer.json"));
+            return Self::from_files(
+                &dir.join("model.onnx"),
+                &dir.join("tokenizer.json"),
+                workload,
+            );
         }
         let (model, tokenizer) = fetch_from_hub(DEFAULT_HF_REPO)?;
-        Self::from_files(&model, &tokenizer)
+        Self::from_files(&model, &tokenizer, workload)
     }
 
-    fn from_files(model: &Path, tokenizer: &Path) -> Option<Self> {
+    fn from_files(model: &Path, tokenizer: &Path, workload: Workload) -> Option<Self> {
         let model = std::fs::read(model).ok()?;
         let tokenizer = std::fs::read(tokenizer).ok()?;
-        Self::from_bytes(&model, &tokenizer)
+        Self::from_bytes(&model, &tokenizer, workload)
     }
 
-    fn from_bytes(model: &[u8], tokenizer: &[u8]) -> Option<Self> {
+    fn from_bytes(model: &[u8], tokenizer: &[u8], workload: Workload) -> Option<Self> {
         if model.is_empty() {
             return None;
         }
         let tokenizer = Tokenizer::from_bytes(tokenizer)
             .map_err(|e| log::debug!("tokenizer load failed: {e}"))
             .ok()?;
-        let session = build_session(model)
+        let session = build_session(model, workload)
             .map_err(|e| log::debug!("ONNX session load failed: {e}"))
             .ok()?;
         Some(Self {
@@ -136,10 +140,37 @@ impl Embedder for OnnxEmbedder {
     }
 }
 
-fn build_session(model: &[u8]) -> ort::Result<Session> {
+/// What a session is about to be used for. It decides the model's own
+/// threading, and the two answers are opposite — measured on a 10k-record
+/// schema, one query embed is 21.9ms single-threaded against 8.7ms on four,
+/// while a whole-schema embed is 121s single-threaded against 133s on four.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Workload {
+    /// One query at a time: nothing else is running, so give ONNX the cores.
+    Query,
+    /// A whole schema: rayon already runs an inference per core, and intra-op
+    /// threads on top of that only oversubscribe.
+    Bulk,
+}
+
+impl Workload {
+    fn intra_threads(self) -> usize {
+        match self {
+            // Four, not every core: the gain has flattened by then (8.4ms on
+            // eight against 8.7ms on four), and the spare cores are what let a
+            // background warm run alongside without a fight.
+            Workload::Query => std::thread::available_parallelism()
+                .map(|n| n.get().min(4))
+                .unwrap_or(1),
+            Workload::Bulk => 1,
+        }
+    }
+}
+
+fn build_session(model: &[u8], workload: Workload) -> ort::Result<Session> {
     Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(1)?
+        .with_intra_threads(workload.intra_threads())?
         .commit_from_memory(model)
 }
 
