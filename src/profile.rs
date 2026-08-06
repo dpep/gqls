@@ -146,8 +146,18 @@ fn ms(d: Duration) -> String {
 mod tests {
     use super::*;
 
+    /// `ENABLED` and `PHASES` are process-wide, so these two tests can't run at
+    /// the same time — without this the enabled one flips the flag under the
+    /// other, which then fails on a machine-speed coincidence.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serialize() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn a_span_is_inert_when_profiling_is_off() {
+        let _guard = serialize();
         // the default; nothing is recorded and no clock is read
         let mut s = span("off");
         s.note(|| panic!("the note closure must not run when disabled"));
@@ -157,6 +167,7 @@ mod tests {
 
     #[test]
     fn an_enabled_span_records_its_name_and_note() {
+        let _guard = serialize();
         enable();
         {
             let mut s = span("on");
