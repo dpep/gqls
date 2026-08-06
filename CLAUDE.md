@@ -1,0 +1,37 @@
+# gqls
+
+Fuzzy and semantic search over a GraphQL schema. Everything flattens to a
+`SchemaRecord`; search and output touch nothing else. See the README's "How it
+works" for the layering.
+
+## Scripts — use these, don't hand-run their steps
+
+- **`script/check.sh`** — the gate. Formatting, clippy, and tests at every
+  feature configuration gqls ships. Run before every commit or push. It cleans
+  this crate first, because cargo's fingerprint wedges "fresh" here and will
+  otherwise validate code you didn't write (`cargo clean -p gqls-cli` is the
+  manual fix if a build reports an error that contradicts the source).
+- **`script/release.sh <version | major | minor | patch>`** — the whole release:
+  bump, changelog heading, gate, tag, push, `cargo publish`, Homebrew formula
+  (sha, build, test, audit, tap push), the GitHub release page, and the plugin
+  skill copy. Use it rather than the nineteen steps by hand; `--dry-run` first
+  if unsure. Every step skips what's already done, so an interrupted run is
+  re-run with the same arguments.
+- **`script/bench.sh`** — the performance baseline. `--save NAME` / `--diff NAME`.
+
+## Two things that have burned this repo
+
+- **A perf claim from a single run is usually noise.** Warm-cache and
+  machine-load variance here runs ±30%; measured numbers came out 149ms one
+  hour and 198ms the next for identical code. Use `script/bench.sh`, or min of
+  N runs, before saying something got faster.
+- **Don't filter tool output while diagnosing.** `| tail`, `| grep` for one
+  error code, and a truncated result list have each hidden the evidence that
+  would have disproved the hypothesis. Re-run unfiltered before concluding, and
+  check which code path produced a number before interpreting it.
+
+## Changelog
+
+Add the entry under `## Unreleased` in the same change that earns it — the
+release script turns that heading into the version and the release notes, and
+refuses to run if it's missing or empty.
