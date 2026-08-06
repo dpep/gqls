@@ -126,7 +126,7 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
   }
 }
 
-# optional arguments, omitted above:
+# optional arguments:
 #   updateEmployee(dryRun: Boolean = false)
 
 # input types:
@@ -143,6 +143,8 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
 }
 ```
 
+`-e` and `-R` act only on a field the query actually names — the name itself, or a small misspelling of it (`createUesr`, which says `Did you mean Mutation.createUser?` above the answer). Anything looser (`crtusr`, `User.`, a wildcard) answers `Did you mean:` with the matches it found and exits nonzero: search is happy to rank the closest of what's there, but a drafted operation or a file:line both read as authoritative, so guessing which field was meant is worse than asking.
+
 The rules are deliberately conservative, because a wrong guess costs more than a visible hole:
 
 - **Arguments you must supply become variables** — nothing is inlined into the query body, and each placeholder names its type (`"<ID!>"`), so it can't be mistaken for a usable value the way `""` or `0` can.
@@ -152,9 +154,10 @@ The rules are deliberately conservative, because a wrong guess costs more than a
 - **Input objects and enums are expanded underneath** — every input type the arguments refer to, followed transitively through input fields, so you can fill in `"<EmployeeInput!>"` without opening the schema. Expansion is flat and each type appears once, so a self-referential filter (`Filter { and: [Filter!] }`) terminates.
 - **Abstract types become inline fragments.** A union has no fields of its own, so it's written as `... on Member { … }` over each concrete type — the only form a server accepts. An interface selects its common fields once, then adds a fragment per implementor carrying only the fields that implementor *adds*, since those are otherwise unreachable. Big unions list the first few and name the rest.
 - **Deprecated fields are flagged, not dropped.** They stay in the selection marked `# deprecated: reason`, and a stderr line names them — silently omitting a field the schema still serves is its own surprise.
-- **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, the pick and the alternatives are both named on stderr. When none does, it's an error with a pointer to `--returns`, not a guess.
+- **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, a `# paths` block lists them all with the drafted one first. When none does, it's an error with a pointer to `--returns`, not a guess.
+- **Each section appears only when it has something in it** — no empty `# variables` block for an operation that takes none, and no `# paths` block when there's only the one the draft already shows.
 
-Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, input_types}` for scripting.
+Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, input_types, deprecated, paths}` for scripting.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
@@ -163,6 +166,8 @@ Find a field, then jump to the resolver or method that implements it, via `rq`:
 $ gqls Query.user schema.graphql -R --code ./app
 app/graphql/resolvers/user.rb:2  User  (via Resolvers::User)
 ```
+
+Like `-e`, it only resolves a field the query names (or misspells slightly) — a looser query gets the candidate list and a nonzero exit instead, before `rq` is ever consulted.
 
 `gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates, best convention first; package proximity to the schema file breaks ties, so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
 

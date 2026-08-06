@@ -62,6 +62,18 @@ pub struct Example {
     pub alternatives: Vec<String>,
 }
 
+impl Example {
+    /// Every root that reaches the target, the one drafted through first.
+    /// Empty for a root field, which is already callable on its own.
+    pub fn paths(&self) -> Vec<&str> {
+        self.via
+            .iter()
+            .chain(&self.alternatives)
+            .map(String::as_str)
+            .collect()
+    }
+}
+
 /// Draft an operation that reaches `target`.
 pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> Result<Example> {
     let schema = Schema::index(records);

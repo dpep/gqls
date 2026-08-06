@@ -6,6 +6,29 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Changed
+- `-e` and `-R` act only on a field the query names — the name itself, or a
+  small misspelling of it, in which case `Did you mean <path>?` heads the
+  output and says which field was settled on. A looser query (`crtusr`,
+  `User.`, a wildcard) now answers `Did you mean:` with the matches it found
+  and exits 1, rather than drafting a paste-ready operation, or opening a
+  file, for whatever ranked first. Both prompts go to stderr with the rest of
+  gqls's own voice, so a draft still survives `> op.graphql` and JSON still
+  survives `| jq`. Scripts that fed `-e`/`-R` an approximate name and used the result
+  will now get a nonzero status and a candidate list. `-R` rejects before it
+  shells out to rq.
+- `-e` output is quieter and self-contained. The `drafting an operation for …`
+  and `reached through …` stderr lines are now `-v`-only diagnostics — the
+  draft already shows which root it nests through — and when several roots
+  reach the target they're listed under the draft as a `# paths` block, the
+  drafted one first, instead of on stderr. Sections with nothing in them are
+  gone: no empty `# variables`, and no `# paths` for a single path the draft
+  already shows. `# optional arguments, omitted above:` is now just
+  `# optional arguments:`. `-j`/`--json` swaps the stderr-only root info for
+  a `paths` array, so nothing is lost to a script.
+
 ## 0.20.0 — 2026-08-03
 
 ### Changed

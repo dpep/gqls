@@ -532,7 +532,7 @@ pub fn run() -> Result<()> {
         }
 
         if cli.example {
-            return run_example(query, &records, filters, cli.depth, output);
+            return run_example(query, &records, filters, cli.depth, cli.limit, output);
         }
 
         // `total` is the fuzzy match count before the display limit, so the footer
@@ -771,19 +771,89 @@ fn summarize(description: &str) -> String {
     out
 }
 
+/// The one record a `-e`/`-R` run acts on: the top hit, but only when the query
+/// named it. Ranking always has a favourite, and both commands turn that
+/// favourite into something that reads as authoritative — an operation to paste,
+/// a file and line to open. Where the query was merely *closest* to a field, the
+/// candidates are printed instead and the pick handed back to the user.
+fn one_named_record<'a>(
+    query: &str,
+    hits: &[search::Hit<'a>],
+    action: &str,
+    limit: usize,
+    output: Output,
+) -> Result<&'a SchemaRecord> {
+    let Some(top) = hits.first() else {
+        anyhow::bail!("no schema entity matches {query:?} to {action}");
+    };
+    // Both messages are part of the answer rather than commentary on it, so
+    // they print unprefixed, above what they introduce.
+    match search::names_the_record(query, top.record) {
+        Some(search::NameMatch::Exact) => {}
+        // The user typed something else; say which field this is before
+        // answering as if they'd asked for it.
+        Some(search::NameMatch::Corrected) => {
+            ask(format!("Did you mean {}?", top.record.path));
+        }
+        // Nothing was named: the candidates are the answer, and picking one is
+        // the user's call.
+        None => {
+            ask("Did you mean:");
+            let matches: Vec<Match> = hits
+                .iter()
+                .take(limit)
+                .map(|h| Match {
+                    record: h.record,
+                    score: h.score as f64,
+                })
+                .collect();
+            output.write_matches(&matches, None)?;
+            return Err(Handled.into());
+        }
+    }
+    Ok(top.record)
+}
+
+/// Put a question to the reader, above the output that answers it. Unprefixed,
+/// because it's addressed to them rather than logged at them — but on stderr
+/// with the rest of what gqls *says*, so that stdout stays exactly what gqls
+/// *produced*: a draft that survives `> op.graphql`, JSON that survives `| jq`.
+/// A terminal shows both anyway, which is where these are read. `-q` speaks for
+/// a caller that wants results and nothing else.
+fn ask(question: impl AsRef<str>) {
+    if !crate::logging::is_quiet() {
+        eprintln!("{}\n", question.as_ref());
+    }
+}
+
+/// The run is over and the user has already been told everything they need —
+/// only the exit status is left to set. Carrying it as an error keeps that
+/// status honest (nothing was drafted or resolved) without printing a second,
+/// redundant line under the answer.
+#[derive(Debug)]
+pub struct Handled;
+
+impl std::fmt::Display for Handled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("handled")
+    }
+}
+
+impl std::error::Error for Handled {}
+
 /// Find the field, then draft an operation that calls it.
 fn run_example(
     query: &str,
     records: &[SchemaRecord],
     filters: search::Filters<'_>,
     depth: usize,
+    limit: usize,
     output: Output,
 ) -> Result<()> {
-    let Some(top) = search::search(query, records, filters).into_iter().next() else {
-        anyhow::bail!("no schema entity matches {query:?} to draft");
-    };
-    crate::status!("drafting an operation for {}", top.record.path);
-    let example = crate::example::build(top.record, records, depth)?;
+    let hits = search::search(query, records, filters);
+    let target = one_named_record(query, &hits, "draft", limit, output)?;
+    crate::detail!("drafting an operation for {}", target.path);
+    let example = crate::example::build(target, records, depth)?;
     if !example.deprecated.is_empty() {
         // Selected anyway and marked inline, but worth saying out loud —
         // pasting a deprecated field is the kind of thing you want to know now.
@@ -793,50 +863,68 @@ fn run_example(
         );
     }
     if let Some(via) = &example.via {
-        if example.alternatives.is_empty() {
-            crate::detail!("reached through {via}");
-        } else {
-            // Several roots qualify; name the pick and the runners-up rather
-            // than passing the choice off as obvious.
-            crate::status!(
-                "reached through {via}; also reachable via {}",
-                example.alternatives.join(", ")
-            );
-        }
+        // The operation itself shows which root it nests through, so this is a
+        // diagnostic; the runners-up, which the draft can't show, go underneath
+        // it in the output instead.
+        crate::detail!("reached through {via}");
     }
 
     let payload = serde_json::json!({
-        "path": top.record.path,
+        "path": target.path,
         "operation": example.operation,
         "variables": example.variables,
         "optional_args": example.optional,
         "input_types": example.input_types,
         "deprecated": example.deprecated,
+        "paths": example.paths(),
     });
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&payload)?),
         Output::Ndjson => println!("{}", serde_json::to_string(&payload)?),
-        Output::Text { .. } => {
-            print!("{}", example.operation);
-            if !example.optional.is_empty() {
-                println!("\n# optional arguments, omitted above:");
-                for arg in &example.optional {
-                    println!("#   {arg}");
-                }
-            }
-            if !example.input_types.is_empty() {
-                println!("\n# input types:");
-                for block in &example.input_types {
-                    for line in block {
-                        println!("#   {line}");
-                    }
-                }
-            }
-            println!("\n# variables");
-            println!("{}", serde_json::to_string_pretty(&example.variables)?);
-        }
+        Output::Text { .. } => print!("{}", render_example(&example)?),
     }
     Ok(())
+}
+
+/// The text form: the operation, then what didn't fit inside it. Every section
+/// is omitted when it has nothing to say — an empty heading is noise in
+/// something meant to be read and pasted.
+fn render_example(example: &crate::example::Example) -> Result<String> {
+    let mut out = example.operation.clone();
+
+    if !example.optional.is_empty() {
+        out.push_str("\n# optional arguments:\n");
+        for arg in &example.optional {
+            out.push_str(&format!("#   {arg}\n"));
+        }
+    }
+    if !example.input_types.is_empty() {
+        out.push_str("\n# input types:\n");
+        for line in example.input_types.iter().flatten() {
+            out.push_str(&format!("#   {line}\n"));
+        }
+    }
+    // An operation with no required arguments takes no variables; printing an
+    // empty `{}` under a heading only invites the reader to look for something.
+    if example.variables.as_object().is_some_and(|v| !v.is_empty()) {
+        out.push_str("\n# variables\n");
+        out.push_str(&format!(
+            "{}\n",
+            serde_json::to_string_pretty(&example.variables)?
+        ));
+    }
+    // Every root that reaches the target, the drafted one first — so the pick
+    // reads as a choice among the paths rather than as the only one. A single
+    // path is already shown by the operation itself, and one entry under a
+    // heading says nothing the draft didn't.
+    let paths = example.paths();
+    if paths.len() > 1 {
+        out.push_str("\n# paths:\n");
+        for path in paths {
+            out.push_str(&format!("#   {path}\n"));
+        }
+    }
+    Ok(out)
 }
 
 /// Fuzzy-find the field, then hand it to rq to locate its resolver in code.
@@ -852,15 +940,14 @@ fn run_resolve(
     if code.is_none() {
         crate::status!("searching code in the current directory (--code to search elsewhere)");
     }
-    let Some(top) = search::search(query, records, filters).into_iter().next() else {
-        anyhow::bail!("no schema entity matches {query:?} to resolve");
-    };
-    crate::status!("resolving {} …", top.record.path);
+    let hits = search::search(query, records, filters);
+    let target = one_named_record(query, &hits, "resolve", limit, output)?;
+    crate::status!("resolving {} …", target.path);
     // a local file schema (not a URL) enables package-proximity ranking
     let schema_path = (!source.starts_with("http://") && !source.starts_with("https://"))
         .then(|| std::path::Path::new(source))
         .filter(|p| p.exists());
-    let hits = crate::resolve::resolve(top.record, code, schema_path, limit.min(10))?;
+    let hits = crate::resolve::resolve(target, code, schema_path, limit.min(10))?;
 
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&hits)?),
@@ -873,7 +960,7 @@ fn run_resolve(
             if hits.is_empty() {
                 crate::status!(
                     "no code definition found for {} (-v shows what was tried)",
-                    top.record.path
+                    target.path
                 );
             }
             // Say so when the best we have is a bare name search rather than a
@@ -883,7 +970,7 @@ fn run_resolve(
                 crate::status!(
                     "no graphql-ruby convention matched {} — these are name-similarity \
                      guesses, not resolver lookups",
-                    top.record.path
+                    target.path
                 );
             }
             for h in &hits {
@@ -918,7 +1005,20 @@ fn display_path(r: &SchemaRecord) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_source, summarize, DESCRIPTION_WIDTH};
+    use super::{looks_like_source, render_example, summarize, DESCRIPTION_WIDTH};
+    use crate::example::Example;
+
+    fn example() -> Example {
+        Example {
+            operation: "query Users {\n  users {\n    email\n  }\n}\n".to_string(),
+            variables: serde_json::json!({}),
+            optional: Vec::new(),
+            input_types: Vec::new(),
+            deprecated: Vec::new(),
+            via: None,
+            alternatives: Vec::new(),
+        }
+    }
 
     #[test]
     fn recognizes_schema_sources_but_not_queries() {
@@ -950,5 +1050,42 @@ mod tests {
     fn keeps_a_description_that_fits() {
         let s = "An account.";
         assert_eq!(summarize(s), s);
+    }
+
+    #[test]
+    fn an_operation_with_nothing_to_add_is_printed_alone() {
+        let ex = example();
+        assert_eq!(render_example(&ex).unwrap(), ex.operation);
+    }
+
+    #[test]
+    fn variables_are_printed_only_when_there_are_some() {
+        let mut ex = example();
+        ex.variables = serde_json::json!({ "id": "<ID!>" });
+        let out = render_example(&ex).unwrap();
+        assert!(
+            out.contains("# variables\n{\n  \"id\": \"<ID!>\"\n}\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_roots_that_reach_the_target_are_listed_with_the_drafted_one_first() {
+        let mut ex = example();
+        ex.via = Some("Query.users".to_string());
+        ex.alternatives = vec!["Query.user".to_string()];
+        let out = render_example(&ex).unwrap();
+        assert!(
+            out.ends_with("\n# paths:\n#   Query.users\n#   Query.user\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_lone_path_is_left_to_the_operation_to_show() {
+        let mut ex = example();
+        ex.via = Some("Query.users".to_string());
+        let out = render_example(&ex).unwrap();
+        assert!(!out.contains("# paths"), "{out}");
     }
 }

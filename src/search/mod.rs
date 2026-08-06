@@ -98,6 +98,48 @@ pub fn named_hit(query: &str, hits: &[Hit]) -> bool {
     })
 }
 
+/// How closely a query names a record, for the commands that act on one.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum NameMatch {
+    /// The query is the record's name — and its type, where qualified.
+    Exact,
+    /// The same, once a small misspelling is corrected (`usre` → `user`).
+    /// Worth telling the user about: they typed something else.
+    Corrected,
+}
+
+/// Whether the query *names* this record, rather than merely ranking it first:
+/// the leaf is the record's name outright or a small misspelling of it, and a
+/// `Type.` qualifier names its parent the same way.
+///
+/// Ranking is happy to answer "closest of what's here" — right for a search,
+/// wrong for a command that acts on a single record. `gqls usr -e` drafting an
+/// operation for whatever `usr` subsequence-matched is a paste-ready answer to
+/// a question the user didn't ask; the candidate list and a re-run cost less
+/// than that.
+pub fn names_the_record(query: &str, record: &SchemaRecord) -> Option<NameMatch> {
+    let (leaf, qualifier) = score::parse_qualified(query);
+    let leaf = near_exact(leaf, &record.name)?;
+    let qualifier = match qualifier {
+        Some(q) => near_exact(q, record.parent.as_deref()?)?,
+        None => NameMatch::Exact,
+    };
+    // Either half being a correction makes the whole answer one.
+    match (leaf, qualifier) {
+        (NameMatch::Exact, NameMatch::Exact) => Some(NameMatch::Exact),
+        _ => Some(NameMatch::Corrected),
+    }
+}
+
+/// Case-insensitively equal, or within the scorer's typo budget of it.
+fn near_exact(query: &str, name: &str) -> Option<NameMatch> {
+    let (q, n) = (query.to_ascii_lowercase(), name.to_ascii_lowercase());
+    if q == n {
+        return Some(NameMatch::Exact);
+    }
+    score::typo_distance(&q, &n).map(|_| NameMatch::Corrected)
+}
+
 /// Which records a search may consider, independent of the query itself: a
 /// kind, an enclosing type, a return type. Grouped so every search path takes
 /// one argument, and so adding a filter doesn't ripple through six signatures.
@@ -278,6 +320,39 @@ mod tests {
             directives: vec![],
             possible_types: vec![],
         }
+    }
+
+    #[test]
+    fn a_record_is_named_by_its_own_name_or_a_typo_of_it() {
+        let r = rec("createUser", Some("Mutation"), Kind::Mutation);
+        let exact = Some(NameMatch::Exact);
+        assert_eq!(names_the_record("createUser", &r), exact);
+        assert_eq!(names_the_record("createuser", &r), exact);
+        assert_eq!(names_the_record("Mutation.createUser", &r), exact);
+        // one transposition is still the field the user meant — but they typed
+        // something else, so the caller has to be able to say so
+        assert_eq!(
+            names_the_record("createUesr", &r),
+            Some(NameMatch::Corrected)
+        );
+        // a subsequence, or a name that merely contains the query, is not
+        assert_eq!(names_the_record("cu", &r), None);
+        assert_eq!(names_the_record("user", &r), None);
+    }
+
+    #[test]
+    fn a_qualifier_has_to_name_the_records_type() {
+        let r = rec("email", Some("User"), Kind::Field);
+        assert_eq!(names_the_record("User.email", &r), Some(NameMatch::Exact));
+        // a misspelt type is a correction just as a misspelt field is
+        assert_eq!(
+            names_the_record("Usre.email", &r),
+            Some(NameMatch::Corrected)
+        );
+        // right field name under the wrong type — not what was asked for
+        assert_eq!(names_the_record("Company.email", &r), None);
+        // a prefix of the type is ambiguous, however well it ranks
+        assert_eq!(names_the_record("Us.email", &r), None);
     }
 
     #[test]
