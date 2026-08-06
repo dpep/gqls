@@ -6,15 +6,21 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
-## Unreleased
+## 0.21.0 — 2026-08-05
 
-### Fixed
-- `--profile` accounts for the whole run. Schema auto-discovery — the tree walk
-  that dominates a query when no source is passed — was not instrumented at
-  all, so a report could show 10ms of phases under a 3.5s total and point the
-  reader at everything except the problem. It's a phase now, and the report
-  ends with an `unaccounted` line whenever the phases don't add up to the
-  total, so the next gap announces itself.
+### Added
+- Auto-discovery widens its search rather than giving up. A directory with no
+  schema beneath it now falls back to the enclosing git repository, so `gqls
+  user` inside `repo/src/components` finds the repo's schema instead of
+  reporting that this particular subdirectory hasn't got one. Searching *down*
+  from where you stand is still the rule — it's what lets a federated subgraph
+  resolve to its own schema — and the fallback only happens where the answer
+  was otherwise an error.
+- When nothing turns up anywhere, a last pass searches the generated
+  directories (`build`, `dist`, `target`, `tmp`, `coverage`) that are skipped
+  on the way in, so a schema written by a build step is found rather than
+  reported missing. Dependency directories (`node_modules`, `vendor`, `venv`)
+  stay excluded even then: a schema in one describes someone else's API.
 
 ### Changed
 - Embedding a query is ~2.5x faster (21.9ms to 8.7ms on a 10k-record schema),
@@ -55,22 +61,6 @@ early entries are terser than what follows.
   in the big tree 3.2s to 4.8ms. The remembered answer is dropped if the schema
   it names has moved, a directory with no schema is never remembered, and
   `--refresh` re-walks. `GQLS_DISCOVER_TTL` (seconds, `0` disables) tunes it.
-
-### Added
-- Auto-discovery widens its search rather than giving up. A directory with no
-  schema beneath it now falls back to the enclosing git repository, so `gqls
-  user` inside `repo/src/components` finds the repo's schema instead of
-  reporting that this particular subdirectory hasn't got one. Searching *down*
-  from where you stand is still the rule — it's what lets a federated subgraph
-  resolve to its own schema — and the fallback only happens where the answer
-  was otherwise an error.
-- When nothing turns up anywhere, a last pass searches the generated
-  directories (`build`, `dist`, `target`, `tmp`, `coverage`) that are skipped
-  on the way in, so a schema written by a build step is found rather than
-  reported missing. Dependency directories (`node_modules`, `vendor`, `venv`)
-  stay excluded even then: a schema in one describes someone else's API.
-
-### Changed
 - `-e` and `-R` act only on a field the query names — the name itself, or a
   small misspelling of it, in which case `Did you mean <path>?` heads the
   output and says which field was settled on. A looser query (`crtusr`,
@@ -90,6 +80,14 @@ early entries are terser than what follows.
   already shows. `# optional arguments, omitted above:` is now just
   `# optional arguments:`. `-j`/`--json` swaps the stderr-only root info for
   a `paths` array, so nothing is lost to a script.
+
+### Fixed
+- `--profile` accounts for the whole run. Schema auto-discovery — the tree walk
+  that dominates a query when no source is passed — was not instrumented at
+  all, so a report could show 10ms of phases under a 3.5s total and point the
+  reader at everything except the problem. It's a phase now, and the report
+  ends with an `unaccounted` line whenever the phases don't add up to the
+  total, so the next gap announces itself.
 
 ## 0.20.0 — 2026-08-03
 
