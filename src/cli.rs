@@ -872,7 +872,12 @@ fn print_text(matches: &[Match], descriptions: bool) {
     for row in &rows {
         // Cells joined by two spaces, and any trailing empties contribute
         // nothing — no line ends in whitespace.
-        let mut cells: Vec<(String, usize)> = Vec::with_capacity(4);
+        // Each entry is (styled text, its visible width, the column width to pad
+        // it to). The target width travels with the cell rather than sitting in
+        // a positional array beside it: cells are pushed conditionally, so an
+        // array indexed by position pads the kind tag to the *arrow* column's
+        // width whenever a result set has no return types at all.
+        let mut cells: Vec<(String, usize, usize)> = Vec::with_capacity(4);
         cells.push((
             format!(
                 "{}{}",
@@ -880,32 +885,33 @@ fn print_text(matches: &[Match], descriptions: bool) {
                 style::muted(&row.args)
             ),
             row.path_width(),
+            path_w,
         ));
         if ret_w > 0 {
-            cells.push((style::muted(&row.ret), row.ret.len()));
+            cells.push((style::muted(&row.ret), row.ret.len(), ret_w));
         }
         if kind_w > 0 {
-            cells.push((style::muted(&row.kind), row.kind.len()));
+            cells.push((style::muted(&row.kind), row.kind.len(), kind_w));
         }
         // Deprecation is appended rather than given a column: one deprecated
         // row would otherwise widen the kind column by 13 for every row.
         if row.deprecated {
-            let (last, width) = cells.pop().expect("path cell always present");
-            let padded = pad(last, width, kind_w);
+            let (last, width, target) = cells.pop().expect("path cell always present");
+            let padded = pad(last, width, target);
+            let visible = target.max(width) + 2 + "(deprecated)".len();
             cells.push((
                 format!("{padded}  {}", style::warning("(deprecated)")),
-                kind_w + 2 + "(deprecated)".len(),
+                visible,
+                visible,
             ));
         }
         // Where the description will start, once the columns in front of it are
         // padded and joined. Its continuation lines are indented to the same
         // place, so a wrapped description reads as one block hanging off its
         // row rather than as a new result starting at column 0.
-        let widths = [path_w, ret_w, kind_w];
         let indent: usize = cells
             .iter()
-            .enumerate()
-            .map(|(i, (_, visible))| widths.get(i).copied().unwrap_or(*visible).max(*visible) + 2)
+            .map(|(_, visible, target)| target.max(visible) + 2)
             .sum();
 
         // A lone result gets its description in full, on its own lines beneath
@@ -934,21 +940,19 @@ fn print_text(matches: &[Match], descriptions: bool) {
         };
         if !desc_lines.is_empty() {
             let first = desc_lines.remove(0);
-            cells.push((
-                style::muted(&format!("— {first}")),
-                first.chars().count() + 2,
-            ));
+            let visible = first.chars().count() + 2;
+            cells.push((style::muted(&format!("— {first}")), visible, visible));
         }
 
         let last = cells.len() - 1;
         let line: String = cells
             .into_iter()
             .enumerate()
-            .map(|(i, (styled, visible))| {
+            .map(|(i, (styled, visible, target))| {
                 if i == last {
                     styled // never pad the tail
                 } else {
-                    pad(styled, visible, widths.get(i).copied().unwrap_or(visible))
+                    pad(styled, visible, target)
                 }
             })
             .collect::<Vec<_>>()
@@ -1140,9 +1144,6 @@ fn render_example(example: &crate::example::Example) -> Result<String> {
         for line in wrap(&description, style::width().saturating_sub(2), usize::MAX) {
             out.push_str(&format!("# {line}\n"));
         }
-        // A blank line between the prose and the operation. Every other section
-        // here is separated the same way, and without it a four-line comment
-        // block runs straight into the query as one wall of text.
         out.push('\n');
     }
     out.push_str(&example.operation);

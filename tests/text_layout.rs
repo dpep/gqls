@@ -15,13 +15,17 @@ use std::process::Command;
 const SCHEMA: &str = "examples/schema.graphql";
 
 fn run(args: &[&str]) -> String {
+    run_against(SCHEMA, args)
+}
+
+fn run_against(schema: &str, args: &[&str]) -> String {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
         // Keep this off the embedding model: layout is about the columns, not
         // the ranking, and a semantic build shouldn't change what's measured.
         .arg("--fuzzy")
         .args(args)
-        .arg(SCHEMA)
+        .arg(schema)
         .output()
         .expect("gqls should run");
     String::from_utf8(out.stdout).expect("output should be utf-8")
@@ -116,6 +120,34 @@ fn a_column_nothing_fills_is_dropped_entirely() {
         kinds[0],
         longest + 2,
         "kind should sit two spaces past the widest name in:\n{out}"
+    );
+}
+
+#[test]
+fn kind_tags_align_when_there_is_no_return_column() {
+    // Dropping the empty arrow column shifts kind into the slot the arrow held,
+    // so a width array indexed by position pads it to the arrow's width — zero
+    // — and every description starts somewhere different. Invisible on the
+    // main fixture, where some record always has a return type.
+    let out = run_against("tests/fixtures/no_return_types.graphql", &["*"]);
+    assert!(
+        !out.contains("->"),
+        "fixture should have no return types:\n{out}"
+    );
+    let kinds: Vec<usize> = rows(&out).into_iter().filter_map(kind_column).collect();
+    assert!(kinds.len() > 2, "need several rows: {out}");
+    assert!(
+        kinds.iter().all(|c| *c == kinds[0]),
+        "kind tags should share a column, got {kinds:?} in:\n{out}"
+    );
+    // And so should the descriptions hanging off them.
+    let dashes: Vec<usize> = rows(&out)
+        .into_iter()
+        .filter_map(|l| column_of(l, "— "))
+        .collect();
+    assert!(
+        dashes.iter().all(|c| *c == dashes[0]),
+        "descriptions should share a column, got {dashes:?} in:\n{out}"
     );
 }
 

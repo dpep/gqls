@@ -1,0 +1,12 @@
+# Every record here is a type, an enum, or an enum value — none of which has a
+# return type. That makes the arrow column empty for the whole result set,
+# which is the case where a positionally-indexed width array pads the kind tag
+# to the arrow column's width (zero) instead of its own.
+"""A moment in time, described at some length so that this description wraps."""
+scalar DateTime
+
+"""A role someone might have, described at some length so this one wraps too."""
+enum Role {
+  """Full access, including billing and member management and a good deal else."""
+  ADMIN
+}
