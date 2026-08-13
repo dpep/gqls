@@ -6,7 +6,7 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
-## Unreleased
+## 0.22.0 — 2026-08-13
 
 ### Changed
 - **Embedding vectors are 256-dimensional, up from 64 — every schema re-embeds
