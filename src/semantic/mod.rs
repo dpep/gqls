@@ -27,6 +27,39 @@ use mrl::{compress_matryoshka_vector, cosine_similarity};
 /// not judge relevance.
 const TAIL_CUTOFF: f64 = 0.7;
 
+/// Cosine below which a hit isn't an answer to anything.
+///
+/// The tail cutoff above is *relative*, so a query the schema can't answer
+/// still returned its best noise: nothing outranked it. An absolute floor is
+/// what makes "no matches" reachable — and it's only meaningful because the
+/// vectors are wide enough to calibrate (see [`mrl`]).
+///
+/// Measured on a 4602-record schema, six answerable queries against six
+/// nonsense ones, top cosine per query:
+///
+/// | dims | answerable, lowest | nonsense, highest | gap   |
+/// |------|--------------------|-------------------|-------|
+/// | 64   | 0.560              | 0.478             | 0.082 |
+/// | 256  | 0.526              | 0.309             | 0.217 |
+/// | 384  | 0.483              | 0.324             | 0.159 |
+///
+/// 0.40 sits near the middle of the 256-dim gap, 0.13 under the weakest real
+/// answer and 0.09 over the loudest nonsense. Both margins matter: a corpus
+/// grows and nonsense finds better lookalikes in it, while real answers hold
+/// roughly still.
+///
+/// One synthetic corpus and one small real one is thin evidence for a
+/// hardcoded constant, so `GQLS_SEMANTIC_FLOOR` overrides it — set it to `0`
+/// to switch the floor off entirely.
+const RELEVANCE_FLOOR: f64 = 0.40;
+
+fn relevance_floor() -> f64 {
+    std::env::var("GQLS_SEMANTIC_FLOOR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RELEVANCE_FLOOR)
+}
+
 /// Apply [`TAIL_CUTOFF`] relative to the best hit. Skipped when the top score
 /// isn't positive — a floor computed from a negative top would drop even the
 /// top itself.
@@ -265,6 +298,10 @@ impl Session {
         drop(cosine_span);
 
         hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // Absolute first, then relative: a query with no answer in the schema
+        // should return nothing, not its best noise.
+        let floor = relevance_floor();
+        hits.retain(|(s, _)| *s >= floor);
         bound_tail(&mut hits);
         hits.truncate(limit);
         hits

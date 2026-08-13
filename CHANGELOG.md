@@ -48,6 +48,17 @@ early entries are terser than what follows.
   it — so the whole description goes in, wrapped and uncapped.
 
 ### Changed
+- A query the schema can't answer returns nothing. Semantic ranking scored
+  every record and the tail cutoff was relative, so nonsense still got its best
+  noise back — `gqls zzzqqq` returned a record at cosine 0.011. There's an
+  absolute floor now, and reaching it meant widening the vectors: at 64
+  dimensions answerable and unanswerable queries overlap too much to separate
+  (0.082 between the weakest real answer and the loudest nonsense), at 256 they
+  don't (0.217). `GQLS_SEMANTIC_FLOOR` tunes it; `0` switches it off.
+- Embedding vectors are 256-dimensional, up from 64. Four times the vector
+  cache — 4.8 MB against 1.2 MB for a 4602-record schema — and a one-time
+  re-embed, since the width is part of the cache key. It buys the calibration
+  the floor above needs; ranking was already fine at 64.
 - A blank line separates an explanation's description from its annotations.
   Prose and a fact table were stacked at the same indent in the same weight, so
   a wrapped description's last line was indistinguishable from the first

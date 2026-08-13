@@ -6,17 +6,32 @@
 //! its model card claims no truncation support). So this is plain prefix
 //! truncation — which, measured, works anyway for what gqls asks of it.
 //!
-//! On a 10168-record schema, 23 labelled queries: retrieval AUC is 0.982 at 64
-//! dims against 0.991 at the full 384, so *ranking* survives truncation nearly
-//! intact and 64 dims costs ~6× less cache. What truncation does cost is
-//! *calibration* — the mean cosine of unanswerable queries climbs from 0.367
-//! (384-d) to 0.510 (64-d) while real answers barely move (0.673 → 0.696), as
-//! fewer dimensions crowd everything toward everything. Below ~256 dims an
-//! absolute "is this hit any good?" threshold isn't meaningful; relative
-//! ranking is. Ranking is all we use it for, so 64 stands.
+//! What truncation costs is *calibration*, not ranking. On a 10168-record
+//! schema, 23 labelled queries: retrieval AUC is 0.982 at 64 dims against 0.991
+//! at the full 384. But the mean cosine of unanswerable queries climbs from
+//! 0.367 (384-d) to 0.510 (64-d) while real answers barely move (0.673 →
+//! 0.696), because fewer dimensions crowd everything toward everything.
+//!
+//! That only mattered while ranking was all gqls asked of the vectors. There's
+//! an absolute floor now — a query the schema can't answer returns nothing —
+//! and a floor needs the two populations to separate. Measured on a
+//! 4602-record schema, top cosine over six answerable and six nonsense queries:
+//!
+//! | dims | answerable, lowest | nonsense, highest | gap   | vectors |
+//! |------|--------------------|-------------------|-------|---------|
+//! | 64   | 0.560              | 0.478             | 0.082 | 1.2 MB  |
+//! | 256  | 0.526              | 0.309             | 0.217 | 4.8 MB  |
+//! | 384  | 0.483              | 0.324             | 0.159 | 7.2 MB  |
+//!
+//! 256 separates best *and* costs less than 384 — past it the extra dimensions
+//! pull the weakest real answers down faster than they push nonsense away.
+//! [`super::RELEVANCE_FLOOR`] sits in the middle of its gap.
+//!
+//! The cost is real: four times the vectors on disk, and everyone re-embeds
+//! once, since the width is part of the cache key.
 
 /// The compressed embedding width every stored/queried vector is reduced to.
-pub const MRL_DIMS: usize = 64;
+pub const MRL_DIMS: usize = 256;
 
 /// Truncate `raw_embedding` to the leading [`MRL_DIMS`] coordinates and
 /// L2-normalize it onto the unit sphere.
@@ -71,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn truncates_to_64_dims() {
+    fn truncates_to_the_configured_width() {
         assert_eq!(compress_matryoshka_vector(&ramp(384)).len(), MRL_DIMS);
     }
 
@@ -84,19 +99,22 @@ mod tests {
 
     #[test]
     fn zero_vector_is_returned_unnormalized() {
-        assert_eq!(compress_matryoshka_vector(&vec![0.0; 64]), vec![0.0; 64]);
+        assert_eq!(
+            compress_matryoshka_vector(&vec![0.0; MRL_DIMS]),
+            vec![0.0; MRL_DIMS]
+        );
     }
 
     #[test]
     fn cosine_of_identical_unit_vectors_is_one() {
-        let v = compress_matryoshka_vector(&ramp(64));
+        let v = compress_matryoshka_vector(&ramp(MRL_DIMS));
         assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-5);
     }
 
     #[test]
     fn cosine_of_orthogonal_vectors_is_zero() {
-        let mut a = vec![0.0; 64];
-        let mut b = vec![0.0; 64];
+        let mut a = vec![0.0; MRL_DIMS];
+        let mut b = vec![0.0; MRL_DIMS];
         a[0] = 1.0;
         b[1] = 1.0;
         assert!(cosine_similarity(&a, &b).abs() < 1e-6);

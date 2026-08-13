@@ -553,7 +553,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
 
-        // four files, newest last written; each is one entry (~272 bytes)
+        // Four files, newest last written, one entry each. The size of an entry
+        // follows MRL_DIMS, so the budget below is derived from a real file
+        // rather than written down — a wider vector shouldn't break this test.
         let paths: Vec<PathBuf> = (0..4).map(|i| dir.join(format!("p-{i}.vecs"))).collect();
         for (i, p) in paths.iter().enumerate() {
             assert!(store(p, &[key(&i.to_string())], &vecs(1)));
@@ -562,8 +564,9 @@ mod tests {
                 std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 + i as u64);
             let _ = std::fs::File::open(p).map(|f| f.set_modified(t));
         }
-        // byte budget admits about two files; the count limit is not the binding one
-        prune_in(&dir, 99, 600);
+        // A budget admitting about two files; the count limit is not the binding one.
+        let one = std::fs::metadata(&paths[0]).unwrap().len();
+        prune_in(&dir, 99, one * 2 + one / 2);
         assert!(paths[3].exists(), "newest survives");
         assert!(paths[2].exists(), "second-newest fits the budget");
         assert!(!paths[0].exists() && !paths[1].exists(), "oldest evicted");
