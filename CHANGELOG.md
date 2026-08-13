@@ -17,6 +17,21 @@ early entries are terser than what follows.
   ever adds escapes, so the visible characters are identical either way.
 
 ### Added
+- Several positional words are one query, so `gqls cancel a subscription` needs
+  no quotes, and `gqls query User` no longer fails by reading `User` as the
+  schema. A leading kind filters — `gqls query user`, `gqls type User` — the
+  same as `-k`, whether the shell split the words or you quoted them. gqls says
+  on stderr when it read a word that way; setting `-k` keeps the word in the
+  query instead. The schema is recognised wherever it sits in the arguments.
+- An explanation of an enum lists its values with their descriptions, so
+  reading `Role` answers what `ADMIN` grants without a second search. `-D`
+  collapses it to the names, and an enum whose values are undocumented collapses
+  on its own.
+- `--json`/`--ndjson` carry the same facts as the text explanation: `values` and
+  `referenced_by` join the record when it's the one a query named. The others
+  (`deprecated`, `directives`, `possible_types`) were always serialized.
+
+### Added
 - A query that names exactly one of its matches now gets that record on its own,
   annotated: the deprecation *reason* rather than a bare marker, applied
   directives with their arguments, a union's members or an interface's

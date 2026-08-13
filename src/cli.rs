@@ -65,18 +65,24 @@ Semantic search (--semantic, rank by meaning) is not compiled into this build. E
     after_help = EXAMPLES
 )]
 struct Cli {
-    /// Search query. Fuzzy by default; abbreviations like `usr` match `User`,
+    /// Search query, then optionally the schema source.
+    ///
+    /// The query is fuzzy by default; abbreviations like `usr` match `User`,
     /// and `Type.field` queries match against the qualified path. A trailing
     /// dot lists a type's fields (`User.`); the general wildcards (`*` any
     /// run, `?` one char, `{a,b}` alternatives) enumerate too, but quote them
     /// so the shell doesn't expand them first.
     /// Omitted with a pipe on stdin, where each line is a query instead.
-    query: Option<String>,
-
-    /// Schema source: a `.graphql`/`.graphqls` SDL file, a `.json` introspection
-    /// dump, or an http(s) URL (introspected live). If omitted, gqls searches
-    /// the current directory tree for a schema.
-    source: Option<String>,
+    ///
+    /// Several words are one query, so `gqls cancel a subscription` needs no
+    /// quotes. A leading kind — `gqls query user`, `gqls type User` — filters
+    /// by it, the same as `-k`.
+    ///
+    /// The source is a `.graphql`/`.graphqls` SDL file, a `.json` introspection
+    /// dump, or an http(s) URL (introspected live). Recognised wherever it
+    /// appears; with none given, gqls searches the current directory tree.
+    #[arg(value_name = "QUERY... [SOURCE]", num_args = 0..)]
+    args: Vec<String>,
 
     /// Restrict to a kind (object, field, query, mutation, enum, scalar, ...).
     #[arg(short, long)]
@@ -389,7 +395,7 @@ pub fn run() -> Result<()> {
         }
     };
 
-    let kind: Option<Kind> = match &cli.kind {
+    let explicit_kind: Option<Kind> = match &cli.kind {
         Some(s) => Some(s.parse()?),
         None => None,
     };
@@ -408,19 +414,12 @@ pub fn run() -> Result<()> {
         use std::io::IsTerminal;
         !std::io::stdin().is_terminal()
     };
-    let positional_is_source = cli.source.is_none()
-        && (cli.returns.is_some() || piped)
-        && cli.query.as_deref().is_some_and(looks_like_source);
+    let (positional_query, positional_source) =
+        split_positionals(&cli.args, cli.warm || cli.returns.is_some() || piped);
 
-    let source = if let Some(s) = cli.source.clone() {
-        s
-    } else if cli.warm || positional_is_source {
-        match cli.query.clone() {
-            Some(s) => s,
-            None => load::discover(cli.refresh)?,
-        }
-    } else {
-        load::discover(cli.refresh)?
+    let source = match positional_source {
+        Some(s) => s,
+        None => load::discover(cli.refresh)?,
     };
     let load_opts = load::LoadOptions {
         headers: parse_headers(&cli.header)?,
@@ -459,11 +458,27 @@ pub fn run() -> Result<()> {
     // With no query and a pipe on stdin, every line is one — the schema, the
     // model and the vectors are loaded once and answer all of them, which is
     // the whole point of the batch form.
-    let batch =
-        cli.query.as_deref().is_none_or(|_| positional_is_source) && cli.returns.is_none() && piped;
-    let queries: Vec<String> = match cli.query.as_deref() {
-        // a positional consumed as the schema above isn't the query
-        Some(q) if !positional_is_source => vec![q.to_string()],
+    let batch = positional_query.is_none() && cli.returns.is_none() && piped;
+    // A kind the query led with, unless `-k` already said one.
+    let (kind, positional_query) = match (explicit_kind, positional_query) {
+        (None, Some(q)) => match leading_kind(&q) {
+            Some((k, rest)) => {
+                // Quoting doesn't undo this — a quoted phrase and separate
+                // arguments are the same query, deliberately. Setting -k does,
+                // because an explicit kind means the word wasn't one.
+                crate::status!(
+                    "read {:?} as -k {} (set -k to keep it in the query)",
+                    q.split_whitespace().next().unwrap_or_default(),
+                    k.as_str()
+                );
+                (Some(k), Some(rest.to_string()))
+            }
+            None => (None, Some(q)),
+        },
+        (k, q) => (k, q),
+    };
+    let queries: Vec<String> = match positional_query {
+        Some(q) => vec![q],
         // `--returns Company` on its own lists everything returning Company
         _ if cli.returns.is_some() => vec!["*".into()],
         _ if batch => read_queries()?,
@@ -756,6 +771,11 @@ impl Output {
             /// existing field stay exactly as they were.
             #[serde(skip_serializing_if = "Option::is_none")]
             r#match: Option<&'static str>,
+            /// The same facts the text explanation shows — an enum's values,
+            /// what references a type. Flattened in beside the record's own
+            /// fields, since to a consumer they're all just what gqls knows.
+            #[serde(flatten)]
+            extras: Extras<'a>,
         }
         let rows = || {
             matches.iter().map(|m| Row {
@@ -766,6 +786,10 @@ impl Output {
                     search::NameMatch::Exact => "exact",
                     search::NameMatch::Corrected => "corrected",
                 }),
+                extras: match explained {
+                    Some(_) => extras(m.record, records),
+                    None => Extras::default(),
+                },
             })
         };
         // A query that matched nothing would otherwise vanish from the stream,
@@ -836,7 +860,68 @@ const MAX_REFERENCES: usize = 6;
 ///
 /// Each entry is a label and its value. Empty when there's nothing to add,
 /// which is the common case for an undocumented scalar.
-fn annotations(record: &SchemaRecord, records: &[SchemaRecord]) -> Vec<(&'static str, String)> {
+/// One value of an enum, as an explanation reports it.
+#[derive(Serialize)]
+struct EnumValue<'a> {
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+    /// Present when deprecated; the string is the reason, empty if none was
+    /// given. `Option<Option<_>>` would be the honest type and a bad one to
+    /// read, so an empty reason stands for "deprecated, unexplained".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deprecated: Option<&'a str>,
+}
+
+/// What an explanation knows that isn't already a field on the record.
+///
+/// Computed once and rendered twice — as annotation lines for a person, as
+/// extra keys for `--json`. Two derivations of the same facts would drift, and
+/// the text output being richer than the machine output is backwards.
+#[derive(Serialize, Default)]
+struct Extras<'a> {
+    /// An enum's values, so reading one doesn't need a second search.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    values: Vec<EnumValue<'a>>,
+    /// Every path whose type is this one — the schema's answer to "how do I get
+    /// one of these". The one fact here a consumer can't cheaply recompute: it
+    /// would have to pull every record and scan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    referenced_by: Vec<&'a str>,
+}
+
+fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> {
+    let values = match record.kind {
+        Kind::Enum => records
+            .iter()
+            .filter(|r| r.kind == Kind::EnumValue && r.parent.as_deref() == Some(&record.name))
+            .map(|r| EnumValue {
+                name: &r.name,
+                description: r.description.as_deref(),
+                deprecated: r.deprecated.as_deref(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Types only — a field is already reachable through the type it hangs off,
+    // which its own path shows.
+    let referenced_by = match record.parent.is_none() && record.kind != Kind::Directive {
+        true => records
+            .iter()
+            .filter(|r| r.base_type() == Some(record.name.as_str()) && r.path != record.path)
+            .map(|r| r.path.as_str())
+            .collect(),
+        false => Vec::new(),
+    };
+    Extras {
+        values,
+        referenced_by,
+    }
+}
+
+/// The single-line annotations, in the order they're printed. An enum's values
+/// are rendered separately, as a block, because they carry descriptions.
+fn annotations(record: &SchemaRecord, extras: &Extras) -> Vec<(&'static str, String)> {
     let mut out = Vec::new();
 
     if let Some(reason) = record.deprecated.as_deref().filter(|r| !r.is_empty()) {
@@ -860,43 +945,74 @@ fn annotations(record: &SchemaRecord, records: &[SchemaRecord]) -> Vec<(&'static
         };
         out.push((label, record.possible_types.join(", ")));
     }
-
-    // An enum's values, so its meaning doesn't need a second search. Marked
-    // where deprecated, since that's exactly what you'd want to avoid using.
-    if record.kind == Kind::Enum {
-        let values: Vec<String> = records
-            .iter()
-            .filter(|r| r.kind == Kind::EnumValue && r.parent.as_deref() == Some(&record.name))
-            .map(|r| match r.deprecated.is_some() {
-                true => format!("{} (deprecated)", r.name),
-                false => r.name.clone(),
-            })
-            .collect();
-        if !values.is_empty() {
-            out.push(("values", values.join(", ")));
+    if !extras.referenced_by.is_empty() {
+        let total = extras.referenced_by.len();
+        let shown = total.min(MAX_REFERENCES);
+        let mut list = extras.referenced_by[..shown].join(", ");
+        if total > shown {
+            list.push_str(&format!(", and {} more", total - shown));
         }
-    }
-
-    // What refers to this type. Only for types — a field is already reachable
-    // through the type it hangs off, which its own path shows.
-    if record.parent.is_none() && record.kind != Kind::Directive {
-        let mut refs: Vec<&str> = records
-            .iter()
-            .filter(|r| r.base_type() == Some(record.name.as_str()) && r.path != record.path)
-            .map(|r| r.path.as_str())
-            .collect();
-        refs.dedup();
-        if !refs.is_empty() {
-            let total = refs.len();
-            refs.truncate(MAX_REFERENCES);
-            let mut list = refs.join(", ");
-            if total > refs.len() {
-                list.push_str(&format!(", and {} more", total - refs.len()));
-            }
-            out.push(("referenced by", list));
-        }
+        out.push(("referenced by", list));
     }
     out
+}
+
+/// An enum's values, one per line with what each means.
+///
+/// Its own block rather than an annotation line, because the descriptions are
+/// the point: reading `Role` should answer what `ADMIN` grants without a second
+/// search for `Role.`. Under `-D` it collapses to the names on one line — the
+/// same "no prose" the flag means everywhere else.
+fn print_values(values: &[EnumValue], descriptions: bool) {
+    if values.is_empty() {
+        return;
+    }
+    if !descriptions || values.iter().all(|v| v.description.is_none()) {
+        let names: Vec<String> = values
+            .iter()
+            .map(|v| match v.deprecated {
+                Some(_) => format!("{} (deprecated)", v.name),
+                None => v.name.to_string(),
+            })
+            .collect();
+        println!(
+            "  {}",
+            style::muted(&format!("values  {}", names.join(", ")))
+        );
+        return;
+    }
+
+    println!("  {}", style::muted("values"));
+    let name_w = values
+        .iter()
+        .map(|v| v.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for value in values {
+        let indent = 4 + name_w + 2;
+        let mut note = match value.deprecated {
+            // An empty reason still has to say *that* it's deprecated.
+            Some("") => "(deprecated)".to_string(),
+            Some(reason) => format!("(deprecated: {reason})"),
+            None => String::new(),
+        };
+        if let Some(d) = value.description {
+            if !note.is_empty() {
+                note.push(' ');
+            }
+            note.push_str(d);
+        }
+        let budget = style::width()
+            .saturating_sub(indent)
+            .max(MIN_DESCRIPTION_WIDTH);
+        let mut lines = wrap(&note, budget, usize::MAX).into_iter();
+        let first = lines.next().unwrap_or_default();
+        let name = value.name;
+        println!("    {}", style::muted(&format!("{name:<name_w$}  {first}")));
+        for cont in lines {
+            println!("{}{}", " ".repeat(indent), style::muted(&cont));
+        }
+    }
 }
 
 /// Lines a description may occupy, its first included. A schema doc can run to
@@ -1016,7 +1132,10 @@ fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRec
                 println!("  {}", style::muted(&l));
             }
             if let Some(all) = explain {
-                let notes = annotations(matches[0].record, all);
+                let extras = extras(matches[0].record, all);
+                let notes = annotations(matches[0].record, &extras);
+                // "values" is printed as its own block below, so it doesn't
+                // widen the label column it isn't in.
                 let label_w = notes.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
                 for (label, value) in notes {
                     let indent = 2 + label_w + 2;
@@ -1030,6 +1149,7 @@ fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRec
                         println!("{}{}", " ".repeat(indent), style::muted(&cont));
                     }
                 }
+                print_values(&extras.values, descriptions);
             }
             continue;
         }
@@ -1331,6 +1451,55 @@ fn run_resolve(
 /// Syntactic only (no filesystem check): schema sources are URLs or files with
 /// a schema extension, none of which is a legal GraphQL name, so this can't
 /// swallow a real query.
+/// Split the positionals into a query and a schema source.
+///
+/// The source is recognised by its shape — an extension or a URL — wherever it
+/// sits, so `gqls user schema.graphql` and `gqls schema.graphql user` both
+/// read. Everything else joins into one query, which is what lets
+/// `gqls cancel a subscription` work without quotes.
+///
+/// `lone_is_source` decides the one genuinely ambiguous case: a single
+/// positional that looks like a schema. It's the source when something else
+/// supplies the query (`--warm`, `--returns`, a pipe) and the query otherwise,
+/// because `gqls schema.graphql` with nothing else is a search for that text.
+fn split_positionals(args: &[String], lone_is_source: bool) -> (Option<String>, Option<String>) {
+    let source_at = args.iter().rposition(|a| looks_like_source(a));
+    let source_at = match source_at {
+        Some(_) if args.len() == 1 && !lone_is_source => None,
+        other => other,
+    };
+    let source = source_at.map(|i| args[i].clone());
+    let query: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != source_at)
+        .map(|(_, a)| a.as_str())
+        .collect();
+    match query.is_empty() {
+        true => (None, source),
+        false => (Some(query.join(" ")), source),
+    }
+}
+
+/// A kind the query leads with — `query user`, `type User`, `enums` — and the
+/// rest of the query after it.
+///
+/// Typing the kind is how people say it out loud, and it reads the same whether
+/// the shell split it into arguments or not. Only ever the *first* word, and
+/// only when something follows: `gqls query` stays a search for the word.
+///
+/// This does collide with prose. `gqls input validation` reads `input` as a
+/// kind, which is not what a semantic search of that phrase would mean — so the
+/// caller says on stderr that it did, and `-k` set explicitly wins outright.
+fn leading_kind(query: &str) -> Option<(Kind, &str)> {
+    let (first, rest) = query.split_once(char::is_whitespace)?;
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    first.parse::<Kind>().ok().map(|k| (k, rest))
+}
+
 fn looks_like_source(arg: &str) -> bool {
     arg.starts_with("http://")
         || arg.starts_with("https://")
@@ -1341,8 +1510,9 @@ fn looks_like_source(arg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_source, render_example, wrap};
+    use super::{leading_kind, looks_like_source, render_example, split_positionals, wrap};
     use crate::example::Example;
+    use crate::model::Kind;
 
     fn example() -> Example {
         Example {
@@ -1376,6 +1546,60 @@ mod tests {
             vec!["Look up a user."]
         );
         assert!(wrap("   ", 40, 3).is_empty());
+    }
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn several_words_are_one_query() {
+        let (q, s) = split_positionals(&args(&["cancel", "a", "subscription"]), false);
+        assert_eq!(q.as_deref(), Some("cancel a subscription"));
+        assert_eq!(s, None);
+    }
+
+    #[test]
+    fn the_source_is_found_wherever_it_sits() {
+        for order in [
+            &["user", "schema.graphql"][..],
+            &["schema.graphql", "user"][..],
+        ] {
+            let (q, s) = split_positionals(&args(order), false);
+            assert_eq!(q.as_deref(), Some("user"), "{order:?}");
+            assert_eq!(s.as_deref(), Some("schema.graphql"), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_lone_schema_shaped_argument_depends_on_who_supplies_the_query() {
+        // Nothing else to search with: it's the schema.
+        let (q, s) = split_positionals(&args(&["schema.graphql"]), true);
+        assert_eq!((q.as_deref(), s.as_deref()), (None, Some("schema.graphql")));
+        // Otherwise `gqls schema.graphql` is a search for that text, which is
+        // what it looks like when you type it.
+        let (q, s) = split_positionals(&args(&["schema.graphql"]), false);
+        assert_eq!((q.as_deref(), s.as_deref()), (Some("schema.graphql"), None));
+    }
+
+    #[test]
+    fn a_leading_kind_word_filters() {
+        assert_eq!(leading_kind("query user"), Some((Kind::Query, "user")));
+        assert_eq!(leading_kind("type User"), Some((Kind::Object, "User")));
+        assert_eq!(leading_kind("enums Role"), Some((Kind::Enum, "Role")));
+    }
+
+    #[test]
+    fn a_kind_word_alone_is_still_a_search() {
+        // `gqls query` means "find things called query", not "list every query"
+        // — there'd be no way to ask the first if it meant the second.
+        assert_eq!(leading_kind("query"), None);
+        assert_eq!(leading_kind("mutation  "), None);
+    }
+
+    #[test]
+    fn only_the_first_word_is_read_as_a_kind() {
+        assert_eq!(leading_kind("user query"), None);
     }
 
     #[test]
