@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::load;
 use crate::model::{Kind, SchemaRecord};
 use crate::search;
+use crate::style;
 
 /// The semantic-only flags (--semantic, --model, --refresh, --clear-cache) are
 /// hidden from --help on builds without the feature, where they'd only error.
@@ -756,41 +757,146 @@ impl Output {
 /// (`--json` carries the full text).
 const DESCRIPTION_WIDTH: usize = 72;
 
+/// Widest the path column may grow before it stops aligning. One pathological
+/// 200-character path shouldn't indent every other row past the fold, so it's
+/// allowed to overflow its own line instead.
+const PATH_WIDTH: usize = 48;
+
+/// A row's cells, kept as plain text so the column widths can be measured, and
+/// styled only on the way out.
+struct Row {
+    parent: String,
+    leaf: String,
+    args: String,
+    ret: String,
+    kind: String,
+    deprecated: bool,
+    desc: String,
+}
+
+impl Row {
+    /// Visible width of the path cell — parent, leaf and args are one column,
+    /// styled in three pieces.
+    fn path_width(&self) -> usize {
+        self.parent.len() + self.leaf.len() + self.args.len()
+    }
+}
+
+/// Pad `cell` to `width` using its *visible* length. The styled string carries
+/// escape bytes that occupy no columns, so `{:<width$}` on it would pad by the
+/// wrong amount — every alignment bug in coloured output starts here.
+fn pad(styled: String, visible: usize, width: usize) -> String {
+    let mut out = styled;
+    out.push_str(&" ".repeat(width.saturating_sub(visible)));
+    out
+}
+
 fn print_text(matches: &[Match], descriptions: bool) {
-    let width = matches
+    let rows: Vec<Row> = matches
         .iter()
-        .map(|m| display_path(m.record).len())
+        .map(|m| {
+            let r = m.record;
+            // The leaf is the answer; the parent is context repeated down the
+            // whole column ("User." five times in a `User.` listing). Splitting
+            // them is what lets the name carry the weight.
+            let (parent, leaf) = match r.path.rfind('.') {
+                Some(i) => (r.path[..=i].to_string(), r.path[i + 1..].to_string()),
+                None => (String::new(), r.path.clone()),
+            };
+            Row {
+                parent,
+                leaf,
+                args: if r.args.is_empty() {
+                    String::new()
+                } else {
+                    format!("({})", r.args.join(", "))
+                },
+                ret: r
+                    .type_ref
+                    .as_deref()
+                    .map(|t| format!("-> {t}"))
+                    .unwrap_or_default(),
+                kind: format!("[{}]", r.kind.as_str()),
+                deprecated: r.deprecated.is_some(),
+                desc: if descriptions {
+                    r.description
+                        .as_deref()
+                        .map(summarize)
+                        .filter(|d| !d.is_empty())
+                        .map(|d| format!("— {d}"))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                },
+            }
+        })
+        .collect();
+
+    // Measure every column before printing any of it. A column that's empty
+    // across the whole result set is dropped rather than left as a blank gutter
+    // — a search returning only types has no return-type column at all.
+    let path_w = rows
+        .iter()
+        .map(Row::path_width)
         .max()
         .unwrap_or(0)
-        .min(48);
+        .min(PATH_WIDTH);
+    let ret_w = rows.iter().map(|r| r.ret.len()).max().unwrap_or(0);
+    let kind_w = rows.iter().map(|r| r.kind.len()).max().unwrap_or(0);
 
-    for m in matches {
-        let r = m.record;
-        let path = display_path(r);
-        let ret = r
-            .type_ref
-            .as_deref()
-            .map(|t| format!(" -> {t}"))
-            .unwrap_or_default();
-        let dep = if r.deprecated.is_some() {
-            " (deprecated)"
-        } else {
-            ""
-        };
-        let desc = if descriptions {
-            r.description
-                .as_deref()
-                .map(summarize)
-                .filter(|d| !d.is_empty())
-                .map(|d| format!(" — {d}"))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        println!(
-            "{path:<width$}{ret}  [{kind}]{dep}{desc}",
-            kind = r.kind.as_str()
-        );
+    for row in &rows {
+        // Cells joined by two spaces, and any trailing empties contribute
+        // nothing — no line ends in whitespace.
+        let mut cells: Vec<(String, usize)> = Vec::with_capacity(4);
+        cells.push((
+            format!(
+                "{}{}{}",
+                style::muted(&row.parent),
+                style::leaf(&row.leaf),
+                style::muted(&row.args)
+            ),
+            row.path_width(),
+        ));
+        if ret_w > 0 {
+            // Only the type name is coloured; the arrow is structure.
+            let styled = match row.ret.strip_prefix("-> ") {
+                Some(t) => format!("{} {}", style::muted("->"), style::type_name(t)),
+                None => String::new(),
+            };
+            cells.push((styled, row.ret.len()));
+        }
+        if kind_w > 0 {
+            cells.push((style::muted(&row.kind), row.kind.len()));
+        }
+        // Deprecation is appended rather than given a column: one deprecated
+        // row would otherwise widen the kind column by 13 for every row.
+        if row.deprecated {
+            let (last, width) = cells.pop().expect("path cell always present");
+            let padded = pad(last, width, kind_w);
+            cells.push((
+                format!("{padded}  {}", style::warning("(deprecated)")),
+                kind_w + 2 + "(deprecated)".len(),
+            ));
+        }
+        if !row.desc.is_empty() {
+            cells.push((style::muted(&row.desc), row.desc.len()));
+        }
+
+        let widths = [path_w, ret_w, kind_w];
+        let last = cells.len() - 1;
+        let line: String = cells
+            .into_iter()
+            .enumerate()
+            .map(|(i, (styled, visible))| {
+                if i == last {
+                    styled // never pad the tail
+                } else {
+                    pad(styled, visible, widths.get(i).copied().unwrap_or(visible))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("{}", line.trim_end());
     }
 }
 
@@ -1032,15 +1138,6 @@ fn looks_like_source(arg: &str) -> bool {
         || [".graphql", ".graphqls", ".gql", ".json"]
             .iter()
             .any(|ext| arg.to_ascii_lowercase().ends_with(ext))
-}
-
-/// `Query.user(id: ID!, first: Int)` — path plus a compact arg signature.
-fn display_path(r: &SchemaRecord) -> String {
-    if r.args.is_empty() {
-        r.path.clone()
-    } else {
-        format!("{}({})", r.path, r.args.join(", "))
-    }
 }
 
 #[cfg(test)]

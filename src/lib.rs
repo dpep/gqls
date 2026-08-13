@@ -20,6 +20,7 @@ pub mod paths;
 pub mod profile;
 pub mod resolve;
 pub mod search;
+pub mod style;
 
 #[cfg(feature = "_semantic")]
 pub mod semantic;

@@ -6,6 +6,23 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Added
+- Colour in text output: the field name bold, its return type cyan, and the
+  parent prefix, arguments, kind tag and description dimmed so the name carries
+  the row. Sixteen-colour codes only, no background colours, and nothing that
+  assumes a dark terminal. Suppressed when stdout isn't a TTY or `NO_COLOR` is
+  set — and it only ever adds escapes, so the visible characters are identical
+  either way.
+
+### Fixed
+- Result columns line up. A record with no return type still paid for the
+  separator `-> Type` would have used, so `[object]` sat one column off from
+  every `[query]` and there was no vertical line for the eye to follow. Return
+  type and kind are now real columns, measured on visible width, and a column
+  nothing fills is dropped rather than left as a blank gutter.
+
 ## 0.21.0 — 2026-08-05
 
 ### Added
