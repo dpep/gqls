@@ -799,6 +799,13 @@ fn pad(styled: String, visible: usize, width: usize) -> String {
 }
 
 fn print_text(matches: &[Match], descriptions: bool) {
+    // Collapsing a signature buys back the column width it would have imposed
+    // on every *other* row. With a single result there are no other rows, so
+    // the marker costs information and saves nothing — spell it out. The rule
+    // is "don't charge the table for one long signature", not "hide
+    // signatures", and one result is the case where the charge is zero.
+    let lone = matches.len() == 1;
+
     let rows: Vec<Row> = matches
         .iter()
         .map(|m| {
@@ -813,19 +820,15 @@ fn print_text(matches: &[Match], descriptions: bool) {
             Row {
                 parent,
                 leaf,
-                // Collapsed, not spelled out. A signature is the answer to
-                // "how do I call this", which is a question you ask *after*
-                // finding the field — and one `-e` answers properly, with the
-                // required arguments already bound to variables. Meanwhile the
-                // longest signature sets the width of the path column for every
-                // row: on the example schema, spelling them out costs 44
-                // columns where the marker costs 22, and dropping arguments
-                // entirely would save only one more while losing the fact that
-                // the field takes any.
-                args: if r.args.is_empty() {
-                    String::new()
-                } else {
-                    "(…)".to_string()
+                // In a list, collapsed: a signature answers "how do I call
+                // this", which you ask after finding the field, and the longest
+                // one sets the path column width for every row — 44 columns
+                // against 22 on the example schema. `-e` answers it properly
+                // anyway, with the required arguments bound to variables.
+                args: match (r.args.is_empty(), lone) {
+                    (true, _) => String::new(),
+                    (false, true) => format!("({})", r.args.join(", ")),
+                    (false, false) => "(…)".to_string(),
                 },
                 ret: r
                     .type_ref

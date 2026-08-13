@@ -17,12 +17,13 @@ early entries are terser than what follows.
   either way.
 
 ### Changed
-- Argument signatures collapse to `(…)` in text results. The list answers
-  "which field is it"; the signature is the next question, and `-e` answers it
-  properly with the required arguments already bound to variables. Spelling
-  them out made the longest signature set the path column width for every row —
-  44 columns against 22 on the example schema. `--json`/`--ndjson` are
-  unchanged and still carry the full argument list.
+- Argument signatures collapse to `(…)` when a result sits alongside others,
+  and are spelled out in full when it's the only match. Collapsing buys back
+  the column width the longest signature would impose on every other row — 44
+  columns against 22 on the example schema — and with a single result there are
+  no other rows to protect, so `gqls Mutation.createUser` shows
+  `(input: CreateUserInput!)`. `--json`/`--ndjson` are unchanged and always
+  carry the full argument list.
 
 ### Fixed
 - Result columns line up. A record with no return type still paid for the

@@ -126,13 +126,26 @@ fn a_multibyte_marker_does_not_skew_the_columns() {
 }
 
 #[test]
-fn a_signature_is_collapsed_not_spelled_out() {
+fn a_signature_is_collapsed_among_other_rows() {
     // The list answers "which field"; `-e` answers "how do I call it". One long
     // signature would otherwise set the path column width for every row.
     let out = run(&["*", "-l", "20"]);
+    assert!(out.lines().count() > 1, "expected a list: {out}");
     assert!(
         !out.contains("input: CreateUserInput!"),
-        "argument signatures should not reach the list:\n{out}"
+        "argument signatures should not reach a multi-row list:\n{out}"
+    );
+}
+
+#[test]
+fn a_lone_result_spells_its_signature_out() {
+    // Collapsing buys back width from the *other* rows. With one row there are
+    // none, so the marker would cost information and save nothing.
+    let out = run(&["Mutation.createUser"]);
+    assert_eq!(out.lines().count(), 1, "expected exactly one row: {out}");
+    assert!(
+        out.contains("(input: CreateUserInput!)"),
+        "a lone result should show its arguments:\n{out}"
     );
 }
 
