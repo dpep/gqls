@@ -869,20 +869,14 @@ fn print_text(matches: &[Match], descriptions: bool) {
         let mut cells: Vec<(String, usize)> = Vec::with_capacity(4);
         cells.push((
             format!(
-                "{}{}{}",
-                style::muted(&row.parent),
-                style::leaf(&row.leaf),
+                "{}{}",
+                style::name(&format!("{}{}", row.parent, row.leaf)),
                 style::muted(&row.args)
             ),
             row.path_width(),
         ));
         if ret_w > 0 {
-            // Only the type name is coloured; the arrow is structure.
-            let styled = match row.ret.strip_prefix("-> ") {
-                Some(t) => format!("{} {}", style::muted("->"), style::type_name(t)),
-                None => String::new(),
-            };
-            cells.push((styled, row.ret.len()));
+            cells.push((style::muted(&row.ret), row.ret.len()));
         }
         if kind_w > 0 {
             cells.push((style::muted(&row.kind), row.kind.len()));

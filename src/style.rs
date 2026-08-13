@@ -39,23 +39,27 @@ fn paint(text: &str, code: &str) -> String {
     format!("\x1b[{code}m{text}\x1b[0m")
 }
 
-/// The answer to the question being asked — maximum contrast without choosing a
-/// colour the background might swallow.
-pub fn leaf(text: &str) -> String {
+/// The name you searched for — the whole path, `User.posts`, as one thing.
+///
+/// Not split into a dim parent and a bold leaf. That reads well down a column
+/// of five `User.` rows and badly everywhere else: on a single result it
+/// fragments the one string you're looking at into two shades for no gain, and
+/// what you matched on was the whole path anyway.
+pub fn name(text: &str) -> String {
     paint(text, "1")
 }
 
-/// Structure the eye should skip: the parent prefix, argument lists, the arrow,
-/// the kind tag, the description.
+/// Everything that isn't the name: arguments, the arrow, the return type, the
+/// kind tag, the description.
+///
+/// One treatment for all of it, deliberately. An earlier version gave the
+/// return type its own colour, which meant three visual weights on a line whose
+/// job is to answer one question. Dim-versus-not is the whole distinction the
+/// eye needs here, and it's the only one that can't clash with a terminal
+/// theme — bold and dim are relative to the user's own foreground, where any
+/// hue is a guess about their background *and* their palette.
 pub fn muted(text: &str) -> String {
     paint(text, "2")
-}
-
-/// A field's type. Cyan reads as "type" from syntax-highlighting convention and
-/// stays legible on light and dark alike. Not bold — it must not outrank the
-/// name.
-pub fn type_name(text: &str) -> String {
-    paint(text, "36")
 }
 
 /// Deprecation. Rare and semantic, so it gets the one colour that interrupts a
@@ -74,7 +78,7 @@ mod tests {
     #[test]
     fn styling_is_a_no_op_when_disabled() {
         assert!(!enabled(), "tests must run without a TTY");
-        for f in [leaf, muted, type_name, warning] {
+        for f in [name, muted, warning] {
             assert_eq!(f("User"), "User");
         }
     }
@@ -82,7 +86,7 @@ mod tests {
     #[test]
     fn painting_never_changes_visible_length() {
         // The invariant the column layout depends on.
-        for f in [leaf, muted, type_name, warning] {
+        for f in [name, muted, warning] {
             assert_eq!(f("Query.user").len(), "Query.user".len());
         }
     }

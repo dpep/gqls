@@ -9,12 +9,12 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
-- Colour in text output: the field name bold, its return type cyan, and the
-  parent prefix, arguments, kind tag and description dimmed so the name carries
-  the row. Sixteen-colour codes only, no background colours, and nothing that
-  assumes a dark terminal. Suppressed when stdout isn't a TTY or `NO_COLOR` is
-  set — and it only ever adds escapes, so the visible characters are identical
-  either way.
+- Colour in text output: the matched path bold, everything else — arguments,
+  the arrow, the return type, the kind tag, the description — dimmed. Two
+  weights and no hue, so nothing can clash with a terminal theme; bold and dim
+  are relative to your own foreground, where any colour is a guess about your
+  palette. Suppressed when stdout isn't a TTY or `NO_COLOR` is set, and it only
+  ever adds escapes, so the visible characters are identical either way.
 
 ### Changed
 - The `-e` marker for an unexpanded object field is now `# posts: Post { … }`

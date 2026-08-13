@@ -2,42 +2,77 @@
 type Query {
   """Look up a user by id."""
   user(id: ID!): User
+
+  """
+  Page through every user in the account, oldest first. `after` takes the
+  cursor from the previous page; omitting it starts from the beginning. Pages
+  larger than 100 are clamped rather than rejected, so a caller asking for
+  everything gets the maximum instead of an error.
+  """
   users(first: Int, after: String): [User!]!
+
+  """Full-text search across users and posts."""
   search(term: String!): [SearchResult!]!
 }
 
 type Mutation {
+  """Create a user and return it. Fails if the email is already taken."""
   createUser(input: CreateUserInput!): User!
+
   deleteUser(id: ID!): Boolean! @deprecated(reason: "use archiveUser")
 }
 
 """An account."""
 type User {
   id: ID!
+
+  """Display name. Not unique — use `id` to identify a user."""
   name: String!
+
+  """Primary address, unique across the account. Changing it re-triggers verification."""
   email: String!
+
+  """What the user may do. Defaults to MEMBER on creation."""
   role: Role!
+
+  """Posts this user authored, newest first."""
   posts(first: Int): [Post!]!
 }
 
+"""Something a user wrote."""
 type Post {
   id: ID!
+
+  """Headline, as typed. May be empty on a draft."""
   title: String!
+
+  """Who wrote it."""
   author: User!
 }
 
+"""Anything `search` can return."""
 union SearchResult = User | Post
 
+"""What a user is allowed to do."""
 enum Role {
+  """Full access, including billing and member management."""
   ADMIN
+
+  """Ordinary access to the account's own content."""
   MEMBER
+
+  """Read-only."""
   GUEST
 }
 
 input CreateUserInput {
   name: String!
+
+  """Must be unique across the account; a verification mail is sent here."""
   email: String!
+
   role: Role = MEMBER
 }
 
+"""An ISO 8601 timestamp, always UTC."""
 scalar DateTime
