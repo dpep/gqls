@@ -8,6 +8,14 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Changed
+- **Embedding vectors are 256-dimensional, up from 64 — every schema re-embeds
+  once on first use after upgrading.** A 4602-record schema takes about a
+  minute and its vector cache grows from 1.2 MB to 4.8 MB. `--profile` now
+  reports the width and footprint (`4602 vectors x 256d, 4.5 MB`) so the trade
+  is visible. The width buys the calibration the new relevance floor needs;
+  ranking was already fine at 64.
+
 ### Added
 - Colour in text output, in three weights and no hue: **bold is the identity**
   (the matched path), **plain is the answer** (a field's return type, and the
@@ -55,10 +63,6 @@ early entries are terser than what follows.
   dimensions answerable and unanswerable queries overlap too much to separate
   (0.082 between the weakest real answer and the loudest nonsense), at 256 they
   don't (0.217). `GQLS_SEMANTIC_FLOOR` tunes it; `0` switches it off.
-- Embedding vectors are 256-dimensional, up from 64. Four times the vector
-  cache — 4.8 MB against 1.2 MB for a 4602-record schema — and a one-time
-  re-embed, since the width is part of the cache key. It buys the calibration
-  the floor above needs; ranking was already fine at 64.
 - A blank line separates an explanation's description from its annotations.
   Prose and a fact table were stacked at the same indent in the same weight, so
   a wrapped description's last line was indistinguishable from the first

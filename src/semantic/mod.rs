@@ -18,7 +18,7 @@ mod mrl;
 
 use crate::model::SchemaRecord;
 use embed::{default_embedder, Embedder};
-use mrl::{compress_matryoshka_vector, cosine_similarity};
+use mrl::{compress_matryoshka_vector, cosine_similarity, MRL_DIMS};
 
 /// Drop hits below this fraction of the top cosine. Deliberately mild:
 /// measured cosine curves decay smoothly (no tiers, no cliff), and near the
@@ -265,7 +265,18 @@ impl Session {
             }
         };
 
-        vec_span.note(|| format!("{} vectors", vectors.len()));
+        // Width and footprint, not just the count: the width is the knob that
+        // trades cache size against how well the relevance floor separates, so
+        // a profile that reports one without the other can't be used to judge
+        // the trade.
+        vec_span.note(|| {
+            let bytes = vectors.len() * MRL_DIMS * std::mem::size_of::<f32>();
+            format!(
+                "{} vectors x {MRL_DIMS}d, {:.1} MB",
+                vectors.len(),
+                bytes as f64 / (1024.0 * 1024.0)
+            )
+        });
         drop(vec_span);
         Session { embedder, vectors }
     }
