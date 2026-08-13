@@ -31,7 +31,8 @@ Each result is an object:
 
 ```json
 { "path": "Query.user", "name": "user", "kind": "query", "parent": "Query",
-  "type_ref": "User", "args": ["id: ID!"], "score": 1060 }
+  "type_ref": "User", "args": ["id: ID!"],
+  "description": "Look up a user by id.", "score": 1060 }
 ```
 
 `path` is the qualified location (`Type.field`), `type_ref` the return/field
@@ -40,8 +41,21 @@ schema has one — usually enough to confirm a match without opening the schema.
 Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson` pipe cleanly
 into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
 
-Text output shows the description too (elided to one line; `-D` drops it); the
-JSON forms always carry the full text.
+When the query *names* exactly one of its matches, that record carries three
+more keys — the signal that you found the thing rather than a shortlist:
+
+- `match` — `"exact"`, or `"corrected"` when the name was a small misspelling
+- `values` — an enum's values, each `{name, description?, deprecated?}`
+- `referenced_by` — every path whose type is this one, which is the schema's
+  answer to "how do I get one of these"
+
+`deprecated`, `directives` and `possible_types` are ordinary record fields and
+appear whenever the schema has them. The array shape never changes, so a reader
+that ignores the extra keys still works.
+
+Text output shows the description too — elided to one line in a list, in full
+for a record you named. `-D` drops descriptions and collapses an enum's values
+to their names.
 
 ## Scope when you know more
 
@@ -141,7 +155,7 @@ that names its type. Anything the server can supply — nullable, or carrying a
 schema default — is left out of the operation and listed underneath, so what
 it prints runs as-is. It selects one level of leaf fields, expands an `errors`
 block only when the payload really has one, and wraps a nested field in a root
-that returns its type. Object-valued fields become `# add fields you need`
+that returns its type. Object-valued fields become `# field: Type { … }`
 markers — `--depth N` expands them when you want more. A union is written as
 inline fragments over its members (an interface adds one per implementor for
 the fields it adds), and deprecated fields stay in the selection
@@ -217,6 +231,6 @@ Source + issues: <https://github.com/dpep/gqls>.
 - `--profile` reports where a query's time went, as a table on stderr or as
   JSON on stderr alongside `-j`. Reach for it when asked why gqls is slow on a
   schema, rather than guessing.
-- `gqls -h` prints full help with examples.
+- `gqls --help` prints the full help with examples.
 
 To install this skill for Claude Code, copy it to `~/.claude/skills/gqls/SKILL.md`.

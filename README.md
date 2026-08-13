@@ -45,6 +45,9 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 `gqls` parses subgraph SDL directly — the `extend schema @link(...)` header and `@key`/`@shareable` directives that trip up plain GraphQL parsers — so you can `cd` into a subgraph package and search its own schema. Auto-discovery follows suit: at the repo root it prefers the composed `supergraph*` schema, but run from inside a subgraph it uses that subgraph's local schema.
 
 ### Fuzzy search (default)
+
+Several words are one query, so `gqls cancel a subscription` needs no quotes, and the schema is recognised wherever it sits among the arguments. A leading kind word filters like `-k` — `gqls query user`, `gqls type User` — and gqls says on stderr when it read a word that way.
+
 Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up. Weak long-tail matches are cut relative to the best hit; `-v` reports the total match count when it exceeds the limit.
 
 ```sh
@@ -52,6 +55,26 @@ gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
 gqls 'cancel a subscription'     # a phrase — matched word by word
 ```
+
+### Name one thing and gqls explains it
+
+Searching narrows; naming finds. When a query names exactly one of the records it matched, that record is shown on its own and annotated — its description in full, its deprecation reason, applied directives, a union's members or an interface's implementors, an enum's values with what each means, and every path that references the type.
+
+```sh
+$ gqls Role
+gqls: 2 other matches for "Role" (--no-explain to list them)
+Role  [enum]
+  What a user is allowed to do.
+
+  referenced by  User.role, CreateUserInput.role
+  values
+    ADMIN   Full access, including billing and member management.
+    MEMBER  Ordinary access to the account's own content.
+    GUEST   Read-only.
+    OWNER   (deprecated: collapsed into ADMIN)
+```
+
+Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values` and `referenced_by`, so a consumer gets the same facts.
 
 ### Many queries at once
 Pipe queries on stdin, one per line, and a single run answers them all — the schema, the embedding model and the vectors load once instead of once per query. On a 10k-record schema, 20 meaning-based queries drop from 1.83s to 0.52s:
@@ -122,7 +145,7 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
       path
     }
     clientMutationId
-    # employee: Employee — add fields you need
+    # employee: Employee { … }
   }
 }
 
@@ -149,10 +172,11 @@ The rules are deliberately conservative, because a wrong guess costs more than a
 
 - **Arguments you must supply become variables** — nothing is inlined into the query body, and each placeholder names its type (`"<ID!>"`), so it can't be mistaken for a usable value the way `""` or `0` can.
 - **Anything the server can supply is left out and listed underneath** — a nullable argument, or one with a schema default (even a non-null one, like `first: Int! = 10`). The operation runs as-is, and the knobs you skipped are still visible with their defaults.
-- **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# add fields you need` marker per object-valued field.
+- **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# field: Type { … }` marker per object-valued field.
 - **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
 - **Input objects and enums are expanded underneath** — every input type the arguments refer to, followed transitively through input fields, so you can fill in `"<EmployeeInput!>"` without opening the schema. Expansion is flat and each type appears once, so a self-referential filter (`Filter { and: [Filter!] }`) terminates.
 - **Abstract types become inline fragments.** A union has no fields of its own, so it's written as `... on Member { … }` over each concrete type — the only form a server accepts. An interface selects its common fields once, then adds a fragment per implementor carrying only the fields that implementor *adds*, since those are otherwise unreachable. Big unions list the first few and name the rest.
+- **`--depth N` selects more levels**, expanding the object-valued fields that depth 1 leaves as markers.
 - **Deprecated fields are flagged, not dropped.** They stay in the selection marked `# deprecated: reason`, and a stderr line names them — silently omitting a field the schema still serves is its own surprise.
 - **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, a `# paths` block lists them all with the drafted one first. When none does, it's an error with a pointer to `--returns`, not a guess.
 - **Each section appears only when it has something in it** — no empty `# variables` block for an operation that takes none, and no `# paths` block when there's only the one the draft already shows.
@@ -178,11 +202,18 @@ Text results carry the path, the type, the kind, and the schema description — 
 
 ```sh
 $ gqls user examples/schema.graphql
-Query.user(id: ID!)  -> User  [query] — Look up a user by id.
-User                  [object] — An account.
+Query.user(…)            -> User      [query]   — Look up a user by id.
+User                                  [object]  — An account.
+ArchiveUserPayload.user  -> User      [field]
+Query.users(…)           -> [User!]!  [query]   — Page through every user in…
+UserError                             [object]  — Something the caller can fix,…
 ```
 
-`--depth N` selects more levels, expanding the object-valued fields that depth 1 leaves as markers. Long descriptions are elided to one line; `-D`/`--no-description` drops them entirely. Every mode also supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line), which always carry the full description text. Status chatter goes to stderr, so JSON pipes clean:
+An argument list collapses to `(…)` beside other results and spells out in full
+when a result stands alone — the list is for telling rows apart, and one long
+signature would set the column width for every one of them.
+
+In a list a description is elided to one line — enough to tell one row from the next, and dropped when the columns leave no room for even that. A result shown on its own gets the whole thing, wrapped to your terminal. `-D`/`--no-description` drops descriptions and collapses an enum's values to their names. Every mode also supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line), which always carry the full description text. Status chatter goes to stderr, so JSON pipes clean:
 
 ```sh
 gqls repository schema.json -J | jq -r '.path'
@@ -234,6 +265,8 @@ src/
   load/           SDL parse · introspection (URL/JSON) · schema discovery
   search/         the fuzzy scorer (a DP subsequence aligner + typo tier)
   semantic/       embedding search + on-disk vector cache (feature = "semantic")
+  example.rs      operation drafting (-e)
+  style.rs        ANSI weights + the column layout for text output
   resolve.rs      field -> resolver jump (shells out to rq)
   cli.rs          clap + unified text/json/ndjson output
 ```

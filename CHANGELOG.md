@@ -9,41 +9,14 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
-- Colour in text output: the matched path bold, everything else — arguments,
-  the arrow, the return type, the kind tag, the description — dimmed. Two
-  weights and no hue, so nothing can clash with a terminal theme; bold and dim
-  are relative to your own foreground, where any colour is a guess about your
-  palette. Suppressed when stdout isn't a TTY or `NO_COLOR` is set, and it only
+- Colour in text output, in three weights and no hue: **bold is the identity**
+  (the matched path), **plain is the answer** (a field's return type, and the
+  description of a record you named), **dim is the apparatus** (arguments, the
+  arrow, the kind tag, a description you're scanning past). Red marks a
+  deprecation and nothing else. All three weights are relative to your own
+  foreground, so none of them can clash with a terminal theme the way a colour
+  would. Suppressed when stdout isn't a TTY or `NO_COLOR` is set, and it only
   ever adds escapes, so the visible characters are identical either way.
-
-### Changed
-- A blank line separates an explanation's description from its annotations.
-  Prose and a fact table were stacked at the same indent in the same weight, so
-  a wrapped description's last line was indistinguishable from the first
-  annotation. Only ever between two non-empty halves, and `-e` already
-  separated its own sections this way.
-- Three weights instead of two: **bold is the identity, plain is the answer,
-  dim is the apparatus.** A field's return type and an explained record's
-  description move to plain — a description you're scanning past in a list is
-  apparatus, the same description once you've named the record is the answer,
-  and dimming it said the opposite. Still no hue beyond red for deprecation.
-- A description in a list is one line, not three. It's a disambiguator there —
-  enough to tell one row from the next — now that naming a record shows all of
-  it. Three lines of ribbon in a 39-column gutter is the shape the explained
-  path exists to avoid.
-- An enum's values join the annotation table when they fit on one line, and
-  become a block only when a value has something to say. `-D` and an
-  undocumented enum both take the table form, where they previously printed an
-  unpadded line that missed the label column and ran off the edge.
-
-### Fixed
-- Undescribed enum values no longer print trailing whitespace — and with colour
-  on, the spaces were landing inside the escape wrapper.
-- A deprecated enum value's marker is red, like every other deprecation. In a
-  long enum the one value you must not use had been the least visible thing on
-  screen.
-
-### Added
 - Several positional words are one query, so `gqls cancel a subscription` needs
   no quotes, and `gqls query User` no longer fails by reading `User` as the
   schema. A leading kind filters — `gqls query user`, `gqls type User` — the
@@ -57,8 +30,6 @@ early entries are terser than what follows.
 - `--json`/`--ndjson` carry the same facts as the text explanation: `values` and
   `referenced_by` join the record when it's the one a query named. The others
   (`deprecated`, `directives`, `possible_types`) were always serialized.
-
-### Added
 - A query that names exactly one of its matches now gets that record on its own,
   annotated: the deprecation *reason* rather than a bare marker, applied
   directives with their arguments, a union's members or an interface's
@@ -72,21 +43,25 @@ early entries are terser than what follows.
 - `match: "exact" | "corrected"` on the named record in `--json`/`--ndjson` —
   the discriminator for "this is an explanation, not a list", absent otherwise.
   Additive: the array shape and every existing field are unchanged.
-
-### Added
 - `-e` leads with what the field does, as a comment above the operation. It has
   already committed to one field — it refuses to draft unless the query named
   it — so the whole description goes in, wrapped and uncapped.
 
-### Fixed
-- A schema whose `schema { … }` block carries a description now loads. The
-  parser rejects the description and the whole file with it, pointing at
-  `schema` and never mentioning the string above — so a schema that documents
-  its own entry point failed entirely. Dropped before parsing, like the
-  federation `extend schema` header already is; gqls builds no record for the
-  schema definition, so nothing it would have shown is lost.
-
 ### Changed
+- A blank line separates an explanation's description from its annotations.
+  Prose and a fact table were stacked at the same indent in the same weight, so
+  a wrapped description's last line was indistinguishable from the first
+  annotation. Only ever between two non-empty halves, and `-e` already
+  separated its own sections this way.
+- A description in a list is still one line, but the line is now what fits:
+  elided on a word boundary to the width actually left after the columns, and
+  dropped entirely when what's left is too narrow to tell one row from the next.
+  It was elided at a fixed 72 columns regardless of the terminal, which
+  overflowed. Naming a record shows the whole thing.
+- An enum's values join the annotation table when they fit on one line, and
+  become a block only when a value has something to say. `-D` and an
+  undocumented enum both take the table form, where they previously printed an
+  unpadded line that missed the label column and ran off the edge.
 - A single result shows its whole description, as its own block indented under
   the row rather than hanging off the description column. The three-line cap
   exists so one documented row can't bury a list, and a lone result has no list
@@ -114,6 +89,17 @@ early entries are terser than what follows.
   carry the full argument list.
 
 ### Fixed
+- Undescribed enum values no longer print trailing whitespace — and with colour
+  on, the spaces were landing inside the escape wrapper.
+- A deprecated enum value's marker is red, like every other deprecation. In a
+  long enum the one value you must not use had been the least visible thing on
+  screen.
+- A schema whose `schema { … }` block carries a description now loads. The
+  parser rejects the description and the whole file with it, pointing at
+  `schema` and never mentioning the string above — so a schema that documents
+  its own entry point failed entirely. Dropped before parsing, like the
+  federation `extend schema` header already is; gqls builds no record for the
+  schema definition, so nothing it would have shown is lost.
 - Result columns line up. A record with no return type still paid for the
   separator `-> Type` would have used, so `[object]` sat one column off from
   every `[query]` and there was no vertical line for the eye to follow. Return

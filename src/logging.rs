@@ -1,7 +1,8 @@
 //! Stderr verbosity, set once from `-q`/`-v` and shared across the CLI.
 //!
 //! Three levels: **quiet** (results + hard errors only), **normal** (status
-//! chatter — which schema, warming, no-matches), **verbose** (adds diagnostics
+//! chatter — a corrected kind or qualifier, warming, no-matches), **verbose**
+//! (adds diagnostics
 //! — cache hits, rq candidates, why the embedding model loaded or fell back).
 //! Status text goes through [`status!`]/[`detail!`]; under the semantic feature
 //! we also route the borrowed `log::` macros here, so `-v` surfaces the

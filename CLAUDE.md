@@ -13,9 +13,10 @@ resolves to one thing, say everything known about it.
 That's the frame the rest of the tool hangs off. Ranking, the fuzzy/semantic
 combine and the wildcards all serve the first half; the annotations on a named
 record — its description in full, its deprecation reason, its directives, an
-enum's values, what references a type — serve the second. `-e` sits outside
-both on purpose: drafting an operation answers *how do I call this*, which is a
-different question rather than a fuller answer to *what is this*.
+abstract type's members, an enum's values, what references a type — serve the
+second. `-e` sits outside both on purpose: drafting an operation answers *how do
+I call this*, which is a different question rather than a fuller answer to *what
+is this*.
 
 The litmus test for anything new:
 

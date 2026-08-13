@@ -1,6 +1,7 @@
-//! Schema ingestion: a source string is either an http(s) URL (introspect)
-//! or a path to an SDL file. Both produce the same [`SchemaRecord`] list, so
-//! nothing downstream cares which it was. When no source is given,
+//! Schema ingestion: a source string is an http(s) URL (introspected live), a
+//! path to an SDL file, or a path to an introspection JSON dump. All three
+//! produce the same [`SchemaRecord`] list, so nothing downstream cares which it
+//! was. When no source is given,
 //! [`discover`] finds a schema in the current directory tree.
 
 use std::path::{Path, PathBuf};
@@ -14,8 +15,8 @@ pub mod introspect;
 pub mod record_cache;
 pub mod sdl;
 
-/// Options that shape loading. Only URL introspection and SDL files consult
-/// them; introspection JSON files ignore them.
+/// Options that shape loading. `headers` applies to URL introspection alone;
+/// `refresh` applies to every source, since all of them are cached.
 #[derive(Default)]
 pub struct LoadOptions {
     /// Extra request headers for URL introspection, as `(name, value)` — e.g. an
@@ -83,9 +84,11 @@ impl Reach {
 }
 
 /// Find a schema when none was passed: walk the current directory tree for
-/// schema *documents* (not operation docs), preferring `.graphqls`, then a
-/// `schema.*` file, then any `.graphql`/`.gql` whose contents look like SDL.
-/// Nearest (shallowest) wins; other candidates elsewhere are reported.
+/// schema *documents* (not operation docs). A `supergraph*` file wins outright
+/// — it's the composed graph of a federated monorepo. Otherwise by tier:
+/// `.graphqls`, then a `schema.*` file, then an introspection `.json`, then any
+/// `.graphql`/`.gql` whose contents look like SDL. Ties break on depth, so the
+/// nearest wins; other candidates elsewhere are reported.
 ///
 /// The walk is the most expensive thing a warm query does, so its answer is
 /// remembered per directory (see [`discover_cache`]); `refresh` re-walks.

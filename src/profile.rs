@@ -163,12 +163,9 @@ pub fn report(total: Duration) -> Vec<String> {
             width = width
         ));
     }
-    out.push(format!(
-        "  {:<width$}  {:>8}",
-        "─".repeat(width.min(20)),
-        "",
-        width = width
-    ));
+    // No trailing empty cell: padding one to eight columns left ten spaces at
+    // the end of the line.
+    out.push(format!("  {}", "─".repeat(width.min(20))));
     out.push(format!(
         "  {:<width$}  {:>8}",
         "total",

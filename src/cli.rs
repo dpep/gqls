@@ -14,54 +14,95 @@ use crate::style;
 /// hidden from --help on builds without the feature, where they'd only error.
 const HIDE_SEMANTIC: bool = !cfg!(feature = "_semantic");
 
-#[cfg(feature = "_semantic")]
-const EXAMPLES: &str = "\
-EXAMPLES:
+/// The help text, assembled per feature configuration from shared pieces.
+///
+/// Hand-maintained copies drift — a fuzzy-only build was advertising semantic
+/// search in `long_about` and disclaiming it in `EXAMPLES`, forty lines apart —
+/// and nothing in the test suite reads help text, so drift is silent. Written
+/// as macros because `concat!` takes literals, and a macro expanding to one
+/// counts.
+macro_rules! about_head {
+    () => {
+        "Find the types, fields, args, and directives in a GraphQL schema from the terminal. \
+         The source is an SDL file, a local introspection JSON dump, or a live http(s) \
+         endpoint; with none given, gqls discovers a schema in the current tree. "
+    };
+}
+
+macro_rules! about_tail {
+    () => {
+        "Name one record and gqls explains it rather than listing: its description in full, \
+         deprecation, directives, an abstract type's members, an enum's values, and what \
+         references it. --example drafts an operation to paste, --resolve jumps to the \
+         graphql-ruby resolver via rq. All modes support -j/--json and -J/--ndjson."
+    };
+}
+
+macro_rules! example_body {
+    () => {
+        "EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
+  gqls Role                           name one record, get it explained in full
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
+  gqls query user                     ...or lead with the kind word
   gqls User.email                     qualified Type.field query
   gqls User.                          list a type's fields (or 'User.*')
   gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
   gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
-  gqls 'cancel a subscription'        rank by meaning (fuzzy + semantic, auto)
-  gqls Mutation.createUser -e         draft an operation to paste
+"
+    };
+}
+
+macro_rules! example_tail {
+    () => {
+        "  gqls Mutation.createUser -e         draft an operation to paste
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
-";
+"
+    };
+}
+
+#[cfg(feature = "_semantic")]
+const ABOUT: &str = "Search a GraphQL schema — fuzzy, semantic, or straight to the resolver.";
+#[cfg(not(feature = "_semantic"))]
+const ABOUT: &str = "Search a GraphQL schema — fuzzy, or straight to the resolver.";
+
+#[cfg(feature = "_semantic")]
+const LONG_ABOUT: &str = concat!(
+    about_head!(),
+    "Fuzzy and semantic results are ranked together by default (--semantic or --fuzzy forces \
+     one). ",
+    about_tail!()
+);
+#[cfg(not(feature = "_semantic"))]
+const LONG_ABOUT: &str = concat!(about_head!(), about_tail!());
+
+#[cfg(feature = "_semantic")]
+const EXAMPLES: &str = concat!(
+    example_body!(),
+    "  gqls cancel a subscription          rank by meaning — no quotes needed\n",
+    example_tail!()
+);
 
 #[cfg(not(feature = "_semantic"))]
-const EXAMPLES: &str = "\
-EXAMPLES:
-  gqls user schema.graphql            fuzzy search an SDL file
-  gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
-  gqls User.email                     qualified Type.field query
-  gqls User.                          list a type's fields (or 'User.*')
-  gqls 'User.{first,last}Name'        also ? for one char, {a,b} to alternate
-  gqls --returns Company -k query     find fields by return type, not name
-  gqls repo schema.json               search a local introspection dump
-  gqls repo https://api/graphql       introspect a live endpoint
-  gqls Mutation.createUser -e         draft an operation to paste
-  gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
-  gqls user schema.graphql -j         JSON output (-J for ndjson)
-
-Semantic search (--semantic, rank by meaning) is not compiled into this build. Enable it:
+const EXAMPLES: &str = concat!(
+    example_body!(),
+    "  gqls cancel a subscription          several words are one query\n",
+    example_tail!(),
+    "\nSemantic search (--semantic, rank by meaning) is not compiled into this build. Enable it:
   cargo install gqls-cli --features semantic
   brew install dpep/tools/gqls
-";
+"
+);
 
 #[derive(Parser)]
 #[command(
     name = "gqls",
     version,
-    about = "Search a GraphQL schema — fuzzy, semantic, or straight to the resolver.",
-    long_about = "Find the types, fields, args, and directives in a GraphQL schema from the \
-                  terminal. The source is an SDL file, a local introspection JSON dump, or a live \
-                  http(s) endpoint; with none given, gqls discovers a schema in the current tree. \
-                  Fuzzy and semantic results are ranked together by default (--semantic or \
-                  --fuzzy forces one); --resolve jumps to the graphql-ruby resolver via rq. All modes \
-                  support -j/--json and -J/--ndjson.",
+    about = ABOUT,
+    long_about = LONG_ABOUT,
     after_help = EXAMPLES
 )]
 struct Cli {
@@ -72,7 +113,7 @@ struct Cli {
     /// dot lists a type's fields (`User.`); the general wildcards (`*` any
     /// run, `?` one char, `{a,b}` alternatives) enumerate too, but quote them
     /// so the shell doesn't expand them first.
-    /// Omitted with a pipe on stdin, where each line is a query instead.
+    /// Omit it entirely when piping queries on stdin, one per line.
     ///
     /// Several words are one query, so `gqls cancel a subscription` needs no
     /// quotes. A leading kind — `gqls query user`, `gqls type User` — filters
@@ -81,7 +122,7 @@ struct Cli {
     /// The source is a `.graphql`/`.graphqls` SDL file, a `.json` introspection
     /// dump, or an http(s) URL (introspected live). Recognised wherever it
     /// appears; with none given, gqls searches the current directory tree.
-    #[arg(value_name = "QUERY... [SOURCE]", num_args = 0..)]
+    #[arg(value_name = "QUERY", num_args = 0..)]
     args: Vec<String>,
 
     /// Restrict to a kind (object, field, query, mutation, enum, scalar, ...).
@@ -112,8 +153,6 @@ struct Cli {
     no_description: bool,
 
     /// Always list matches, even when the query names exactly one of them.
-    /// A named record is otherwise shown on its own and annotated — right for
-    /// reading, wrong when you wanted to see everything the letters matched.
     #[arg(long)]
     no_explain: bool,
 
@@ -123,7 +162,7 @@ struct Cli {
     semantic: bool,
 
     /// Force fuzzy-only search — skip the semantic combine.
-    #[arg(long, conflicts_with = "semantic")]
+    #[arg(long, conflicts_with = "semantic", hide = HIDE_SEMANTIC)]
     fuzzy: bool,
 
     /// Embedding model for --semantic: a local dir / `.onnx` path, or a
@@ -131,14 +170,15 @@ struct Cli {
     #[arg(long, hide = HIDE_SEMANTIC)]
     model: Option<String>,
 
-    /// Force a re-embed for --semantic, overwriting the cache. Schema edits
-    /// already re-embed on their own; use this for changes the cache can't see
-    /// (e.g. a new model).
-    #[arg(long, hide = HIDE_SEMANTIC)]
+    /// Bypass every cache: re-walk for the schema, re-fetch a URL, re-embed.
+    /// Schema edits already re-embed on their own; use this for changes a cache
+    /// can't see — a new model, or a schema that moved.
+    #[arg(long)]
     refresh: bool,
 
-    /// Delete all cached embedding vector files, then exit.
-    #[arg(long, hide = HIDE_SEMANTIC)]
+    /// Delete every cached file — introspection responses, parsed records,
+    /// discovered schema paths, and embedding vectors — then exit.
+    #[arg(long)]
     clear_cache: bool,
 
     /// Pre-embed the schema's vectors (warm the cache), then exit.
@@ -149,18 +189,19 @@ struct Cli {
     #[arg(long, value_name = "SHELL")]
     completions: Option<Shell>,
 
-    /// Draft a ready-to-paste example operation for the top match — arguments
-    /// as variables, one level of leaf fields selected.
+    /// Draft a ready-to-paste example operation for the field the query names
+    /// — arguments as variables, one level of leaf fields selected. A query
+    /// that only comes close gets the candidate list instead.
     #[arg(short = 'e', long, conflicts_with = "resolve")]
     example: bool,
 
-    /// How many levels of fields --example selects. Deeper levels expand the
-    /// object-valued fields that level 1 leaves as markers.
+    /// How many levels of fields --example selects (no effect without it).
+    /// Deeper levels expand the object-valued fields level 1 leaves as markers.
     #[arg(long, value_name = "N", default_value_t = 1)]
     depth: usize,
 
-    /// Jump the top match to its graphql-ruby resolver/method in code, via
-    /// `rq` (must be installed).
+    /// Jump to the graphql-ruby resolver/method for the field the query names,
+    /// via `rq` (must be installed). A looser query gets the candidate list.
     #[arg(short = 'R', long)]
     resolve: bool,
 
@@ -173,12 +214,13 @@ struct Cli {
     #[arg(short = 'H', long = "header", value_name = "NAME: VALUE")]
     header: Vec<String>,
 
-    /// Print a phase-by-phase timing breakdown to stderr (or into --json).
+    /// Print a phase-by-phase timing breakdown to stderr — as JSON when
+    /// -j/--json or -J is set, so stdout stays exactly the results.
     #[arg(long)]
     profile: bool,
 
-    /// Verbose stderr diagnostics: cache hits, rq candidates, and why the
-    /// embedding model loaded or fell back.
+    /// Verbose stderr diagnostics: cache hits, the rq candidates -R tried, and
+    /// (on a semantic build) why the embedding model loaded or fell back.
     #[arg(short, long, conflicts_with = "quiet")]
     verbose: bool,
 
@@ -450,14 +492,18 @@ pub fn run() -> Result<()> {
         #[cfg(not(feature = "_semantic"))]
         {
             let _ = (&cli.model, cli.refresh);
-            anyhow::bail!("--warm needs a semantic build");
+            anyhow::bail!(
+                "--warm needs a semantic build — install one with \
+                 `cargo install gqls-cli --features semantic` or \
+                 `brew install dpep/tools/gqls`"
+            );
         }
     }
 
-    // clap guarantees a query unless --clear-cache/--completions/--warm/--returns.
-    // With no query and a pipe on stdin, every line is one — the schema, the
-    // model and the vectors are loaded once and answer all of them, which is
-    // the whole point of the batch form.
+    // No query and no pipe is an error, bailed on below — the positionals are
+    // `num_args = 0..`, so nothing upstream requires one. With a pipe, every
+    // line is a query: the schema, the model and the vectors load once and
+    // answer all of them, which is the point of the batch form.
     let batch = positional_query.is_none() && cli.returns.is_none() && piped;
     // A kind the query led with, unless `-k` already said one.
     let (kind, positional_query) = match (explicit_kind, positional_query) {
@@ -852,15 +898,6 @@ fn explained_match(query: &str, matches: &[Match]) -> Option<(usize, search::Nam
 /// forty places has told you what you needed by the fifth.
 const MAX_REFERENCES: usize = 6;
 
-/// The facts about a named record that a search row has no room for.
-///
-/// Only what the schema already knows and the row can't show: the deprecation
-/// *reason* rather than a bare marker, the directives applied to it, what an
-/// abstract type can actually be, an enum's values, and what refers to a type —
-/// which is the question "how do I get one of these" in schema form.
-///
-/// Each entry is a label and its value. Empty when there's nothing to add,
-/// which is the common case for an undocumented scalar.
 /// One value of an enum, as an explanation reports it.
 #[derive(Serialize)]
 struct EnumValue<'a> {
@@ -1525,10 +1562,6 @@ fn run_resolve(
     Ok(())
 }
 
-/// Whether a positional argument is a schema source rather than a query.
-/// Syntactic only (no filesystem check): schema sources are URLs or files with
-/// a schema extension, none of which is a legal GraphQL name, so this can't
-/// swallow a real query.
 /// Split the positionals into a query and a schema source.
 ///
 /// The source is recognised by its shape — an extension or a URL — wherever it
@@ -1578,6 +1611,10 @@ fn leading_kind(query: &str) -> Option<(Kind, &str)> {
     first.parse::<Kind>().ok().map(|k| (k, rest))
 }
 
+/// Whether a positional argument is a schema source rather than a query.
+/// Syntactic only (no filesystem check): schema sources are URLs or files with
+/// a schema extension, none of which is a legal GraphQL name, so this can't
+/// swallow a real query.
 fn looks_like_source(arg: &str) -> bool {
     arg.starts_with("http://")
         || arg.starts_with("https://")

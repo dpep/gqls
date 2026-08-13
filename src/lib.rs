@@ -1,8 +1,8 @@
 //! gqls — GraphQL schema search.
 //!
-//! Layered like `rq`: a source loader turns a schema (SDL file, or — planned
-//! — an introspection URL) into flat [`model::SchemaRecord`]s, and a search
-//! layer ranks them. Two capabilities are *borrowed* rather than rebuilt:
+//! Layered like `rq`: a source loader turns a schema — an SDL file, an
+//! introspection JSON dump, or a live endpoint — into flat
+//! [`model::SchemaRecord`]s, and a search layer ranks them. Two capabilities are *borrowed* rather than rebuilt:
 //!
 //! - fuzzy ranking — adapted from `rq`'s `search/score.rs`
 //!   (`~/code/lib/rust/rq`); see [`search::score`].
