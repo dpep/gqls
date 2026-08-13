@@ -1083,11 +1083,15 @@ fn collapsed_values(values: &[EnumValue]) -> String {
 /// avoid.
 const DESCRIPTION_LINES: usize = 1;
 
-/// Never squeeze a description below this. On a narrow terminal the columns in
-/// front of it can eat the whole line, and wrapping every third word is worse
-/// than running past the edge — so past this point it overflows and lets the
-/// terminal do what it likes.
-const MIN_DESCRIPTION_WIDTH: usize = 24;
+/// Narrowest a description is worth printing. Below this it says nothing a
+/// reader can use — `— Posts the…` is ten characters that disambiguate no rows
+/// from each other — so a list drops it and lets the columns speak, and an
+/// explanation lets its own block run past the edge instead of wrapping every
+/// third word.
+///
+/// Twenty rather than something rounder: it's about three words, which is the
+/// point where an elided description starts telling one row from the next.
+const MIN_DESCRIPTION_WIDTH: usize = 20;
 
 /// Widest the path column may grow before it stops aligning. One pathological
 /// 200-character path shouldn't indent every other row past the fold, so it's
@@ -1225,9 +1229,15 @@ fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRec
         line.pad_to(if kind_w > 0 { kind_w } else { path_w });
         line.gap();
         let indent = line.width();
-        let budget = style::width()
-            .saturating_sub(indent)
-            .max(MIN_DESCRIPTION_WIDTH);
+        // What's actually left, not a floor. A row whose columns have eaten the
+        // terminal has no room for a description, and forcing one produces
+        // `— Posts the…`: ten characters that disambiguate nothing, on a line
+        // that overflows anyway. Drop it and let the columns speak.
+        let budget = style::width().saturating_sub(indent);
+        if budget < MIN_DESCRIPTION_WIDTH {
+            println!("{}", line.finish());
+            continue;
+        }
         // "— " belongs to the first line only; continuations align past it, so
         // the prose edges line up rather than the dash.
         let mut lines = wrap(&row.desc, budget.saturating_sub(2), DESCRIPTION_LINES).into_iter();
@@ -1259,11 +1269,19 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         };
         if !current.is_empty() && current.chars().count() + extra > width {
             if lines.len() + 1 == max_lines {
-                // No room for another line: elide, trimming enough to fit the
-                // marker rather than pushing one column past the budget.
+                // No room for another line: elide. Making space for the marker
+                // drops whole words, never part of one — `rather…` reads as
+                // elided text, `rather tha…` reads as a bug.
                 let mut kept = current;
                 while kept.chars().count() + 1 > width {
-                    kept.pop();
+                    match kept.rfind(' ') {
+                        Some(i) => kept.truncate(i),
+                        // A single word wider than the budget: there's no
+                        // boundary to retreat to, so cut it.
+                        None => {
+                            kept.pop();
+                        }
+                    }
                 }
                 lines.push(format!("{}…", kept.trim_end()));
                 return lines;

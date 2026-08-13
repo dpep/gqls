@@ -236,14 +236,34 @@ fn a_description_is_capped_rather_than_running_on() {
     // tell this row from that one, and no more. `Query.` is a genuine list: a
     // trailing dot enumerates and names nothing, where a query that *named* a
     // record would explain it instead, uncapped.
-    let out = run(&["Query."]);
+    // `Post.` rather than `Query.`: the latter's paths are wide enough that no
+    // description fits at all, so its only `…` is a collapsed signature — the
+    // assertion would pass without an elision ever happening.
+    let out = run(&["Post."]);
     assert!(rows(&out).len() > 3, "expected a list:\n{out}");
     assert_eq!(
         out.lines().count(),
         rows(&out).len(),
         "no row in a list should wrap:\n{out}"
     );
-    assert!(out.contains('…'), "expected an elision:\n{out}");
+    let elided: Vec<&str> = rows(&out)
+        .into_iter()
+        .filter(|l| l.contains("— ") && l.ends_with('…'))
+        .collect();
+    assert!(!elided.is_empty(), "expected an elided description:\n{out}");
+    // Elision drops whole words: `rather…`, never `rather tha…`.
+    for line in elided {
+        let kept = line.trim_end_matches('…');
+        assert!(
+            kept.ends_with(|c: char| c.is_alphanumeric() || c.is_ascii_punctuation()),
+            "{line}"
+        );
+        let last = kept.rsplit(' ').next().unwrap_or_default();
+        assert!(
+            !last.is_empty(),
+            "elision should leave a whole word: {line}"
+        );
+    }
 }
 
 #[test]
