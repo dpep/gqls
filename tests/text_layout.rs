@@ -28,8 +28,12 @@ fn run(args: &[&str]) -> String {
 }
 
 /// The column a substring starts in, or `None` if the line doesn't contain it.
+///
+/// Columns, not bytes. `str::find` returns a byte offset, and the collapsed
+/// argument marker `(…)` is three bytes wide but one column wide — measuring in
+/// bytes reports rows that *are* aligned as misaligned.
 fn column_of(line: &str, needle: &str) -> Option<usize> {
-    line.find(needle)
+    line.find(needle).map(|b| line[..b].chars().count())
 }
 
 /// Column of the `[kind]` tag's opening bracket.
@@ -53,7 +57,7 @@ fn kind_column(line: &str) -> Option<usize> {
                 }
             }
         })
-        .map(|(i, _)| i)
+        .map(|(b, _)| line[..b].chars().count())
 }
 
 #[test]
@@ -94,13 +98,41 @@ fn a_column_nothing_fills_is_dropped_entirely() {
     let longest = out
         .lines()
         .filter_map(|l| l.split_whitespace().next())
-        .map(str::len)
+        .map(|p| p.chars().count())
         .max()
         .unwrap();
     assert_eq!(
         kinds[0],
         longest + 2,
         "kind should sit two spaces past the widest name in:\n{out}"
+    );
+}
+
+#[test]
+fn a_multibyte_marker_does_not_skew_the_columns() {
+    // `(…)` is three bytes and one column. Padding computed in bytes would
+    // pull every row that takes arguments two columns left of the rest — and
+    // it's an easy mistake, because the whole path column is otherwise ASCII.
+    let out = run(&["User."]);
+    assert!(
+        out.contains("(…)"),
+        "expected a collapsed signature in:\n{out}"
+    );
+    let arrows: Vec<usize> = out.lines().filter_map(|l| column_of(l, "-> ")).collect();
+    assert!(
+        arrows.windows(2).all(|w| w[0] == w[1]),
+        "rows with and without arguments should align, got {arrows:?} in:\n{out}"
+    );
+}
+
+#[test]
+fn a_signature_is_collapsed_not_spelled_out() {
+    // The list answers "which field"; `-e` answers "how do I call it". One long
+    // signature would otherwise set the path column width for every row.
+    let out = run(&["*", "-l", "20"]);
+    assert!(
+        !out.contains("input: CreateUserInput!"),
+        "argument signatures should not reach the list:\n{out}"
     );
 }
 

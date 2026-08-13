@@ -777,8 +777,15 @@ struct Row {
 impl Row {
     /// Visible width of the path cell — parent, leaf and args are one column,
     /// styled in three pieces.
+    ///
+    /// Counted in chars, not bytes: GraphQL names are ASCII by spec, but the
+    /// collapsed argument marker is an ellipsis, which is three bytes wide and
+    /// one column wide.
     fn path_width(&self) -> usize {
-        self.parent.len() + self.leaf.len() + self.args.len()
+        [&self.parent, &self.leaf, &self.args]
+            .iter()
+            .map(|s| s.chars().count())
+            .sum()
     }
 }
 
@@ -806,10 +813,19 @@ fn print_text(matches: &[Match], descriptions: bool) {
             Row {
                 parent,
                 leaf,
+                // Collapsed, not spelled out. A signature is the answer to
+                // "how do I call this", which is a question you ask *after*
+                // finding the field — and one `-e` answers properly, with the
+                // required arguments already bound to variables. Meanwhile the
+                // longest signature sets the width of the path column for every
+                // row: on the example schema, spelling them out costs 44
+                // columns where the marker costs 22, and dropping arguments
+                // entirely would save only one more while losing the fact that
+                // the field takes any.
                 args: if r.args.is_empty() {
                     String::new()
                 } else {
-                    format!("({})", r.args.join(", "))
+                    "(…)".to_string()
                 },
                 ret: r
                     .type_ref

@@ -16,6 +16,14 @@ early entries are terser than what follows.
   set — and it only ever adds escapes, so the visible characters are identical
   either way.
 
+### Changed
+- Argument signatures collapse to `(…)` in text results. The list answers
+  "which field is it"; the signature is the next question, and `-e` answers it
+  properly with the required arguments already bound to variables. Spelling
+  them out made the longest signature set the path column width for every row —
+  44 columns against 22 on the example schema. `--json`/`--ndjson` are
+  unchanged and still carry the full argument list.
+
 ### Fixed
 - Result columns line up. A record with no return type still paid for the
   separator `-> Type` would have used, so `[object]` sat one column off from
