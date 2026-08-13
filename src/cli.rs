@@ -529,8 +529,9 @@ pub fn run() -> Result<()> {
         _ if cli.returns.is_some() => vec!["*".into()],
         _ if batch => read_queries()?,
         _ => anyhow::bail!(
-            "a QUERY is required — or pipe one per line \
-             (`cat queries.txt | gqls schema.graphql -J`). See --help."
+            "no query — pass one as an argument (`gqls user schema.graphql`) \
+             or pipe one per line (`cat queries.txt | gqls schema.graphql -J`). \
+             See --help."
         ),
     };
     if batch && (cli.resolve || cli.example) {
@@ -788,7 +789,15 @@ fn read_queries() -> Result<Vec<String>> {
         }
     }
     if out.is_empty() {
-        anyhow::bail!("no queries on stdin (one per line)");
+        // Reached whenever stdin isn't a terminal and nothing came down it —
+        // CI, a script, an agent session — which is exactly where "pipe one per
+        // line" is unhelpful on its own, because the reader may simply not have
+        // known a positional query was an option. Say both ways.
+        anyhow::bail!(
+            "no query — pass one as an argument (`gqls user schema.graphql`) \
+             or pipe one per line (`cat queries.txt | gqls schema.graphql -J`). \
+             See --help."
+        );
     }
     Ok(out)
 }

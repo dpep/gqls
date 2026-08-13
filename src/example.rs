@@ -331,9 +331,7 @@ impl<'a> Schema<'a> {
                 continue;
             }
             let note = match &f.deprecated {
-                // Flagged where it's selected rather than dropped: silently
-                // omitting a field the schema still serves would be its own
-                // surprise. The caller also gets a warning.
+                // Flagged, not dropped (see the module doc). The caller warns too.
                 Some(reason) if reason.is_empty() => {
                     deprecated.push(f.path.clone());
                     "  # deprecated".to_string()
@@ -354,12 +352,9 @@ impl<'a> Schema<'a> {
                 lines.extend(inner.into_iter().map(|l| format!("  {l}")));
                 lines.push("}".to_string());
             } else {
-                // `{ … }` rather than a sentence: it's the shape of what's
-                // missing, it doesn't repeat nineteen characters of English on
-                // every object field, and the ellipsis can't be misread as the
-                // `...` that starts a fragment spread. It stays commented —
-                // `author { ... }` and `author { … }` are both parse errors, and
-                // every draft this tool prints has to be pasteable as-is.
+                // `{ … }`, not `...`: inside a selection set that would read as
+                // a fragment spread. Commented because there's no valid empty
+                // selection set (see the module doc).
                 deferred.push(format!("# {}: {} {{ … }}", f.name, base));
             }
         }

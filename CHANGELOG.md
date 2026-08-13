@@ -100,6 +100,10 @@ early entries are terser than what follows.
   carry the full argument list.
 
 ### Fixed
+- Running gqls with no query and nothing piped now says both ways to give it
+  one. The piped branch — what CI, a script or an agent hits — only mentioned
+  the pipe, so a reader who didn't know a positional query existed had no way
+  to learn it from the error.
 - Undescribed enum values no longer print trailing whitespace — and with colour
   on, the spaces were landing inside the escape wrapper.
 - A deprecated enum value's marker is red, like every other deprecation. In a

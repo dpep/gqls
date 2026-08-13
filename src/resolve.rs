@@ -58,21 +58,14 @@ pub fn resolve(
     schema_path: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<RqHit>> {
-    // Collect every candidate's hits first, then rank as a whole — proximity
-    // can only reorder across candidates once we have them all.
+    // Every candidate's hits first, then rank as a whole: proximity can only
+    // reorder across candidates once they're all in. The same location often
+    // turns up under several, so keep the best account of it rather than the
+    // first — a fuzzy `Resolvers::User` can stumble onto the definition that
+    // `Query#user` then names exactly, and taking the weaker query's word for
+    // it because it got there first buries the right answer.
     //
-    // The same location often turns up under several candidates. Keep the best
-    // account of it rather than the first: a fuzzy `Resolvers::User` may stumble
-    // onto the very definition that `Query#user` then names exactly, and
-    // recording it as a guess because the weaker query got there first would
-    // bury the right answer.
-    // The candidates are independent probes of different naming conventions —
-    // nothing about `Resolvers::Employee` depends on `Query#employee` — so they
-    // all go to rq at once, on one stdin. That pays rq's setup (store, repo
-    // resolution, staleness) once for the lookup rather than once per
-    // convention. Results come back tagged with the query that found them, and
-    // are merged below in the original candidate order, which is the order the
-    // ranking is defined against.
+    // See `run_rq` for why they go in one call.
     let cands = candidates(rec);
     let queries: Vec<&str> = cands.iter().map(|c| c.query.as_str()).collect();
     let found = run_rq(&queries, code_dir)?;

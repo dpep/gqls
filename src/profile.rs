@@ -9,12 +9,9 @@
 //! (`semantic: model load`) rather than a nesting scheme, because the report is
 //! read top to bottom and the total is wall time, not a sum.
 //!
-//! A span does track how deeply it nests, for one reason: the report ends with
-//! the time *no* phase claimed. Un-instrumented work is exactly the work a
-//! profile is supposed to find, and a report that silently omits it points the
-//! reader at the phases that are fast rather than at the seconds that aren't.
-//! Only outermost spans count toward that arithmetic, so a nested phase can't
-//! be subtracted twice.
+//! A span tracks how deeply it nests so the report can end with the time *no*
+//! phase claimed — see `unaccounted`. Only outermost spans count toward that,
+//! so a nested phase isn't subtracted twice.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
