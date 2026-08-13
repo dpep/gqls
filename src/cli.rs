@@ -1140,6 +1140,10 @@ fn render_example(example: &crate::example::Example) -> Result<String> {
         for line in wrap(&description, style::width().saturating_sub(2), usize::MAX) {
             out.push_str(&format!("# {line}\n"));
         }
+        // A blank line between the prose and the operation. Every other section
+        // here is separated the same way, and without it a four-line comment
+        // block runs straight into the query as one wall of text.
+        out.push('\n');
     }
     out.push_str(&example.operation);
 
@@ -1338,7 +1342,7 @@ mod tests {
         ex.description = Some("Look up a user by id.".to_string());
         let out = render_example(&ex).unwrap();
         assert!(
-            out.starts_with("# Look up a user by id.\nquery Users {"),
+            out.starts_with("# Look up a user by id.\n\nquery Users {"),
             "{out}"
         );
         // Commented, so the whole block still pastes as one document.
