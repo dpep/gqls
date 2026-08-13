@@ -269,9 +269,33 @@ fi
 # The step most likely to be skipped by hand, and the one nothing else catches:
 # a stale skill misinforms an agent for a whole release cycle, silently.
 
+# Whether the plugin's copy already matches, footer stripped the same way the
+# sync strips it.
+SKILL_CMP='
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+marker = "\nTo install this skill for Claude Code, copy it to"
+if marker in s:
+    s = s[: s.index(marker)].rstrip() + "\n"
+try:
+    sys.exit(0 if s == open(dst).read() else 1)
+except FileNotFoundError:
+    sys.exit(1)
+'
+
 step "sync skill"
 if $DRY_RUN; then
   echo "    would sync $SKILL_SRC -> $SKILL_DST"
+  # The staleness check below reads the destination repo's git status, which a
+  # dry run hasn't written to — so it reports "current" for a skill that is in
+  # fact stale, which is the one thing this step exists to catch. Compare the
+  # files directly instead.
+  if python3 -c "$SKILL_CMP" "$SKILL_SRC" "$SKILL_DST"; then
+    skip "plugin skill copy is current"
+  else
+    echo "    the plugin copy is stale; a real run updates and commits it"
+  fi
 else
   python3 - "$SKILL_SRC" "$SKILL_DST" <<'PY'
 import sys
