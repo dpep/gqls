@@ -14,9 +14,12 @@
 //!   by accident.
 //! * **One level of selection by default, leaves only.** A scalar or enum
 //!   return needs no selection set at all. An object return gets its scalar/enum
-//!   fields, and a `# add fields you need` marker for the object-valued ones —
-//!   guessing how deep someone wants to go is worse than leaving a hole, and
-//!   `--depth` asks for more when you do want it.
+//!   fields, and a commented `# name: Type { … }` marker for the object-valued
+//!   ones — guessing how deep someone wants to go is worse than leaving a hole,
+//!   and `--depth` asks for more when you do want it. The marker stays a
+//!   comment because there is no valid empty selection set: `author { ... }`,
+//!   `author { … }` and `author {}` are all parse errors, and every draft this
+//!   prints has to survive a paste.
 //! * **Abstract types get inline fragments.** A union has no fields of its own,
 //!   so it's written as `... on Member { … }` over its concrete types — the only
 //!   form a server will accept.
@@ -346,7 +349,13 @@ impl<'a> Schema<'a> {
                 lines.extend(inner.into_iter().map(|l| format!("  {l}")));
                 lines.push("}".to_string());
             } else {
-                deferred.push(format!("# {}: {} — add fields you need", f.name, base));
+                // `{ … }` rather than a sentence: it's the shape of what's
+                // missing, it doesn't repeat nineteen characters of English on
+                // every object field, and the ellipsis can't be misread as the
+                // `...` that starts a fragment spread. It stays commented —
+                // `author { ... }` and `author { … }` are both parse errors, and
+                // every draft this tool prints has to be pasteable as-is.
+                deferred.push(format!("# {}: {} {{ … }}", f.name, base));
             }
         }
         lines.extend(deferred);
@@ -703,7 +712,7 @@ mod tests {
                  id\n    \
                  name\n    \
                  role\n    \
-                 # posts: Post — add fields you need\n    \
+                 # posts: Post { … }\n    \
                  # avatar: String — needs arguments\n  \
                }\n\
              }\n"

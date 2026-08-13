@@ -48,7 +48,7 @@ fn drafts_a_root_query_with_typed_variables() {
     // one level of leaves, with the object-valued field left as a marker
     assert!(ex.operation.contains("\n    email\n"), "{}", ex.operation);
     assert!(
-        ex.operation.contains("# posts: Post — add fields you need"),
+        ex.operation.contains("# posts: Post { … }"),
         "{}",
         ex.operation
     );
@@ -166,9 +166,7 @@ fn an_interface_reaches_its_implementors_extra_fields() {
 fn depth_expands_the_fields_that_level_one_leaves_as_markers() {
     let shallow = draft_deep("Query.user", 1);
     assert!(
-        shallow
-            .operation
-            .contains("# posts: Post — add fields you need"),
+        shallow.operation.contains("# posts: Post { … }"),
         "{}",
         shallow.operation
     );
@@ -180,8 +178,7 @@ fn depth_expands_the_fields_that_level_one_leaves_as_markers() {
     assert!(deep.operation.contains("posts {"), "{}", deep.operation);
     assert!(deep.operation.contains("title"), "{}", deep.operation);
     assert!(
-        deep.operation
-            .contains("# author: User — add fields you need"),
+        deep.operation.contains("# author: User { … }"),
         "{}",
         deep.operation
     );

@@ -17,6 +17,12 @@ early entries are terser than what follows.
   either way.
 
 ### Changed
+- The `-e` marker for an unexpanded object field is now `# posts: Post { … }`
+  rather than `# posts: Post — add fields you need`. Same information, without
+  repeating a sentence of English on every object-valued field, and `{ … }`
+  shows the shape of what's missing. It stays a comment: there is no valid
+  empty selection set, so `author { ... }`, `author { … }` and `author {}` are
+  all parse errors, and a drafted operation has to survive a paste.
 - Argument signatures collapse to `(…)` when a result sits alongside others,
   and are spelled out in full when it's the only match. Collapsing buys back
   the column width the longest signature would impose on every other row — 44
