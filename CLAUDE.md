@@ -4,6 +4,29 @@ Fuzzy and semantic search over a GraphQL schema. Everything flattens to a
 `SchemaRecord`; search and output touch nothing else. See the README's "How it
 works" for the layering.
 
+## What gqls is for
+
+**gqls answers questions about a GraphQL schema.** Searching is how you reach
+the answer, not the answer itself. So: narrow fast, and once the question
+resolves to one thing, say everything known about it.
+
+That's the frame the rest of the tool hangs off. Ranking, the fuzzy/semantic
+combine and the wildcards all serve the first half; the annotations on a named
+record — its description in full, its deprecation reason, its directives, an
+enum's values, what references a type — serve the second. `-e` sits outside
+both on purpose: drafting an operation answers *how do I call this*, which is a
+different question rather than a fuller answer to *what is this*.
+
+The litmus test for anything new:
+
+> Does it help someone **find** something in a schema, or **understand**
+> something they found? If neither, it doesn't belong in gqls.
+
+It's a real filter, not a slogan. A `--bare` flag printing only the drafted
+operation failed it — that's output plumbing, and `-j | jq -r .operation`
+already did it. Annotating a named record passed it on the second half, which
+is why it's in the base case and not behind a flag.
+
 ## Scripts — use these, don't hand-run their steps
 
 - **`script/check.sh`** — the gate. Formatting, clippy, and tests at every
