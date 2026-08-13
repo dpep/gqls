@@ -19,6 +19,12 @@ Ask for JSON so you can act on the result:
 gqls <query> <source> --json
 ```
 
+Several words are one query — `gqls cancel a subscription` needs no quotes —
+and the source is recognised wherever it sits among the arguments. A leading
+kind word filters like `-k`: `gqls query user`, `gqls type User`. gqls says on
+stderr when it read a word that way, and passing `-k` yourself keeps the word
+in the query instead.
+
 `<source>` is a `.graphql`/`.graphqls` SDL file, a `.json` introspection dump,
 or an `http(s)://…/graphql` URL (introspected live). Omit it and gqls finds a
 schema in the current directory tree (`-v` shows which one it picked), falling
@@ -39,10 +45,20 @@ Each result is an object:
 type, `args` the argument signatures, `description` the schema doc when the
 schema has one — usually enough to confirm a match without opening the schema.
 Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson` pipe cleanly
-into `jq`. A miss prints `gqls: no matches for <q>` to stderr.
+into `jq`. A miss prints `gqls: no matches for <q>` to stderr, and means it: semantic
+results below a relevance floor are dropped, so a question the schema can't
+answer returns nothing rather than its closest noise. Treat an empty result as
+"not in this schema", not as "try a different phrasing".
 
-When the query *names* exactly one of its matches, that record carries three
-more keys — the signal that you found the thing rather than a shortlist:
+When the query *names* exactly one of its matches — the leaf is that record's
+name, not merely its best fuzzy match — gqls stops listing and explains it
+instead: the one record, annotated. Searching narrows; naming finds. Case
+decides when it's the only thing separating candidates, so `Role` explains the
+enum while `role` lists it alongside `User.role`. `--no-explain` forces the list
+back.
+
+That record carries three more keys — the signal that you found the thing
+rather than a shortlist:
 
 - `match` — `"exact"`, or `"corrected"` when the name was a small misspelling
 - `values` — an enum's values, each `{name, description?, deprecated?}`
