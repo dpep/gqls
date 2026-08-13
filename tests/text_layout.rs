@@ -27,6 +27,14 @@ fn run(args: &[&str]) -> String {
     String::from_utf8(out.stdout).expect("output should be utf-8")
 }
 
+/// Just the result rows. A wrapped description continues on indented lines,
+/// which are part of the row above rather than results of their own — counting
+/// them as results, or measuring a path column against them, is the mistake
+/// this exists to prevent.
+fn rows(out: &str) -> Vec<&str> {
+    out.lines().filter(|l| !l.starts_with(' ')).collect()
+}
+
 /// The column a substring starts in, or `None` if the line doesn't contain it.
 ///
 /// Columns, not bytes. `str::find` returns a byte offset, and the collapsed
@@ -66,7 +74,7 @@ fn kind_tags_line_up_across_rows() {
     // separator that `-> Type` would have used, so `[object]` landed one column
     // off from every `[query]` and the eye had nothing to run down.
     let out = run(&["*", "-l", "20"]);
-    let columns: Vec<usize> = out.lines().filter_map(kind_column).collect();
+    let columns: Vec<usize> = rows(&out).into_iter().filter_map(kind_column).collect();
     assert!(columns.len() > 3, "need several rows to compare: {out}");
     let first = columns[0];
     assert!(
@@ -78,7 +86,10 @@ fn kind_tags_line_up_across_rows() {
 #[test]
 fn return_types_line_up_across_rows() {
     let out = run(&["User."]);
-    let arrows: Vec<usize> = out.lines().filter_map(|l| column_of(l, "-> ")).collect();
+    let arrows: Vec<usize> = rows(&out)
+        .into_iter()
+        .filter_map(|l| column_of(l, "-> "))
+        .collect();
     assert!(arrows.len() > 3, "need several rows: {out}");
     assert!(
         arrows.windows(2).all(|w| w[0] == w[1]),
@@ -92,11 +103,11 @@ fn a_column_nothing_fills_is_dropped_entirely() {
     // blank gutter pushing every kind tag right.
     let out = run(&["*", "-k", "object"]);
     assert!(!out.contains("->"), "no arrows expected in:\n{out}");
-    let kinds: Vec<usize> = out.lines().filter_map(kind_column).collect();
+    let kinds: Vec<usize> = rows(&out).into_iter().filter_map(kind_column).collect();
     assert!(!kinds.is_empty(), "expected object rows: {out}");
     // Exactly two spaces past the widest name — not two plus a dead column.
-    let longest = out
-        .lines()
+    let longest = rows(&out)
+        .into_iter()
         .filter_map(|l| l.split_whitespace().next())
         .map(|p| p.chars().count())
         .max()
@@ -118,7 +129,10 @@ fn a_multibyte_marker_does_not_skew_the_columns() {
         out.contains("(…)"),
         "expected a collapsed signature in:\n{out}"
     );
-    let arrows: Vec<usize> = out.lines().filter_map(|l| column_of(l, "-> ")).collect();
+    let arrows: Vec<usize> = rows(&out)
+        .into_iter()
+        .filter_map(|l| column_of(l, "-> "))
+        .collect();
     assert!(
         arrows.windows(2).all(|w| w[0] == w[1]),
         "rows with and without arguments should align, got {arrows:?} in:\n{out}"
@@ -130,7 +144,7 @@ fn a_signature_is_collapsed_among_other_rows() {
     // The list answers "which field"; `-e` answers "how do I call it". One long
     // signature would otherwise set the path column width for every row.
     let out = run(&["*", "-l", "20"]);
-    assert!(out.lines().count() > 1, "expected a list: {out}");
+    assert!(rows(&out).len() > 1, "expected a list: {out}");
     assert!(
         !out.contains("input: CreateUserInput!"),
         "argument signatures should not reach a multi-row list:\n{out}"
@@ -142,10 +156,61 @@ fn a_lone_result_spells_its_signature_out() {
     // Collapsing buys back width from the *other* rows. With one row there are
     // none, so the marker would cost information and save nothing.
     let out = run(&["Mutation.createUser"]);
-    assert_eq!(out.lines().count(), 1, "expected exactly one row: {out}");
+    assert_eq!(rows(&out).len(), 1, "expected exactly one row: {out}");
     assert!(
         out.contains("(input: CreateUserInput!)"),
         "a lone result should show its arguments:\n{out}"
+    );
+}
+
+#[test]
+fn a_long_description_wraps_within_the_fallback_width() {
+    // Piped output has no terminal to measure, so it uses the fixed fallback.
+    // Before wrapping, a documented row ran to 112 columns and the terminal
+    // broke it at column 0 — right where the next result's name starts, which
+    // is exactly the alignment the columns exist to provide.
+    let out = run(&["User."]);
+    for line in out.lines() {
+        assert!(
+            line.chars().count() <= 80,
+            "line over the fallback width ({}): {line}",
+            line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn a_wrapped_description_is_indented_past_its_row() {
+    // A continuation at column 0 would read as a new result.
+    let out = run(&["User."]);
+    let continuations: Vec<&str> = out.lines().filter(|l| l.starts_with(' ')).collect();
+    assert!(!continuations.is_empty(), "expected a wrap in:\n{out}");
+    assert!(
+        continuations
+            .iter()
+            .all(|l| l.len() - l.trim_start().len() > 8),
+        "continuations should be clearly indented:\n{out}"
+    );
+}
+
+#[test]
+fn a_description_is_capped_rather_than_running_on() {
+    // `Query.users` has a four-sentence doc comment; three lines of it is the
+    // most a single result gets before the tail is elided.
+    let out = run(&["Query.users"]);
+    // Lines belonging to the first row: its own, plus every continuation before
+    // the next row starts. `Query.user` also matches, so this can't just count
+    // the whole output.
+    let first_block = out
+        .lines()
+        .skip(1)
+        .take_while(|l| l.starts_with(' '))
+        .count()
+        + 1;
+    assert_eq!(first_block, 3, "expected a 3-line cap:\n{out}");
+    assert!(
+        out.lines().nth(2).unwrap().trim_end().ends_with('…'),
+        "expected the capped line to be elided:\n{out}"
     );
 }
 

@@ -27,6 +27,33 @@ pub fn enabled() -> bool {
         .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
 }
 
+/// Fallback width when there's no terminal to ask — a pipe, a file, a CI log.
+///
+/// Fixed rather than unlimited, because something has to bound a description,
+/// and fixed rather than "whatever the terminal was" because piped output has
+/// to be reproducible: the test suite and any diff of two runs depend on the
+/// same input producing the same bytes.
+pub const FALLBACK_WIDTH: usize = 80;
+
+/// Columns available for output.
+///
+/// Asked of the terminal directly rather than read from `$COLUMNS`, which
+/// shells often don't export to child processes — it's set in the parent and
+/// simply absent here, so trusting it silently gives every piped run the wrong
+/// answer.
+pub fn width() -> usize {
+    static WIDTH: OnceLock<usize> = OnceLock::new();
+    *WIDTH.get_or_init(|| {
+        if !std::io::stdout().is_terminal() {
+            return FALLBACK_WIDTH;
+        }
+        terminal_size::terminal_size()
+            .map(|(terminal_size::Width(w), _)| w as usize)
+            .filter(|w| *w > 0)
+            .unwrap_or(FALLBACK_WIDTH)
+    })
+}
+
 /// Wrap `text` in `code`, or return it unchanged when colour is off.
 ///
 /// Always resets fully (`\x1b[0m`) rather than turning off the one attribute:

@@ -17,6 +17,13 @@ early entries are terser than what follows.
   ever adds escapes, so the visible characters are identical either way.
 
 ### Changed
+- Descriptions wrap instead of running off the edge. A documented result ran to
+  112 columns and the terminal broke it at column 0 — exactly where the next
+  result's name starts, undoing the alignment. The text now wraps to the
+  terminal's real width (measured directly; `$COLUMNS` isn't exported to child
+  processes), indented under the description so a wrapped row reads as one
+  block, and capped at three lines with the tail elided. Piped output uses a
+  fixed 80 columns so a run is reproducible.
 - The `-e` marker for an unexpanded object field is now `# posts: Post { … }`
   rather than `# posts: Post — add fields you need`. Same information, without
   repeating a sentence of English on every object-valued field, and `{ … }`

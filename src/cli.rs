@@ -752,10 +752,17 @@ impl Output {
     }
 }
 
-/// Longest description rendered inline. A schema doc can run to paragraphs;
-/// one line per result keeps the output greppable, so the rest is elided
-/// (`--json` carries the full text).
-const DESCRIPTION_WIDTH: usize = 72;
+/// Lines a description may occupy, its first included. A schema doc can run to
+/// paragraphs; three lines is enough for a sentence or two and little enough
+/// that a documented result still reads as one entry rather than a paragraph
+/// with a heading. `--json` carries the full text.
+const DESCRIPTION_LINES: usize = 3;
+
+/// Never squeeze a description below this. On a narrow terminal the columns in
+/// front of it can eat the whole line, and wrapping every third word is worse
+/// than running past the edge — so past this point it overflows and lets the
+/// terminal do what it likes.
+const MIN_DESCRIPTION_WIDTH: usize = 24;
 
 /// Widest the path column may grow before it stops aligning. One pathological
 /// 200-character path shouldn't indent every other row past the fold, so it's
@@ -842,7 +849,6 @@ fn print_text(matches: &[Match], descriptions: bool) {
                         .as_deref()
                         .map(summarize)
                         .filter(|d| !d.is_empty())
-                        .map(|d| format!("— {d}"))
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -891,11 +897,31 @@ fn print_text(matches: &[Match], descriptions: bool) {
                 kind_w + 2 + "(deprecated)".len(),
             ));
         }
-        if !row.desc.is_empty() {
-            cells.push((style::muted(&row.desc), row.desc.len()));
+        // Where the description will start, once the columns in front of it are
+        // padded and joined. Its continuation lines are indented to the same
+        // place, so a wrapped description reads as one block hanging off its
+        // row rather than as a new result starting at column 0.
+        let widths = [path_w, ret_w, kind_w];
+        let indent: usize = cells
+            .iter()
+            .enumerate()
+            .map(|(i, (_, visible))| widths.get(i).copied().unwrap_or(*visible).max(*visible) + 2)
+            .sum();
+
+        let budget = style::width()
+            .saturating_sub(indent)
+            .max(MIN_DESCRIPTION_WIDTH);
+        // "— " belongs to the first line only; continuations align past it, so
+        // the prose edges line up rather than the dash.
+        let mut desc_lines = wrap(&row.desc, budget.saturating_sub(2), DESCRIPTION_LINES);
+        if !desc_lines.is_empty() {
+            let first = desc_lines.remove(0);
+            cells.push((
+                style::muted(&format!("— {first}")),
+                first.chars().count() + 2,
+            ));
         }
 
-        let widths = [path_w, ret_w, kind_w];
         let last = cells.len() - 1;
         let line: String = cells
             .into_iter()
@@ -910,24 +936,57 @@ fn print_text(matches: &[Match], descriptions: bool) {
             .collect::<Vec<_>>()
             .join("  ");
         println!("{}", line.trim_end());
+        for cont in desc_lines {
+            println!("{}{}", " ".repeat(indent + 2), style::muted(&cont));
+        }
     }
 }
 
 /// A schema description as one line: whitespace (including the newlines of a
-/// block description) collapsed, then elided at [`DESCRIPTION_WIDTH`].
+/// block description) collapsed. Wrapping to the terminal happens later, in
+/// [`wrap`], once the width of the columns in front of it is known.
 fn summarize(description: &str) -> String {
-    let mut out = String::new();
-    for (i, word) in description.split_whitespace().enumerate() {
-        if i > 0 {
-            out.push(' ');
+    description.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Break `text` into at most `max_lines` lines of `width` columns, on word
+/// boundaries, marking the end with `…` when there was more.
+///
+/// A word longer than the whole width (a URL, a long type name) is left to
+/// overflow rather than cut mid-token: breaking it produces two fragments that
+/// are each unsearchable, and the thing that overflows is a dim tail.
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let extra = if current.is_empty() {
+            word.chars().count()
+        } else {
+            word.chars().count() + 1
+        };
+        if !current.is_empty() && current.chars().count() + extra > width {
+            if lines.len() + 1 == max_lines {
+                // No room for another line: elide, trimming enough to fit the
+                // marker rather than pushing one column past the budget.
+                let mut kept = current;
+                while kept.chars().count() + 1 > width {
+                    kept.pop();
+                }
+                lines.push(format!("{}…", kept.trim_end()));
+                return lines;
+            }
+            lines.push(std::mem::take(&mut current));
         }
-        out.push_str(word);
-        if out.chars().count() > DESCRIPTION_WIDTH {
-            let kept: String = out.chars().take(DESCRIPTION_WIDTH).collect();
-            return format!("{}…", kept.trim_end());
+        if !current.is_empty() {
+            current.push(' ');
         }
+        current.push_str(word);
     }
-    out
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// The one record a `-e`/`-R` run acts on: the top hit, but only when the query
@@ -1155,7 +1214,7 @@ fn looks_like_source(arg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_source, render_example, summarize, DESCRIPTION_WIDTH};
+    use super::{looks_like_source, render_example, summarize, wrap};
     use crate::example::Example;
 
     fn example() -> Example {
@@ -1189,11 +1248,42 @@ mod tests {
     }
 
     #[test]
-    fn elides_past_the_width() {
+    fn wraps_on_word_boundaries_within_the_budget() {
+        let out = wrap("the quick brown fox jumps over the lazy dog", 12, 9);
+        assert!(
+            out.iter().all(|l| l.chars().count() <= 12),
+            "over budget: {out:?}"
+        );
+        assert_eq!(out.join(" "), "the quick brown fox jumps over the lazy dog");
+    }
+
+    #[test]
+    fn elides_once_it_runs_out_of_lines() {
         let long = "word ".repeat(60);
-        let out = summarize(&long);
-        assert!(out.ends_with('…'), "{out}");
-        assert!(out.chars().count() <= DESCRIPTION_WIDTH + 1, "{out}");
+        let out = wrap(&long, 20, 3);
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(out.last().unwrap().ends_with('…'), "{out:?}");
+        // The marker has to fit the budget, not sit one column past it.
+        assert!(
+            out.iter().all(|l| l.chars().count() <= 20),
+            "over budget: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_description_that_fits_stays_on_one_line() {
+        let out = wrap("An account.", 40, 3);
+        assert_eq!(out, vec!["An account.".to_string()]);
+    }
+
+    #[test]
+    fn a_word_longer_than_the_budget_overflows_rather_than_splitting() {
+        // Splitting a URL or a long type name yields two unsearchable halves.
+        let out = wrap("see https://example.com/a/very/long/path now", 12, 3);
+        assert!(
+            out.iter().any(|l| l.contains("https://example.com")),
+            "{out:?}"
+        );
     }
 
     #[test]

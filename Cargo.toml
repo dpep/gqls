@@ -42,6 +42,7 @@ log = { version = "0.4", optional = true }
 
 # Parallel fuzzy scoring scan (and the cold embed pass under `semantic`).
 rayon = "1"
+terminal_size = "0.4"
 
 [dev-dependencies]
 # Integration tests parse drafted operations back, so `--example` output is
