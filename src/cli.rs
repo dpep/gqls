@@ -772,8 +772,7 @@ const PATH_WIDTH: usize = 48;
 /// A row's cells, kept as plain text so the column widths can be measured, and
 /// styled only on the way out.
 struct Row {
-    parent: String,
-    leaf: String,
+    path: String,
     args: String,
     ret: String,
     kind: String,
@@ -782,56 +781,30 @@ struct Row {
 }
 
 impl Row {
-    /// Visible width of the path cell — parent, leaf and args are one column,
-    /// styled in three pieces.
-    ///
-    /// Counted in chars, not bytes: GraphQL names are ASCII by spec, but the
-    /// collapsed argument marker is an ellipsis, which is three bytes wide and
-    /// one column wide.
+    /// Visible width of the path cell — the path and its arguments share one
+    /// column. Counted in chars: GraphQL names are ASCII by spec, but the
+    /// collapsed argument marker is an ellipsis, three bytes to one column.
     fn path_width(&self) -> usize {
-        [&self.parent, &self.leaf, &self.args]
-            .iter()
-            .map(|s| s.chars().count())
-            .sum()
+        self.path.chars().count() + self.args.chars().count()
     }
 }
 
-/// Pad `cell` to `width` using its *visible* length. The styled string carries
-/// escape bytes that occupy no columns, so `{:<width$}` on it would pad by the
-/// wrong amount — every alignment bug in coloured output starts here.
-fn pad(styled: String, visible: usize, width: usize) -> String {
-    let mut out = styled;
-    out.push_str(&" ".repeat(width.saturating_sub(visible)));
-    out
-}
-
 fn print_text(matches: &[Match], descriptions: bool) {
-    // Collapsing a signature buys back the column width it would have imposed
-    // on every *other* row. With a single result there are no other rows, so
-    // the marker costs information and saves nothing — spell it out. The rule
-    // is "don't charge the table for one long signature", not "hide
-    // signatures", and one result is the case where the charge is zero.
+    // With one result there is no table: nothing else pays for a long signature,
+    // and there's no column to align a description against. Both of those turn
+    // into "show the whole thing" below.
     let lone = matches.len() == 1;
 
     let rows: Vec<Row> = matches
         .iter()
         .map(|m| {
             let r = m.record;
-            // The leaf is the answer; the parent is context repeated down the
-            // whole column ("User." five times in a `User.` listing). Splitting
-            // them is what lets the name carry the weight.
-            let (parent, leaf) = match r.path.rfind('.') {
-                Some(i) => (r.path[..=i].to_string(), r.path[i + 1..].to_string()),
-                None => (String::new(), r.path.clone()),
-            };
             Row {
-                parent,
-                leaf,
-                // In a list, collapsed: a signature answers "how do I call
-                // this", which you ask after finding the field, and the longest
-                // one sets the path column width for every row — 44 columns
-                // against 22 on the example schema. `-e` answers it properly
-                // anyway, with the required arguments bound to variables.
+                path: r.path.clone(),
+                // Collapsed in a list: the longest signature would otherwise
+                // set the path column width for every row — 44 columns against
+                // 22 on the example schema — and `-e` answers "how do I call
+                // this" properly anyway. Alone, nothing else pays for it.
                 args: match (r.args.is_empty(), lone) {
                     (true, _) => String::new(),
                     (false, true) => format!("({})", r.args.join(", ")),
@@ -844,14 +817,9 @@ fn print_text(matches: &[Match], descriptions: bool) {
                     .unwrap_or_default(),
                 kind: format!("[{}]", r.kind.as_str()),
                 deprecated: r.deprecated.is_some(),
-                desc: if descriptions {
-                    r.description
-                        .as_deref()
-                        .map(summarize)
-                        .filter(|d| !d.is_empty())
-                        .unwrap_or_default()
-                } else {
-                    String::new()
+                desc: match descriptions {
+                    true => r.description.clone().unwrap_or_default(),
+                    false => String::new(),
                 },
             }
         })
@@ -870,108 +838,64 @@ fn print_text(matches: &[Match], descriptions: bool) {
     let kind_w = rows.iter().map(|r| r.kind.len()).max().unwrap_or(0);
 
     for row in &rows {
-        // Cells joined by two spaces, and any trailing empties contribute
-        // nothing — no line ends in whitespace.
-        // Each entry is (styled text, its visible width, the column width to pad
-        // it to). The target width travels with the cell rather than sitting in
-        // a positional array beside it: cells are pushed conditionally, so an
-        // array indexed by position pads the kind tag to the *arrow* column's
-        // width whenever a result set has no return types at all.
-        let mut cells: Vec<(String, usize, usize)> = Vec::with_capacity(4);
-        cells.push((
-            format!(
-                "{}{}",
-                style::name(&format!("{}{}", row.parent, row.leaf)),
-                style::muted(&row.args)
-            ),
-            row.path_width(),
-            path_w,
-        ));
+        let mut line = style::Line::default();
+        line.push(&row.path, style::name);
+        line.push(&row.args, style::muted);
         if ret_w > 0 {
-            cells.push((style::muted(&row.ret), row.ret.len(), ret_w));
+            line.pad_to(path_w);
+            line.gap();
+            line.push(&row.ret, style::muted);
         }
         if kind_w > 0 {
-            cells.push((style::muted(&row.kind), row.kind.len(), kind_w));
+            line.pad_to(if ret_w > 0 { ret_w } else { path_w });
+            line.gap();
+            line.push(&row.kind, style::muted);
         }
-        // Deprecation is appended rather than given a column: one deprecated
-        // row would otherwise widen the kind column by 13 for every row.
+        // Appended rather than given a column of its own: one deprecated row
+        // would otherwise widen the kind column by 13 for every row.
         if row.deprecated {
-            let (last, width, target) = cells.pop().expect("path cell always present");
-            let padded = pad(last, width, target);
-            let visible = target.max(width) + 2 + "(deprecated)".len();
-            cells.push((
-                format!("{padded}  {}", style::warning("(deprecated)")),
-                visible,
-                visible,
-            ));
+            line.pad_to(kind_w);
+            line.gap();
+            line.push("(deprecated)", style::warning);
         }
-        // Where the description will start, once the columns in front of it are
-        // padded and joined. Its continuation lines are indented to the same
-        // place, so a wrapped description reads as one block hanging off its
-        // row rather than as a new result starting at column 0.
-        let indent: usize = cells
-            .iter()
-            .map(|(_, visible, target)| target.max(visible) + 2)
-            .sum();
 
-        // A lone result gets its description in full, on its own lines beneath
-        // the row.
-        //
-        // Not simply an uncapped version of the inline form. The cap exists so
-        // one documented row can't bury the rest of a list, and with a single
-        // result there is no rest — but hanging the full text off a 64-column
-        // indent wraps it into a tall ribbon a few words wide, which is worse
-        // than the truncation it replaces. There's no column to align to here,
-        // so the text takes the width.
-        let block = if lone && !row.desc.is_empty() {
-            wrap(&row.desc, style::width().saturating_sub(2), usize::MAX)
-        } else {
-            Vec::new()
-        };
+        if row.desc.is_empty() {
+            println!("{}", line.finish());
+            continue;
+        }
 
+        // A lone result gets the whole description, at full width, on its own
+        // lines. Not just an uncapped version of the inline form: hanging the
+        // full text off a 64-column indent wraps it into a tall ribbon a few
+        // words wide, which is worse than the truncation it replaces.
+        if lone {
+            println!("{}", line.finish());
+            for l in wrap(&row.desc, style::width().saturating_sub(2), usize::MAX) {
+                println!("  {}", style::muted(&l));
+            }
+            continue;
+        }
+
+        // Otherwise it hangs off the row, its continuations indented to where
+        // it starts so a wrapped description reads as one block rather than as
+        // a new result at column 0.
+        line.pad_to(if kind_w > 0 { kind_w } else { path_w });
+        line.gap();
+        let indent = line.width();
         let budget = style::width()
             .saturating_sub(indent)
             .max(MIN_DESCRIPTION_WIDTH);
         // "— " belongs to the first line only; continuations align past it, so
         // the prose edges line up rather than the dash.
-        let mut desc_lines = match block.is_empty() {
-            true => wrap(&row.desc, budget.saturating_sub(2), DESCRIPTION_LINES),
-            false => Vec::new(),
-        };
-        if !desc_lines.is_empty() {
-            let first = desc_lines.remove(0);
-            let visible = first.chars().count() + 2;
-            cells.push((style::muted(&format!("— {first}")), visible, visible));
+        let mut lines = wrap(&row.desc, budget.saturating_sub(2), DESCRIPTION_LINES).into_iter();
+        if let Some(first) = lines.next() {
+            line.push(&format!("— {first}"), style::muted);
         }
-
-        let last = cells.len() - 1;
-        let line: String = cells
-            .into_iter()
-            .enumerate()
-            .map(|(i, (styled, visible, target))| {
-                if i == last {
-                    styled // never pad the tail
-                } else {
-                    pad(styled, visible, target)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("  ");
-        println!("{}", line.trim_end());
-        for cont in desc_lines {
+        println!("{}", line.finish());
+        for cont in lines {
             println!("{}{}", " ".repeat(indent + 2), style::muted(&cont));
         }
-        for cont in block {
-            println!("  {}", style::muted(&cont));
-        }
     }
-}
-
-/// A schema description as one line: whitespace (including the newlines of a
-/// block description) collapsed. Wrapping to the terminal happens later, in
-/// [`wrap`], once the width of the columns in front of it is known.
-fn summarize(description: &str) -> String {
-    description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Break `text` into at most `max_lines` lines of `width` columns, on word
@@ -1140,8 +1064,8 @@ fn render_example(example: &crate::example::Example) -> Result<String> {
     // so there's no list to keep short here, and the whole description goes in.
     // A comment, like every other annotation in this output, so the block stays
     // pasteable in one go.
-    if let Some(description) = example.description.as_deref().map(summarize) {
-        for line in wrap(&description, style::width().saturating_sub(2), usize::MAX) {
+    if let Some(description) = example.description.as_deref() {
+        for line in wrap(description, style::width().saturating_sub(2), usize::MAX) {
             out.push_str(&format!("# {line}\n"));
         }
         out.push('\n');
@@ -1252,7 +1176,7 @@ fn looks_like_source(arg: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_source, render_example, summarize, wrap};
+    use super::{looks_like_source, render_example, wrap};
     use crate::example::Example;
 
     fn example() -> Example {
@@ -1282,8 +1206,11 @@ mod tests {
 
     #[test]
     fn collapses_block_descriptions_to_one_line() {
-        assert_eq!(summarize("  Look up\n  a user.\n"), "Look up a user.");
-        assert_eq!(summarize("   "), "");
+        assert_eq!(
+            wrap("  Look up\n  a user.\n", 40, 3),
+            vec!["Look up a user."]
+        );
+        assert!(wrap("   ", 40, 3).is_empty());
     }
 
     #[test]
@@ -1323,12 +1250,6 @@ mod tests {
             out.iter().any(|l| l.contains("https://example.com")),
             "{out:?}"
         );
-    }
-
-    #[test]
-    fn keeps_a_description_that_fits() {
-        let s = "An account.";
-        assert_eq!(summarize(s), s);
     }
 
     #[test]

@@ -58,7 +58,7 @@ pub fn width() -> usize {
 ///
 /// Always resets fully (`\x1b[0m`) rather than turning off the one attribute:
 /// `\x1b[22m` clears bold *and* dim together, which goes wrong the moment two
-/// styled spans sit next to each other — as the parent/leaf pair does.
+/// styled spans sit next to each other, as a name and its arguments do.
 fn paint(text: &str, code: &str) -> String {
     if text.is_empty() || !enabled() {
         return text.to_string();
@@ -81,10 +81,7 @@ pub fn name(text: &str) -> String {
 ///
 /// One treatment for all of it, deliberately. An earlier version gave the
 /// return type its own colour, which meant three visual weights on a line whose
-/// job is to answer one question. Dim-versus-not is the whole distinction the
-/// eye needs here, and it's the only one that can't clash with a terminal
-/// theme — bold and dim are relative to the user's own foreground, where any
-/// hue is a guess about their background *and* their palette.
+/// job is to answer one question.
 pub fn muted(text: &str) -> String {
     paint(text, "2")
 }
@@ -93,6 +90,57 @@ pub fn muted(text: &str) -> String {
 /// scan. Plain red, not bright red, which washes out on light backgrounds.
 pub fn warning(text: &str) -> String {
     paint(text, "31")
+}
+
+/// A line under construction: the styled text, and the columns it occupies.
+///
+/// The two are only ever updated together, which is the point. [`name`] and
+/// friends return strings whose `len()` counts escape bytes, so any layout that
+/// measures the styled text pads by the wrong amount — and any layout that
+/// tracks the width separately can drift from it. Here neither is reachable:
+/// text goes in through [`push`](Self::push), and the width is whatever went
+/// in.
+#[derive(Default)]
+pub struct Line {
+    styled: String,
+    cols: usize,
+    /// Where the current cell began, so [`pad_to`](Self::pad_to) can measure a
+    /// column width rather than an absolute position.
+    cell_start: usize,
+}
+
+impl Line {
+    /// Append `text`, styled by `paint`, counting its visible columns.
+    pub fn push(&mut self, text: &str, paint: fn(&str) -> String) {
+        self.styled.push_str(&paint(text));
+        self.cols += text.chars().count();
+    }
+
+    /// Two spaces, and start a new cell here.
+    pub fn gap(&mut self) {
+        self.styled.push_str("  ");
+        self.cols += 2;
+        self.cell_start = self.cols;
+    }
+
+    /// Pad the current cell out to `width` columns. Never truncates: a cell
+    /// wider than its column pushes the rest of its own line right rather than
+    /// being cut.
+    pub fn pad_to(&mut self, width: usize) {
+        let filled = self.cols - self.cell_start;
+        let short = width.saturating_sub(filled);
+        self.styled.push_str(&" ".repeat(short));
+        self.cols += short;
+    }
+
+    /// Columns used so far — where the next cell will start.
+    pub fn width(&self) -> usize {
+        self.cols
+    }
+
+    pub fn finish(self) -> String {
+        self.styled.trim_end().to_string()
+    }
 }
 
 #[cfg(test)]
@@ -111,10 +159,23 @@ mod tests {
     }
 
     #[test]
-    fn painting_never_changes_visible_length() {
-        // The invariant the column layout depends on.
-        for f in [name, muted, warning] {
-            assert_eq!(f("Query.user").len(), "Query.user".len());
-        }
+    fn a_line_counts_columns_not_bytes() {
+        // `…` is one column and three bytes; the styled string also carries
+        // escape bytes when colour is on. Neither may reach the width.
+        let mut line = Line::default();
+        line.push("User.posts", name);
+        line.push("(…)", muted);
+        assert_eq!(line.width(), 13);
+        assert!(line.width() < line.finish().len() || !enabled());
+    }
+
+    #[test]
+    fn padding_measures_the_current_cell_not_the_whole_line() {
+        let mut line = Line::default();
+        line.push("ab", muted);
+        line.gap();
+        line.push("c", muted);
+        line.pad_to(4); // pad the cell holding "c", not the line
+        assert_eq!(line.width(), 2 + 2 + 4);
     }
 }
