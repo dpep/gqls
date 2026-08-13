@@ -42,11 +42,11 @@ fn stderr(out: &Output) -> String {
 fn drafts_for_the_field_the_query_names() {
     let out = run("-e", "Mutation.createUser");
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        stdout(&out).starts_with("mutation CreateUser("),
-        "{}",
-        stdout(&out)
-    );
+    // The draft leads with the field's description, as a comment, so the whole
+    // block is still one pasteable document.
+    let text = stdout(&out);
+    assert!(text.starts_with("# Create a user and return it."), "{text}");
+    assert!(text.contains("mutation CreateUser("), "{text}");
 }
 
 #[test]
@@ -67,11 +67,8 @@ fn a_corrected_spelling_says_which_field_it_settled_on() {
     let out = run("-e", "createUesr");
     assert_eq!(stderr(&out), "Did you mean Mutation.createUser?\n\n");
     // …and stdout stays a draft you could redirect straight into a file
-    assert!(
-        stdout(&out).starts_with("mutation CreateUser("),
-        "{}",
-        stdout(&out)
-    );
+    let text = stdout(&out);
+    assert!(text.contains("mutation CreateUser("), "{text}");
     // an exactly-named field has nothing to correct
     let exact = run("-e", "Mutation.createUser");
     assert!(

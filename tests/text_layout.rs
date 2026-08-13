@@ -215,6 +215,29 @@ fn a_description_is_capped_rather_than_running_on() {
 }
 
 #[test]
+fn a_lone_result_gets_its_whole_description_at_full_width() {
+    // `Query.users` has the longest doc in the fixture; in a list it's cut to
+    // three lines. Alone, nothing is competing for the space, so it's shown
+    // whole — and as its own block rather than hanging off a 60-column indent,
+    // which would wrap it into a ribbon a few words wide.
+    let out = run(&["Query.users", "-k", "query", "-l", "1"]);
+    assert_eq!(rows(&out).len(), 1, "expected one row:\n{out}");
+    assert!(!out.contains('…'), "should not elide a lone result:\n{out}");
+    assert!(
+        out.contains("maximum instead of an error."),
+        "expected the tail of the description:\n{out}"
+    );
+    // Its own block: indented two, not aligned under a description column.
+    let continuations: Vec<&str> = out.lines().filter(|l| l.starts_with(' ')).collect();
+    assert!(
+        continuations
+            .iter()
+            .all(|l| l.len() - l.trim_start().len() == 2),
+        "expected a two-space block:\n{out}"
+    );
+}
+
+#[test]
 fn no_line_ends_in_whitespace() {
     // Padding the last cell would leave invisible trailing spaces that break
     // diffs and `grep -c ' $'` style checks.

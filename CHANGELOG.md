@@ -16,7 +16,17 @@ early entries are terser than what follows.
   palette. Suppressed when stdout isn't a TTY or `NO_COLOR` is set, and it only
   ever adds escapes, so the visible characters are identical either way.
 
+### Added
+- `-e` leads with what the field does, as a comment above the operation. It has
+  already committed to one field — it refuses to draft unless the query named
+  it — so the whole description goes in, wrapped and uncapped.
+
 ### Changed
+- A single result shows its whole description, as its own block indented under
+  the row rather than hanging off the description column. The three-line cap
+  exists so one documented row can't bury a list, and a lone result has no list
+  to bury; wrapping the full text against a 60-column indent would turn it into
+  a ribbon a few words wide.
 - Descriptions wrap instead of running off the edge. A documented result ran to
   112 columns and the terminal broke it at column 0 — exactly where the next
   result's name starts, undoing the alignment. The text now wraps to the

@@ -46,6 +46,10 @@ use crate::model::{Kind, SchemaRecord};
 pub struct Example {
     /// The GraphQL document, ready to paste.
     pub operation: String,
+    /// What the schema says the target field does, if anything. Carried so the
+    /// draft can lead with it: `-e` commits to one field, and what it does is
+    /// worth knowing before you paste an operation that calls it.
+    pub description: Option<String>,
     /// A JSON object of placeholder variable values, one per required argument.
     pub variables: Value,
     /// Arguments left out because the server can supply them — rendered as
@@ -162,6 +166,7 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> R
 
     Ok(Example {
         operation,
+        description: target.description.clone(),
         variables: vars.placeholders(),
         input_types: schema.input_types(&chain),
         optional,

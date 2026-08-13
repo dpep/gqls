@@ -908,12 +908,30 @@ fn print_text(matches: &[Match], descriptions: bool) {
             .map(|(i, (_, visible))| widths.get(i).copied().unwrap_or(*visible).max(*visible) + 2)
             .sum();
 
+        // A lone result gets its description in full, on its own lines beneath
+        // the row.
+        //
+        // Not simply an uncapped version of the inline form. The cap exists so
+        // one documented row can't bury the rest of a list, and with a single
+        // result there is no rest — but hanging the full text off a 64-column
+        // indent wraps it into a tall ribbon a few words wide, which is worse
+        // than the truncation it replaces. There's no column to align to here,
+        // so the text takes the width.
+        let block = if lone && !row.desc.is_empty() {
+            wrap(&row.desc, style::width().saturating_sub(2), usize::MAX)
+        } else {
+            Vec::new()
+        };
+
         let budget = style::width()
             .saturating_sub(indent)
             .max(MIN_DESCRIPTION_WIDTH);
         // "— " belongs to the first line only; continuations align past it, so
         // the prose edges line up rather than the dash.
-        let mut desc_lines = wrap(&row.desc, budget.saturating_sub(2), DESCRIPTION_LINES);
+        let mut desc_lines = match block.is_empty() {
+            true => wrap(&row.desc, budget.saturating_sub(2), DESCRIPTION_LINES),
+            false => Vec::new(),
+        };
         if !desc_lines.is_empty() {
             let first = desc_lines.remove(0);
             cells.push((
@@ -938,6 +956,9 @@ fn print_text(matches: &[Match], descriptions: bool) {
         println!("{}", line.trim_end());
         for cont in desc_lines {
             println!("{}{}", " ".repeat(indent + 2), style::muted(&cont));
+        }
+        for cont in block {
+            println!("  {}", style::muted(&cont));
         }
     }
 }
@@ -1108,7 +1129,19 @@ fn run_example(
 /// is omitted when it has nothing to say — an empty heading is noise in
 /// something meant to be read and pasted.
 fn render_example(example: &crate::example::Example) -> Result<String> {
-    let mut out = example.operation.clone();
+    let mut out = String::new();
+
+    // What the field does, above the operation that calls it. `-e` has already
+    // committed to one field — it refuses to draft unless the query named it —
+    // so there's no list to keep short here, and the whole description goes in.
+    // A comment, like every other annotation in this output, so the block stays
+    // pasteable in one go.
+    if let Some(description) = example.description.as_deref().map(summarize) {
+        for line in wrap(&description, style::width().saturating_sub(2), usize::MAX) {
+            out.push_str(&format!("# {line}\n"));
+        }
+    }
+    out.push_str(&example.operation);
 
     if !example.optional.is_empty() {
         out.push_str("\n# optional arguments:\n");
@@ -1220,6 +1253,7 @@ mod tests {
     fn example() -> Example {
         Example {
             operation: "query Users {\n  users {\n    email\n  }\n}\n".to_string(),
+            description: None,
             variables: serde_json::json!({}),
             optional: Vec::new(),
             input_types: Vec::new(),
@@ -1296,6 +1330,32 @@ mod tests {
     fn an_operation_with_nothing_to_add_is_printed_alone() {
         let ex = example();
         assert_eq!(render_example(&ex).unwrap(), ex.operation);
+    }
+
+    #[test]
+    fn a_description_heads_the_draft_as_a_comment() {
+        let mut ex = example();
+        ex.description = Some("Look up a user by id.".to_string());
+        let out = render_example(&ex).unwrap();
+        assert!(
+            out.starts_with("# Look up a user by id.\nquery Users {"),
+            "{out}"
+        );
+        // Commented, so the whole block still pastes as one document.
+        graphql_parser::parse_query::<String>(&out).expect("draft should stay valid");
+    }
+
+    #[test]
+    fn a_long_description_is_wrapped_and_every_line_commented() {
+        let mut ex = example();
+        ex.description = Some("word ".repeat(60));
+        let out = render_example(&ex).unwrap();
+        let heading: Vec<&str> = out.lines().take_while(|l| l.starts_with('#')).collect();
+        assert!(heading.len() > 3, "expected a wrapped block: {out}");
+        // Uncapped — `-e` has already committed to one field, so there's no
+        // list for a long description to bury.
+        assert!(!out.contains('…'), "should not elide in a draft: {out}");
+        graphql_parser::parse_query::<String>(&out).expect("draft should stay valid");
     }
 
     #[test]
