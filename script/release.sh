@@ -308,7 +308,9 @@ if marker in s:
 open(dst, "w").write(s)
 PY
 fi
-if git -C "$SKILL_REPO" diff --quiet; then
+if $DRY_RUN; then
+  : # the dry-run branch above already reported, by comparing the files
+elif git -C "$SKILL_REPO" diff --quiet; then
   skip "plugin skill copy is current"
 else
   run git -C "$SKILL_REPO" add -A
