@@ -655,7 +655,15 @@ pub fn run() -> Result<()> {
         if matches.is_empty() {
             crate::status!("no matches for {query:?}");
         }
-        output.write_matches(&matches, batch.then_some(query))?;
+        // Explain mode: the query named exactly one record, so the user has
+        // found the thing rather than narrowed toward it. Two conditions, not
+        // one — naming without uniqueness (`email` names both `User.email` and
+        // `CreateUserInput.email`) is still a search, and picking one of them to
+        // enrich would be answering a question the user hasn't finished asking.
+        let explained = (!batch && matches.len() == 1)
+            .then(|| search::names_the_record(query, matches[0].record))
+            .flatten();
+        output.write_matches(&matches, batch.then_some(query), explained, &records)?;
         drop(out_span);
         if total > matches.len() {
             crate::detail!(
@@ -706,7 +714,13 @@ impl Output {
     /// queries answered on one stream a consumer can't otherwise tell whose
     /// rows are whose. Absent for a single query, so the shape a lone search
     /// emits is exactly what it always was.
-    fn write_matches(self, matches: &[Match], label: Option<&str>) -> Result<()> {
+    fn write_matches(
+        self,
+        matches: &[Match],
+        label: Option<&str>,
+        explained: Option<search::NameMatch>,
+        records: &[SchemaRecord],
+    ) -> Result<()> {
         #[derive(Serialize)]
         struct Row<'a> {
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -714,12 +728,22 @@ impl Output {
             #[serde(flatten)]
             record: &'a SchemaRecord,
             score: f64,
+            /// `"exact"` or `"corrected"` on the one record a query named, and
+            /// absent otherwise — the discriminator for "this response is an
+            /// explanation, not a list". Additive, so the array shape and every
+            /// existing field stay exactly as they were.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            r#match: Option<&'static str>,
         }
         let rows = || {
             matches.iter().map(|m| Row {
                 query: label,
                 record: m.record,
                 score: m.score,
+                r#match: explained.map(|m| match m {
+                    search::NameMatch::Exact => "exact",
+                    search::NameMatch::Corrected => "corrected",
+                }),
             })
         };
         // A query that matched nothing would otherwise vanish from the stream,
@@ -746,10 +770,88 @@ impl Output {
                     println!("{}", serde_json::to_string(&row)?);
                 }
             }
-            Output::Text { descriptions } => print_text(matches, descriptions),
+            Output::Text { descriptions } => {
+                print_text(matches, descriptions, explained.map(|_| records))
+            }
         }
         Ok(())
     }
+}
+
+/// Most cross-references to list before saying "and N more". A type used in
+/// forty places has told you what you needed by the fifth.
+const MAX_REFERENCES: usize = 6;
+
+/// The facts about a named record that a search row has no room for.
+///
+/// Only what the schema already knows and the row can't show: the deprecation
+/// *reason* rather than a bare marker, the directives applied to it, what an
+/// abstract type can actually be, an enum's values, and what refers to a type —
+/// which is the question "how do I get one of these" in schema form.
+///
+/// Each entry is a label and its value. Empty when there's nothing to add,
+/// which is the common case for an undocumented scalar.
+fn annotations(record: &SchemaRecord, records: &[SchemaRecord]) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+
+    if let Some(reason) = record.deprecated.as_deref().filter(|r| !r.is_empty()) {
+        out.push(("deprecated", reason.to_string()));
+    }
+    // `@deprecated` is skipped: the line above already carries it, with the
+    // reason, which is the part worth reading.
+    let applied: Vec<&str> = record
+        .directives
+        .iter()
+        .map(String::as_str)
+        .filter(|d| !d.starts_with("@deprecated"))
+        .collect();
+    if !applied.is_empty() {
+        out.push(("directives", applied.join(" ")));
+    }
+    if !record.possible_types.is_empty() {
+        let label = match record.kind {
+            Kind::Union => "members",
+            _ => "implemented by",
+        };
+        out.push((label, record.possible_types.join(", ")));
+    }
+
+    // An enum's values, so its meaning doesn't need a second search. Marked
+    // where deprecated, since that's exactly what you'd want to avoid using.
+    if record.kind == Kind::Enum {
+        let values: Vec<String> = records
+            .iter()
+            .filter(|r| r.kind == Kind::EnumValue && r.parent.as_deref() == Some(&record.name))
+            .map(|r| match r.deprecated.is_some() {
+                true => format!("{} (deprecated)", r.name),
+                false => r.name.clone(),
+            })
+            .collect();
+        if !values.is_empty() {
+            out.push(("values", values.join(", ")));
+        }
+    }
+
+    // What refers to this type. Only for types — a field is already reachable
+    // through the type it hangs off, which its own path shows.
+    if record.parent.is_none() && record.kind != Kind::Directive {
+        let mut refs: Vec<&str> = records
+            .iter()
+            .filter(|r| r.base_type() == Some(record.name.as_str()) && r.path != record.path)
+            .map(|r| r.path.as_str())
+            .collect();
+        refs.dedup();
+        if !refs.is_empty() {
+            let total = refs.len();
+            refs.truncate(MAX_REFERENCES);
+            let mut list = refs.join(", ");
+            if total > refs.len() {
+                list.push_str(&format!(", and {} more", total - refs.len()));
+            }
+            out.push(("referenced by", list));
+        }
+    }
+    out
 }
 
 /// Lines a description may occupy, its first included. A schema doc can run to
@@ -789,7 +891,7 @@ impl Row {
     }
 }
 
-fn print_text(matches: &[Match], descriptions: bool) {
+fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRecord]>) {
     // With one result there is no table: nothing else pays for a long signature,
     // and there's no column to align a description against. Both of those turn
     // into "show the whole thing" below.
@@ -859,11 +961,6 @@ fn print_text(matches: &[Match], descriptions: bool) {
             line.push("(deprecated)", style::warning);
         }
 
-        if row.desc.is_empty() {
-            println!("{}", line.finish());
-            continue;
-        }
-
         // A lone result gets the whole description, at full width, on its own
         // lines. Not just an uncapped version of the inline form: hanging the
         // full text off a 64-column indent wraps it into a tall ribbon a few
@@ -873,6 +970,27 @@ fn print_text(matches: &[Match], descriptions: bool) {
             for l in wrap(&row.desc, style::width().saturating_sub(2), usize::MAX) {
                 println!("  {}", style::muted(&l));
             }
+            if let Some(all) = explain {
+                let notes = annotations(matches[0].record, all);
+                let label_w = notes.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+                for (label, value) in notes {
+                    let indent = 2 + label_w + 2;
+                    let budget = style::width()
+                        .saturating_sub(indent)
+                        .max(MIN_DESCRIPTION_WIDTH);
+                    let mut lines = wrap(&value, budget, usize::MAX).into_iter();
+                    let first = lines.next().unwrap_or_default();
+                    println!("  {}", style::muted(&format!("{label:<label_w$}  {first}")));
+                    for cont in lines {
+                        println!("{}{}", " ".repeat(indent), style::muted(&cont));
+                    }
+                }
+            }
+            continue;
+        }
+
+        if row.desc.is_empty() {
+            println!("{}", line.finish());
             continue;
         }
 
@@ -974,7 +1092,9 @@ fn one_named_record<'a>(
                     score: h.score as f64,
                 })
                 .collect();
-            output.write_matches(&matches, None)?;
+            // A candidate list by construction: this path exists because the
+            // query did *not* name a record, so there's nothing to explain.
+            output.write_matches(&matches, None, None, &[])?;
             return Err(Handled.into());
         }
     }
