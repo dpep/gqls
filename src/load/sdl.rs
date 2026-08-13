@@ -49,6 +49,57 @@ fn strip_schema_extensions(sdl: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
+/// graphql-parser (0.4) also rejects a *description on a schema definition* —
+/// `"""Our API."""` above `schema { query: Query }` — which the spec has
+/// allowed since 2018. It's not a partial failure: the whole file is rejected,
+/// with an error that points at `schema` and lists the definitions it expected,
+/// never mentioning the string above it.
+///
+/// gqls builds no record for the schema definition itself, so that description
+/// is the one piece of documentation in a file that nothing here would ever
+/// show. Dropping it costs nothing and parses the other few hundred types.
+fn strip_schema_description(sdl: &str) -> std::borrow::Cow<'_, str> {
+    if !sdl.contains("schema") {
+        return std::borrow::Cow::Borrowed(sdl);
+    }
+    let b = sdl.as_bytes();
+    let mut i = 0;
+    while let Some(found) = sdl[i..].find("schema") {
+        let at = i + found;
+        i = at + "schema".len();
+        // A word boundary on both sides, so `schemaVersion` and the `schema` in
+        // `extend schema` (already stripped) don't match.
+        if (at > 0 && is_ident(b[at - 1])) || b.get(i).copied().is_some_and(is_ident) {
+            continue;
+        }
+        // Walk back over whitespace to whatever precedes the keyword.
+        let mut j = at;
+        while j > 0 && b[j - 1].is_ascii_whitespace() {
+            j -= 1;
+        }
+        if j == 0 || b[j - 1] != b'"' {
+            continue;
+        }
+        // A description sits immediately above. Find where it opened.
+        let block = j >= 3 && &sdl[j - 3..j] == "\"\"\"";
+        let (close, quote) = if block {
+            (j - 3, "\"\"\"")
+        } else {
+            (j - 1, "\"")
+        };
+        let Some(open) = sdl[..close].rfind(quote) else {
+            continue;
+        };
+        let mut out = String::with_capacity(sdl.len());
+        out.push_str(&sdl[..open]);
+        out.push_str(&sdl[j..]);
+        // One description per schema definition, and there's one schema
+        // definition per document — nothing left to scan for.
+        return std::borrow::Cow::Owned(out);
+    }
+    std::borrow::Cow::Borrowed(sdl)
+}
+
 /// If a schema extension (`extend schema <directives> [block]`) starts at `i`,
 /// return the byte index just past it; else `None`.
 fn extend_schema_block(b: &[u8], i: usize) -> Option<usize> {
@@ -170,6 +221,7 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
     // @link(...)`), which head every Apollo Federation v2 subgraph file, so
     // strip them first — they apply only federation directives, no types.
     let text = strip_schema_extensions(text);
+    let text = strip_schema_description(&text);
     let doc = parse_schema::<String>(&text).map_err(|e| anyhow!("parsing SDL: {e}"))?;
 
     let mut roots = default_roots();
@@ -456,6 +508,42 @@ mod tests {
             .iter()
             .any(|r| r.path == "Query.me" && r.kind == Kind::Query));
         assert!(!recs.iter().any(|r| r.name == "link")); // the @link block yields nothing
+    }
+
+    #[test]
+    fn a_documented_schema_definition_still_parses() {
+        // graphql-parser rejects the description, and rejects the whole file
+        // with it — so a real schema that documents its own entry point would
+        // fail to load at all.
+        let sdl = "\"\"\"Our public API.\"\"\"\n\
+            schema { query: Query }\n\
+            type Query { me: User }\n\
+            type User { id: ID! }\n";
+        let recs = from_sdl(sdl).expect("a documented schema block should parse");
+        assert!(recs.iter().any(|r| r.path == "Query.me"));
+        assert!(recs.iter().any(|r| r.path == "User.id"));
+    }
+
+    #[test]
+    fn a_single_quoted_schema_description_also_parses() {
+        let sdl = "\"Our public API.\"\nschema { query: Query }\ntype Query { me: ID }\n";
+        assert!(from_sdl(sdl)
+            .expect("should parse")
+            .iter()
+            .any(|r| r.path == "Query.me"));
+    }
+
+    #[test]
+    fn a_description_elsewhere_is_left_alone() {
+        // Only the string directly above `schema` goes. Everything else is
+        // documentation gqls actually shows.
+        let sdl = "\"\"\"An account.\"\"\"\n\
+            type User { id: ID! }\n\
+            schema { query: Query }\n\
+            type Query { me: User }\n";
+        let recs = from_sdl(sdl).expect("should parse");
+        let user = recs.iter().find(|r| r.path == "User").unwrap();
+        assert_eq!(user.description.as_deref(), Some("An account."));
     }
 
     #[test]

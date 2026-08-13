@@ -21,6 +21,14 @@ early entries are terser than what follows.
   already committed to one field — it refuses to draft unless the query named
   it — so the whole description goes in, wrapped and uncapped.
 
+### Fixed
+- A schema whose `schema { … }` block carries a description now loads. The
+  parser rejects the description and the whole file with it, pointing at
+  `schema` and never mentioning the string above — so a schema that documents
+  its own entry point failed entirely. Dropped before parsing, like the
+  federation `extend schema` header already is; gqls builds no record for the
+  schema definition, so nothing it would have shown is lost.
+
 ### Changed
 - A single result shows its whole description, as its own block indented under
   the row rather than hanging off the description column. The three-line cap

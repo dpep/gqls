@@ -1,3 +1,34 @@
+"""
+A small blogging API, written to exercise gqls rather than to be realistic:
+interfaces, a union, nested and self-referential inputs, deprecations, a custom
+directive, and descriptions that are variously long, short and absent.
+"""
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+"""Restricts a field to callers holding at least the given role."""
+directive @auth(requires: Role = MEMBER) on FIELD_DEFINITION | OBJECT
+
+"""An ISO 8601 timestamp, always UTC."""
+scalar DateTime
+
+scalar JSON
+
+"""Anything stored with an id and a creation time."""
+interface Node {
+  id: ID!
+  createdAt: DateTime!
+}
+
+"""Anything readers can comment on."""
+interface Commentable {
+  """Comments, newest first."""
+  comments(first: Int = 10, after: String): [Comment!]!
+}
+
 """A minimal schema for trying gqls: gqls user examples/schema.graphql"""
 type Query {
   """Look up a user by id."""
@@ -13,6 +44,20 @@ type Query {
 
   """Full-text search across users and posts."""
   search(term: String!): [SearchResult!]!
+
+  """Fetch anything by its global id."""
+  node(id: ID!): Node
+
+  posts(filter: PostFilter, orderBy: [PostOrder!] = [{field: CREATED_AT, direction: DESC}]): [Post!]!
+
+  """
+  Posts the recommendation model suggests for a segment. Expensive: the model
+  runs per call and is not cached, so prefer a narrow segment.
+  """
+  recommendedPostsForSubscriberSegment(segment: String!, limit: Int = 5): [Post!]!
+
+  """Whatever the server wants to say about itself. Shape is not guaranteed."""
+  serverInfo: JSON
 }
 
 type Mutation {
@@ -20,34 +65,91 @@ type Mutation {
   createUser(input: CreateUserInput!): User!
 
   deleteUser(id: ID!): Boolean! @deprecated(reason: "use archiveUser")
+
+  """Archive a user, keeping their posts. Reversible for 30 days."""
+  archiveUser(id: ID!, reason: String): ArchiveUserPayload!
+
+  """Publish a draft. Returns the post and any problems that blocked it."""
+  publishPost(id: ID!, at: DateTime): PublishPostPayload!
+}
+
+type Subscription {
+  """Fires whenever a post in the account is published."""
+  postPublished(authorId: ID): Post!
 }
 
 """An account."""
-type User {
+type User implements Node {
   id: ID!
+  createdAt: DateTime!
 
   """Display name. Not unique — use `id` to identify a user."""
   name: String!
 
   """Primary address, unique across the account. Changing it re-triggers verification."""
-  email: String!
+  email: String! @auth(requires: ADMIN)
 
   """What the user may do. Defaults to MEMBER on creation."""
   role: Role!
 
   """Posts this user authored, newest first."""
   posts(first: Int): [Post!]!
+
+  avatarUrl: String
+
+  """Arbitrary key/value data the account owner attaches to a user."""
+  metadata: JSON
 }
 
 """Something a user wrote."""
-type Post {
+type Post implements Node & Commentable {
   id: ID!
+  createdAt: DateTime!
 
   """Headline, as typed. May be empty on a draft."""
   title: String!
 
+  body: String
+
   """Who wrote it."""
   author: User!
+
+  """Comments, newest first."""
+  comments(first: Int = 10, after: String): [Comment!]!
+
+  """Free-form labels. Empty rather than null when there are none."""
+  tags: [String!]!
+
+  """Set once the post goes live; null while it's a draft."""
+  publishedAt: DateTime
+}
+
+"""A reply to a post."""
+type Comment implements Node {
+  id: ID!
+  createdAt: DateTime!
+  body: String!
+  author: User!
+}
+
+"""What `archiveUser` gives back."""
+type ArchiveUserPayload {
+  user: User
+  errors: [UserError!]!
+}
+
+"""What `publishPost` gives back."""
+type PublishPostPayload {
+  post: Post
+  errors: [UserError!]!
+}
+
+"""Something the caller can fix, as opposed to a server fault."""
+type UserError {
+  """Which input field was at fault, outermost first."""
+  path: [String!]!
+  message: String!
+  code: ErrorCode!
 }
 
 """Anything `search` can return."""
@@ -63,6 +165,28 @@ enum Role {
 
   """Read-only."""
   GUEST
+
+  OWNER @deprecated(reason: "collapsed into ADMIN")
+}
+
+enum ErrorCode {
+  NOT_FOUND
+  FORBIDDEN
+
+  """The input parsed but failed a business rule."""
+  INVALID
+}
+
+"""What to sort posts by."""
+enum PostOrderField {
+  CREATED_AT
+  PUBLISHED_AT
+  TITLE
+}
+
+enum OrderDirection {
+  ASC
+  DESC
 }
 
 input CreateUserInput {
@@ -74,5 +198,20 @@ input CreateUserInput {
   role: Role = MEMBER
 }
 
-"""An ISO 8601 timestamp, always UTC."""
-scalar DateTime
+"""Narrows `posts`. Every field is optional and they combine with AND."""
+input PostFilter {
+  authorId: ID
+
+  """Only posts carrying all of these tags."""
+  tags: [String!]
+
+  publishedAfter: DateTime
+
+  """Recurse to exclude a subset of whatever the rest of the filter matched."""
+  not: PostFilter
+}
+
+input PostOrder {
+  field: PostOrderField!
+  direction: OrderDirection! = ASC
+}
