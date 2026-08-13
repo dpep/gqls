@@ -76,8 +76,23 @@ pub fn name(text: &str) -> String {
     paint(text, "1")
 }
 
-/// Everything that isn't the name: arguments, the arrow, the return type, the
-/// kind tag, the description.
+/// The answer to what was asked: a field's return type, or the description of a
+/// record someone named.
+///
+/// Plain default weight, and deliberately so rather than by omission. Three
+/// registers, no hue: **bold is the identity, plain is the answer, dim is the
+/// apparatus.** All three are relative to the user's own foreground, so none of
+/// them can clash with a theme the way a colour can.
+///
+/// Dim would be wrong for both. `muted` means "not what you asked for" — true
+/// of a description while you're scanning a list, false of the same description
+/// once you've named the record and it *is* the answer.
+pub fn answer(text: &str) -> String {
+    text.to_string()
+}
+
+/// Everything that isn't the name or the answer: arguments, the arrow, the kind
+/// tag, and a description you're scanning past.
 ///
 /// One treatment for all of it, deliberately. An earlier version gave the
 /// return type its own colour, which meant three visual weights on a line whose

@@ -16,6 +16,33 @@ early entries are terser than what follows.
   palette. Suppressed when stdout isn't a TTY or `NO_COLOR` is set, and it only
   ever adds escapes, so the visible characters are identical either way.
 
+### Changed
+- A blank line separates an explanation's description from its annotations.
+  Prose and a fact table were stacked at the same indent in the same weight, so
+  a wrapped description's last line was indistinguishable from the first
+  annotation. Only ever between two non-empty halves, and `-e` already
+  separated its own sections this way.
+- Three weights instead of two: **bold is the identity, plain is the answer,
+  dim is the apparatus.** A field's return type and an explained record's
+  description move to plain — a description you're scanning past in a list is
+  apparatus, the same description once you've named the record is the answer,
+  and dimming it said the opposite. Still no hue beyond red for deprecation.
+- A description in a list is one line, not three. It's a disambiguator there —
+  enough to tell one row from the next — now that naming a record shows all of
+  it. Three lines of ribbon in a 39-column gutter is the shape the explained
+  path exists to avoid.
+- An enum's values join the annotation table when they fit on one line, and
+  become a block only when a value has something to say. `-D` and an
+  undocumented enum both take the table form, where they previously printed an
+  unpadded line that missed the label column and ran off the edge.
+
+### Fixed
+- Undescribed enum values no longer print trailing whitespace — and with colour
+  on, the spaces were landing inside the escape wrapper.
+- A deprecated enum value's marker is red, like every other deprecation. In a
+  long enum the one value you must not use had been the least visible thing on
+  screen.
+
 ### Added
 - Several positional words are one query, so `gqls cancel a subscription` needs
   no quotes, and `gqls query User` no longer fails by reading `User` as the

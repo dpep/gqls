@@ -692,9 +692,10 @@ pub fn run() -> Result<()> {
             // Everything else matched the letters without being what was asked
             // for. Say how many rather than dropping them silently.
             if matches.len() > 1 {
+                let others = matches.len() - 1;
                 crate::status!(
-                    "{} other match(es) for {query:?} (--no-explain to list them)",
-                    matches.len() - 1
+                    "{others} other match{} for {query:?} (--no-explain to list them)",
+                    if others == 1 { "" } else { "es" }
                 );
             }
             matches = vec![matches[i]];
@@ -919,13 +920,19 @@ fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> 
     }
 }
 
-/// The single-line annotations, in the order they're printed. An enum's values
-/// are rendered separately, as a block, because they carry descriptions.
-fn annotations(record: &SchemaRecord, extras: &Extras) -> Vec<(&'static str, String)> {
+/// The single-line annotations, in the order they're printed.
+///
+/// Lines before blocks. These form a table whose shared label column only reads
+/// as one when its rows are contiguous, so an enum's values — five lines with
+/// their own indent — go after all of them rather than in the slot where they'd
+/// sit semantically, beside a union's `members`. When the values *do* fit on one
+/// line they join the table, in exactly that slot.
+fn annotations(record: &SchemaRecord, extras: &Extras, descriptions: bool) -> Vec<Note> {
     let mut out = Vec::new();
+    let note = |label, value: String| Note { label, value };
 
     if let Some(reason) = record.deprecated.as_deref().filter(|r| !r.is_empty()) {
-        out.push(("deprecated", reason.to_string()));
+        out.push(note("deprecated", reason.to_string()));
     }
     // `@deprecated` is skipped: the line above already carries it, with the
     // reason, which is the part worth reading.
@@ -936,14 +943,17 @@ fn annotations(record: &SchemaRecord, extras: &Extras) -> Vec<(&'static str, Str
         .filter(|d| !d.starts_with("@deprecated"))
         .collect();
     if !applied.is_empty() {
-        out.push(("directives", applied.join(" ")));
+        out.push(note("directives", applied.join(" ")));
     }
     if !record.possible_types.is_empty() {
         let label = match record.kind {
             Kind::Union => "members",
             _ => "implemented by",
         };
-        out.push((label, record.possible_types.join(", ")));
+        out.push(note(label, record.possible_types.join(", ")));
+    }
+    if !extras.values.is_empty() && !values_need_a_block(&extras.values, descriptions) {
+        out.push(note("values", collapsed_values(&extras.values)));
     }
     if !extras.referenced_by.is_empty() {
         let total = extras.referenced_by.len();
@@ -952,36 +962,54 @@ fn annotations(record: &SchemaRecord, extras: &Extras) -> Vec<(&'static str, Str
         if total > shown {
             list.push_str(&format!(", and {} more", total - shown));
         }
-        out.push(("referenced by", list));
+        out.push(note("referenced by", list));
     }
     out
 }
 
+/// Whether an enum's values need the block form. Only when at least one of them
+/// has something to say — otherwise it's a list of names, which is a table row.
+fn values_need_a_block(values: &[EnumValue], descriptions: bool) -> bool {
+    descriptions && values.iter().any(|v| v.description.is_some())
+}
+
+/// One annotation: a label, and the value it answers for.
+struct Note {
+    label: &'static str,
+    value: String,
+}
+
+/// Print the annotation table — every label sharing one column, values wrapped
+/// with a hanging indent under their own start.
+fn print_notes(notes: &[Note]) {
+    let label_w = notes.iter().map(|n| n.label.len()).max().unwrap_or(0);
+    for note in notes {
+        let indent = 2 + label_w + 2;
+        let budget = style::width()
+            .saturating_sub(indent)
+            .max(MIN_DESCRIPTION_WIDTH);
+        let mut lines = wrap(&note.value, budget, usize::MAX).into_iter();
+        let mut line = style::Line::default();
+        line.push("  ", style::answer);
+        line.push(note.label, style::muted);
+        line.pad_to(2 + label_w);
+        line.gap();
+        line.push(&lines.next().unwrap_or_default(), style::muted);
+        println!("{}", line.finish());
+        for cont in lines {
+            println!("{}{}", " ".repeat(indent), style::muted(&cont));
+        }
+    }
+}
+
 /// An enum's values, one per line with what each means.
 ///
-/// Its own block rather than an annotation line, because the descriptions are
+/// Its own block rather than an annotation row, because the descriptions are
 /// the point: reading `Role` should answer what `ADMIN` grants without a second
-/// search for `Role.`. Under `-D` it collapses to the names on one line — the
-/// same "no prose" the flag means everywhere else.
-fn print_values(values: &[EnumValue], descriptions: bool) {
-    if values.is_empty() {
-        return;
-    }
-    if !descriptions || values.iter().all(|v| v.description.is_none()) {
-        let names: Vec<String> = values
-            .iter()
-            .map(|v| match v.deprecated {
-                Some(_) => format!("{} (deprecated)", v.name),
-                None => v.name.to_string(),
-            })
-            .collect();
-        println!(
-            "  {}",
-            style::muted(&format!("values  {}", names.join(", ")))
-        );
-        return;
-    }
-
+/// search for `Role.`. When no value has a description — `-D`, or an enum
+/// nobody documented — there's nothing to lay out, so it collapses into the
+/// table above instead (see [`collapsed_values`]).
+fn print_values(values: &[EnumValue]) {
     println!("  {}", style::muted("values"));
     let name_w = values
         .iter()
@@ -990,36 +1018,70 @@ fn print_values(values: &[EnumValue], descriptions: bool) {
         .unwrap_or(0);
     for value in values {
         let indent = 4 + name_w + 2;
-        let mut note = match value.deprecated {
+        let budget = style::width()
+            .saturating_sub(indent)
+            .max(MIN_DESCRIPTION_WIDTH);
+        // Deprecation gets the warning colour here too. In a twenty-value enum
+        // the one value you must not use shouldn't be the least visible thing
+        // on screen.
+        let marker = match value.deprecated {
             // An empty reason still has to say *that* it's deprecated.
             Some("") => "(deprecated)".to_string(),
             Some(reason) => format!("(deprecated: {reason})"),
             None => String::new(),
         };
+        let mut text = marker.clone();
         if let Some(d) = value.description {
-            if !note.is_empty() {
-                note.push(' ');
+            if !text.is_empty() {
+                text.push(' ');
             }
-            note.push_str(d);
+            text.push_str(d);
         }
-        let budget = style::width()
-            .saturating_sub(indent)
-            .max(MIN_DESCRIPTION_WIDTH);
-        let mut lines = wrap(&note, budget, usize::MAX).into_iter();
+        let mut lines = wrap(&text, budget, usize::MAX).into_iter();
         let first = lines.next().unwrap_or_default();
-        let name = value.name;
-        println!("    {}", style::muted(&format!("{name:<name_w$}  {first}")));
+
+        let mut line = style::Line::default();
+        line.push("    ", style::answer);
+        line.push(value.name, style::name);
+        line.pad_to(4 + name_w);
+        line.gap();
+        // The marker is only styled apart when it's whole on this line; a
+        // reason long enough to wrap would otherwise leave a dangling colour.
+        match first.starts_with(&marker) && !marker.is_empty() {
+            true => {
+                line.push(&marker, style::warning);
+                line.push(&first[marker.len()..], style::muted);
+            }
+            false => line.push(&first, style::muted),
+        }
+        println!("{}", line.finish());
         for cont in lines {
             println!("{}{}", " ".repeat(indent), style::muted(&cont));
         }
     }
 }
 
-/// Lines a description may occupy, its first included. A schema doc can run to
-/// paragraphs; three lines is enough for a sentence or two and little enough
-/// that a documented result still reads as one entry rather than a paragraph
-/// with a heading. `--json` carries the full text.
-const DESCRIPTION_LINES: usize = 3;
+/// An enum's values on one line, for when none of them carries a description.
+fn collapsed_values(values: &[EnumValue]) -> String {
+    values
+        .iter()
+        .map(|v| match v.deprecated {
+            Some(_) => format!("{} (deprecated)", v.name),
+            None => v.name.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Lines a description may occupy in a *list*, its first included.
+///
+/// One, because a list is for finding and a description there is a
+/// disambiguator — enough to tell this row from that one. It used to be the
+/// only place documentation appeared, which is why it used to be three; now
+/// naming the record shows all of it, unwrapped and uncapped. Three lines of
+/// ribbon in a 39-column gutter is the same shape the explained path exists to
+/// avoid.
+const DESCRIPTION_LINES: usize = 1;
 
 /// Never squeeze a description below this. On a narrow terminal the columns in
 /// front of it can eat the whole line, and wrapping every third word is worse
@@ -1107,7 +1169,7 @@ fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRec
         if ret_w > 0 {
             line.pad_to(path_w);
             line.gap();
-            line.push(&row.ret, style::muted);
+            line.push(&row.ret, style::answer);
         }
         if kind_w > 0 {
             line.pad_to(if ret_w > 0 { ret_w } else { path_w });
@@ -1129,27 +1191,25 @@ fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRec
         if lone {
             println!("{}", line.finish());
             for l in wrap(&row.desc, style::width().saturating_sub(2), usize::MAX) {
-                println!("  {}", style::muted(&l));
+                println!("  {}", style::answer(&l));
             }
             if let Some(all) = explain {
                 let extras = extras(matches[0].record, all);
-                let notes = annotations(matches[0].record, &extras);
-                // "values" is printed as its own block below, so it doesn't
-                // widen the label column it isn't in.
-                let label_w = notes.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-                for (label, value) in notes {
-                    let indent = 2 + label_w + 2;
-                    let budget = style::width()
-                        .saturating_sub(indent)
-                        .max(MIN_DESCRIPTION_WIDTH);
-                    let mut lines = wrap(&value, budget, usize::MAX).into_iter();
-                    let first = lines.next().unwrap_or_default();
-                    println!("  {}", style::muted(&format!("{label:<label_w$}  {first}")));
-                    for cont in lines {
-                        println!("{}{}", " ".repeat(indent), style::muted(&cont));
-                    }
+                let notes = annotations(matches[0].record, &extras, descriptions);
+                let block = values_need_a_block(&extras.values, descriptions);
+                // One blank line, and only between two things worth separating:
+                // prose above, a fact table below, at the same indent. Without
+                // it a wrapped description's last line is indistinguishable from
+                // the first annotation. `-e` separates its own sections the same
+                // way. Never when either side is empty — a separator with
+                // nothing on one side of it is just a gap.
+                if !row.desc.is_empty() && (!notes.is_empty() || block) {
+                    println!();
                 }
-                print_values(&extras.values, descriptions);
+                print_notes(&notes);
+                if block {
+                    print_values(&extras.values);
+                }
             }
             continue;
         }

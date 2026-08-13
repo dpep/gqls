@@ -36,7 +36,9 @@ fn run_against(schema: &str, args: &[&str]) -> String {
 /// them as results, or measuring a path column against them, is the mistake
 /// this exists to prevent.
 fn rows(out: &str) -> Vec<&str> {
-    out.lines().filter(|l| !l.starts_with(' ')).collect()
+    out.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with(' '))
+        .collect()
 }
 
 /// The column a substring starts in, or `None` if the line doesn't contain it.
@@ -213,43 +215,33 @@ fn a_long_description_wraps_within_the_fallback_width() {
 
 #[test]
 fn a_wrapped_description_is_indented_past_its_row() {
-    // A continuation at column 0 would read as a new result.
-    let out = run(&["User."]);
-    let continuations: Vec<&str> = out.lines().filter(|l| l.starts_with(' ')).collect();
-    assert!(!continuations.is_empty(), "expected a wrap in:\n{out}");
+    // A continuation at column 0 would read as a new result. A list caps
+    // descriptions at one line now, so the wrap worth checking is an
+    // explanation's, where the text runs at full width beneath its row.
+    let out = run(&["Query.users", "-k", "query"]);
+    let continuations: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with(' ') && !l.trim().is_empty())
+        .collect();
+    assert!(continuations.len() > 1, "expected a wrap in:\n{out}");
     assert!(
-        continuations
-            .iter()
-            .all(|l| l.len() - l.trim_start().len() > 8),
-        "continuations should be clearly indented:\n{out}"
+        continuations.iter().all(|l| l.starts_with("  ")),
+        "continuations should be indented:\n{out}"
     );
 }
 
 #[test]
 fn a_description_is_capped_rather_than_running_on() {
-    // In a list, a long description is cut to three lines. `Query.` is a
-    // genuine list — a trailing dot enumerates, naming nothing — which is what
-    // this needs: a query that *named* one record would explain it instead, and
-    // an explanation is deliberately uncapped.
+    // A list is for finding, so a description there is one line — enough to
+    // tell this row from that one, and no more. `Query.` is a genuine list: a
+    // trailing dot enumerates and names nothing, where a query that *named* a
+    // record would explain it instead, uncapped.
     let out = run(&["Query."]);
     assert!(rows(&out).len() > 3, "expected a list:\n{out}");
-    let blocks: Vec<usize> = {
-        let mut sizes = Vec::new();
-        for line in out.lines() {
-            match line.starts_with(' ') {
-                true => *sizes.last_mut().expect("a continuation needs a row") += 1,
-                false => sizes.push(1),
-            }
-        }
-        sizes
-    };
-    assert!(
-        blocks.iter().all(|n| *n <= 3),
-        "no row may exceed three lines, got {blocks:?} in:\n{out}"
-    );
-    assert!(
-        blocks.contains(&3),
-        "expected one row to hit the cap:\n{out}"
+    assert_eq!(
+        out.lines().count(),
+        rows(&out).len(),
+        "no row in a list should wrap:\n{out}"
     );
     assert!(out.contains('…'), "expected an elision:\n{out}");
 }
