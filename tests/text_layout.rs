@@ -227,23 +227,31 @@ fn a_wrapped_description_is_indented_past_its_row() {
 
 #[test]
 fn a_description_is_capped_rather_than_running_on() {
-    // `Query.users` has a four-sentence doc comment; three lines of it is the
-    // most a single result gets before the tail is elided.
-    let out = run(&["Query.users"]);
-    // Lines belonging to the first row: its own, plus every continuation before
-    // the next row starts. `Query.user` also matches, so this can't just count
-    // the whole output.
-    let first_block = out
-        .lines()
-        .skip(1)
-        .take_while(|l| l.starts_with(' '))
-        .count()
-        + 1;
-    assert_eq!(first_block, 3, "expected a 3-line cap:\n{out}");
+    // In a list, a long description is cut to three lines. `Query.` is a
+    // genuine list — a trailing dot enumerates, naming nothing — which is what
+    // this needs: a query that *named* one record would explain it instead, and
+    // an explanation is deliberately uncapped.
+    let out = run(&["Query."]);
+    assert!(rows(&out).len() > 3, "expected a list:\n{out}");
+    let blocks: Vec<usize> = {
+        let mut sizes = Vec::new();
+        for line in out.lines() {
+            match line.starts_with(' ') {
+                true => *sizes.last_mut().expect("a continuation needs a row") += 1,
+                false => sizes.push(1),
+            }
+        }
+        sizes
+    };
     assert!(
-        out.lines().nth(2).unwrap().trim_end().ends_with('…'),
-        "expected the capped line to be elided:\n{out}"
+        blocks.iter().all(|n| *n <= 3),
+        "no row may exceed three lines, got {blocks:?} in:\n{out}"
     );
+    assert!(
+        blocks.contains(&3),
+        "expected one row to hit the cap:\n{out}"
+    );
+    assert!(out.contains('…'), "expected an elision:\n{out}");
 }
 
 #[test]
@@ -267,6 +275,48 @@ fn a_lone_result_gets_its_whole_description_at_full_width() {
             .all(|l| l.len() - l.trim_start().len() == 2),
         "expected a two-space block:\n{out}"
     );
+}
+
+#[test]
+fn capitalisation_picks_the_type_out_of_its_fields() {
+    // `Role` matches the enum, `User.role` and `CreateUserInput.role`, and names
+    // only the enum — GraphQL capitalises types and doesn't capitalise fields,
+    // so case is real evidence of which one was meant.
+    let out = run(&["Role"]);
+    assert_eq!(rows(&out).len(), 1, "expected just the enum:\n{out}");
+    assert!(out.starts_with("Role  [enum]"), "{out}");
+    assert!(out.contains("values"), "expected annotations:\n{out}");
+}
+
+#[test]
+fn the_lowercase_query_stays_a_search() {
+    let out = run(&["role"]);
+    assert!(rows(&out).len() > 1, "expected a list:\n{out}");
+    assert!(!out.contains("values  "), "should not annotate:\n{out}");
+}
+
+#[test]
+fn naming_two_records_is_still_a_search() {
+    // `email` names `User.email` and `CreateUserInput.email` equally well.
+    // Picking one to explain would answer a question that isn't finished.
+    let out = run(&["email"]);
+    assert!(rows(&out).len() > 1, "expected a list:\n{out}");
+    assert!(!out.contains("directives"), "should not annotate:\n{out}");
+}
+
+#[test]
+fn no_explain_forces_the_list_back() {
+    let explained = run(&["Role"]);
+    let listed = run(&["Role", "--no-explain"]);
+    assert_eq!(rows(&explained).len(), 1);
+    assert!(rows(&listed).len() > 1, "expected every match:\n{listed}");
+}
+
+#[test]
+fn an_annotation_carries_what_the_row_cannot() {
+    // The deprecation *reason* had been in the JSON and nowhere in the text.
+    let out = run(&["Mutation.deleteUser"]);
+    assert!(out.contains("deprecated  use archiveUser"), "{out}");
 }
 
 #[test]

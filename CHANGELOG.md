@@ -17,6 +17,21 @@ early entries are terser than what follows.
   ever adds escapes, so the visible characters are identical either way.
 
 ### Added
+- A query that names exactly one of its matches now gets that record on its own,
+  annotated: the deprecation *reason* rather than a bare marker, applied
+  directives with their arguments, a union's members or an interface's
+  implementors, an enum's values, and what references a type. Searching narrows;
+  naming finds. `--no-explain` forces the list back, and a stderr note says how
+  many other matches there were.
+- Capitalisation decides when it's the only thing separating candidates. `Role`
+  names the enum and not `User.role`, so it explains; `role` names all three and
+  stays a search. `-e`/`-R` are unchanged and stay case-insensitive, because
+  `createuser -e` should draft rather than lecture.
+- `match: "exact" | "corrected"` on the named record in `--json`/`--ndjson` —
+  the discriminator for "this is an explanation, not a list", absent otherwise.
+  Additive: the array shape and every existing field are unchanged.
+
+### Added
 - `-e` leads with what the field does, as a comment above the operation. It has
   already committed to one field — it refuses to draft unless the query named
   it — so the whole description goes in, wrapped and uncapped.

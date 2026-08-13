@@ -131,6 +131,24 @@ pub fn names_the_record(query: &str, record: &SchemaRecord) -> Option<NameMatch>
     }
 }
 
+/// Whether the query is this record's name character for character, casing
+/// included — `Role` for the enum, not for `User.role`.
+///
+/// [`names_the_record`] is deliberately case-insensitive: `createuser -e` should
+/// draft rather than lecture. But case is real evidence of intent when it's the
+/// thing telling two records apart, and GraphQL convention makes it reliable —
+/// types are capitalised, fields aren't. So `Role` picks the enum out of a
+/// result set that also holds `User.role`, while `role` stays the ambiguous
+/// search it reads as.
+pub fn names_the_record_exactly(query: &str, record: &SchemaRecord) -> bool {
+    let (leaf, qualifier) = score::parse_qualified(query);
+    leaf == record.name
+        && match qualifier {
+            Some(q) => record.parent.as_deref() == Some(q),
+            None => true,
+        }
+}
+
 /// Case-insensitively equal, or within the scorer's typo budget of it.
 fn near_exact(query: &str, name: &str) -> Option<NameMatch> {
     let (q, n) = (query.to_ascii_lowercase(), name.to_ascii_lowercase());

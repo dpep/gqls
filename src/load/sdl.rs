@@ -476,8 +476,26 @@ fn type_to_string(t: &Type<'_, String>) -> String {
     }
 }
 
+/// Applied directives, rendered as written: `@auth(requires: ADMIN)`.
+///
+/// With the arguments, not just the name. `@auth` says a field is restricted;
+/// `@auth(requires: ADMIN)` says who it's restricted to, which is the part
+/// worth reading — and the same distinction holds for `@key(fields: "id")` and
+/// the rest of the federation set.
 fn directive_names(ds: &[Directive<'_, String>]) -> Vec<String> {
-    ds.iter().map(|d| format!("@{}", d.name)).collect()
+    ds.iter()
+        .map(|d| match d.arguments.is_empty() {
+            true => format!("@{}", d.name),
+            false => {
+                let args: Vec<String> = d
+                    .arguments
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect();
+                format!("@{}({})", d.name, args.join(", "))
+            }
+        })
+        .collect()
 }
 
 fn deprecated_reason(ds: &[Directive<'_, String>]) -> Option<String> {

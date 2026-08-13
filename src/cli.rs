@@ -105,6 +105,12 @@ struct Cli {
     #[arg(short = 'D', long)]
     no_description: bool,
 
+    /// Always list matches, even when the query names exactly one of them.
+    /// A named record is otherwise shown on its own and annotated — right for
+    /// reading, wrong when you wanted to see everything the letters matched.
+    #[arg(long)]
+    no_explain: bool,
+
     /// Force semantic-only search. By default fuzzy and semantic results are
     /// combined once the schema's vectors are cached.
     #[arg(long, hide = HIDE_SEMANTIC)]
@@ -186,6 +192,7 @@ enum Output {
 
 /// A ranked result — from either the fuzzy scorer or the semantic ranker, so
 /// both flow through one output path.
+#[derive(Clone, Copy)]
 struct Match<'a> {
     record: &'a SchemaRecord,
     score: f64,
@@ -556,7 +563,7 @@ pub fn run() -> Result<()> {
         // can say how much a raised -l would reveal. Semantic-only mode has no
         // meaningful total (cosine ranks every record), so it never shows one.
         let t_rank = std::time::Instant::now();
-        let (matches, total): (Vec<Match>, usize) = if cli.fuzzy {
+        let (mut matches, total): (Vec<Match>, usize) = if cli.fuzzy {
             let (mut fuzzy, _) = fuzzy_matches(query, &records, filters);
             let total = fuzzy.len();
             fuzzy.truncate(cli.limit);
@@ -655,14 +662,29 @@ pub fn run() -> Result<()> {
         if matches.is_empty() {
             crate::status!("no matches for {query:?}");
         }
-        // Explain mode: the query named exactly one record, so the user has
-        // found the thing rather than narrowed toward it. Two conditions, not
-        // one — naming without uniqueness (`email` names both `User.email` and
-        // `CreateUserInput.email`) is still a search, and picking one of them to
-        // enrich would be answering a question the user hasn't finished asking.
-        let explained = (!batch && matches.len() == 1)
-            .then(|| search::names_the_record(query, matches[0].record))
+        // Explain mode: the query named exactly one of the records it matched,
+        // so the user has found the thing rather than narrowed toward it.
+        //
+        // Uniqueness among the *named* records, not among all of them. `Role`
+        // matches the enum, `User.role` and `CreateUserInput.role`, but names
+        // only the enum — casing is what separates them, and GraphQL convention
+        // makes that reliable. `role` names all three and stays a list, which is
+        // what an ambiguous query should get.
+        let explained = (!batch && !cli.no_explain)
+            .then(|| explained_match(query, &matches))
             .flatten();
+        if let Some((i, _)) = explained {
+            // Everything else matched the letters without being what was asked
+            // for. Say how many rather than dropping them silently.
+            if matches.len() > 1 {
+                crate::status!(
+                    "{} other match(es) for {query:?} (--no-explain to list them)",
+                    matches.len() - 1
+                );
+            }
+            matches = vec![matches[i]];
+        }
+        let explained = explained.map(|(_, m)| m);
         output.write_matches(&matches, batch.then_some(query), explained, &records)?;
         drop(out_span);
         if total > matches.len() {
@@ -775,6 +797,29 @@ impl Output {
             }
         }
         Ok(())
+    }
+}
+
+/// The one match a query named, if exactly one qualifies — its index and how
+/// exactly it was named.
+///
+/// Case-sensitive names win outright when there are any: `Role` naming the enum
+/// exactly takes precedence over the case-insensitive way it also names
+/// `User.role`. With no exact-cased name, every named record counts, so a query
+/// that names several stays a search.
+fn explained_match(query: &str, matches: &[Match]) -> Option<(usize, search::NameMatch)> {
+    let named: Vec<usize> = (0..matches.len())
+        .filter(|&i| search::names_the_record(query, matches[i].record).is_some())
+        .collect();
+    let cased: Vec<usize> = named
+        .iter()
+        .copied()
+        .filter(|&i| search::names_the_record_exactly(query, matches[i].record))
+        .collect();
+    let candidates = if cased.is_empty() { named } else { cased };
+    match candidates.as_slice() {
+        [only] => search::names_the_record(query, matches[*only].record).map(|m| (*only, m)),
+        _ => None,
     }
 }
 
