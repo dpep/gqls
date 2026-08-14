@@ -284,6 +284,9 @@ except FileNotFoundError:
     sys.exit(1)
 '
 
+# The plugin manifest whose version gates whether an installed copy updates.
+SKILL_PLUGIN_MANIFEST="$SKILL_REPO/plugins/code/.claude-plugin/plugin.json"
+
 step "sync skill"
 if $DRY_RUN; then
   echo "    would sync $SKILL_SRC -> $SKILL_DST"
@@ -313,6 +316,28 @@ if $DRY_RUN; then
 elif git -C "$SKILL_REPO" diff --quiet; then
   skip "plugin skill copy is current"
 else
+  # Bump the plugin's own version with it. An installed plugin updates on
+  # version, so a skill change that doesn't move it never reaches anyone:
+  # `claude plugin update` answers "already at the latest version" and keeps
+  # serving the old skill. That happened — four skill-touching commits shipped
+  # under one plugin version before anyone noticed the sessions were reading
+  # stale docs.
+  if ! $DRY_RUN; then
+    python3 - "$SKILL_PLUGIN_MANIFEST" <<'PYBUMP'
+import json, sys
+p = sys.argv[1]
+with open(p) as f:
+    d = json.load(f)
+major, minor, patch = (int(x) for x in d["version"].split("."))
+d["version"] = f"{major}.{minor + 1}.0"
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+print(f"    plugin version -> {d['version']}")
+PYBUMP
+  else
+    echo "    would bump the code plugin's version"
+  fi
   run git -C "$SKILL_REPO" add -A
   if ! $DRY_RUN; then
     git -C "$SKILL_REPO" commit -F - <<EOF
