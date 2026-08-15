@@ -35,6 +35,10 @@ is why it's in the base case and not behind a flag.
   this crate first, because cargo's fingerprint wedges "fresh" here and will
   otherwise validate code you didn't write (`cargo clean -p gqls-cli` is the
   manual fix if a build reports an error that contradicts the source).
+- **`release <version> --steps`** — the release as a checklist: the ordered
+  commands for this repo with ✓ on what's already done. Often the right mode —
+  the script's value is the ordering and the derived values, not the executing.
+  Works on a dirty tree and part-way through a release.
 - **`release <version | major | minor | patch>`** — the whole release: bump,
   changelog heading, gate, push, wait for CI, tag, `cargo publish`, Homebrew
   formula (sha, build, test, audit, tap push), the GitHub release page, and the
