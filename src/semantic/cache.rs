@@ -52,7 +52,7 @@ const KEY_BYTES: usize = 16;
 /// Content key for one record's embedded text — 128 bits, so that a schema with
 /// hundreds of thousands of records has no realistic chance of two records
 /// colliding onto each other's vector.
-pub type Key = (u64, u64);
+pub(crate) type Key = (u64, u64);
 
 // FNV-1a, vendored in ten lines rather than taken as a dependency (this module
 // is otherwise dependency-free) and used in place of `DefaultHasher` because
@@ -82,7 +82,7 @@ const SEP: &[u8] = &[0xff];
 /// Hash the exact text that gets embedded, as two independently salted 64-bit
 /// hashes. Not cryptographic: this only has to survive accidental collision,
 /// and 128 bits over a schema's records makes that vanishingly unlikely.
-pub fn key(text: &str) -> Key {
+pub(crate) fn key(text: &str) -> Key {
     (
         fnv1a(0xA5A5_A5A5_5A5A_5A5A, text.as_bytes()),
         fnv1a(0x1234_5678_9ABC_DEF0, text.as_bytes()),
@@ -107,7 +107,7 @@ fn cfg_key(embedder_kind: &str, model: Option<&str>) -> u64 {
 /// This is the expensive half — a string built per record — and every path for
 /// a given schema shares it, so a run computes it once and passes it around
 /// rather than rebuilding it per question asked.
-pub fn schema_key(records: &[SchemaRecord]) -> u64 {
+pub(crate) fn schema_key(records: &[SchemaRecord]) -> u64 {
     use rayon::prelude::*;
 
     // Building the texts is the cost — a string per record, with identifiers
@@ -127,14 +127,14 @@ pub fn schema_key(records: &[SchemaRecord]) -> u64 {
 /// cache dir is resolvable. The name is `<config>-<schema state>` so that an
 /// unchanged schema hits outright, while a changed one can still find its
 /// predecessors by the shared config prefix.
-pub fn path(schema: u64, embedder_kind: &str, model: Option<&str>) -> Option<PathBuf> {
+pub(crate) fn path(schema: u64, embedder_kind: &str, model: Option<&str>) -> Option<PathBuf> {
     let name = format!("{:016x}-{schema:016x}.vecs", cfg_key(embedder_kind, model));
     Some(cache_dir()?.join(name))
 }
 
 /// Whether a cache file for this (schema, embedder, model) triple exists — a
 /// cheap "is it warm?" check that reads no vectors.
-pub fn exists(schema: u64, embedder_kind: &str, model: Option<&str>) -> bool {
+pub(crate) fn exists(schema: u64, embedder_kind: &str, model: Option<&str>) -> bool {
     path(schema, embedder_kind, model).is_some_and(|p| p.is_file())
 }
 
@@ -208,7 +208,7 @@ fn keys_in(path: &Path) -> Option<Vec<Key>> {
 /// Read cached vectors for an exact whole-schema hit, in file order (which is
 /// record order). `None` if the file is absent, stale, or doesn't hold exactly
 /// `count` vectors.
-pub fn load(path: &Path, count: usize) -> Option<Vec<Vec<f32>>> {
+pub(crate) fn load(path: &Path, count: usize) -> Option<Vec<Vec<f32>>> {
     let entries = read_entries(path)?;
     (entries.len() == count).then(|| entries.into_iter().map(|(_, v)| v).collect())
 }
@@ -221,7 +221,11 @@ pub fn load(path: &Path, count: usize) -> Option<Vec<Vec<f32>>> {
 /// not merely the whole-file hit. Mining donors under `--refresh` would hand
 /// back the very vectors it was asked to rebuild — the flag exists for changes
 /// the content key cannot see, like model weights replaced under the same name.
-pub fn reusable(embedder_kind: &str, model: Option<&str>, refresh: bool) -> HashMap<Key, Vec<f32>> {
+pub(crate) fn reusable(
+    embedder_kind: &str,
+    model: Option<&str>,
+    refresh: bool,
+) -> HashMap<Key, Vec<f32>> {
     let Some(dir) = cache_dir() else {
         return HashMap::new();
     };
@@ -265,7 +269,7 @@ fn reusable_in(dir: &Path, prefix: &str, refresh: bool) -> HashMap<Key, Vec<f32>
 /// successor that was never written. `keys` and `vectors` are parallel and
 /// record-ordered.
 #[must_use = "a failed write must not be treated as a successor for consolidation"]
-pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) -> bool {
+pub(crate) fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
@@ -308,7 +312,7 @@ pub fn store(path: &Path, keys: &[Key], vectors: &[Vec<f32>]) -> bool {
 /// it needs is present in the file that replaced it, so mining finds them all
 /// and embeds nothing. A file holding keys the new one lacks — fields were
 /// removed — is not superseded, and is kept.
-pub fn consolidate(
+pub(crate) fn consolidate(
     written: &Path,
     keys: &[Key],
     embedder_kind: &str,
@@ -354,14 +358,14 @@ fn consolidate_in(dir: &Path, written: &Path, keys: &[Key], prefix: &str) -> usi
 
 /// Refresh a cache file's mtime on a hit, so an actively-used schema survives
 /// LRU pruning even though its vectors didn't need rewriting.
-pub fn touch(path: &Path) {
+pub(crate) fn touch(path: &Path) {
     if let Ok(f) = std::fs::File::open(path) {
         let _ = f.set_modified(std::time::SystemTime::now());
     }
 }
 
 /// Delete all but the `keep` most-recently-used cache files (by mtime).
-pub fn prune(keep: usize) {
+pub(crate) fn prune(keep: usize) {
     let Some(dir) = cache_dir() else {
         return;
     };
@@ -417,12 +421,12 @@ fn prune_in(dir: &Path, keep: usize, max_bytes: u64) {
 
 /// Number of cache files to keep on a write. Public so the caller prunes with
 /// the module's own policy.
-pub fn max_files() -> usize {
+pub(crate) fn max_files() -> usize {
     MAX_FILES
 }
 
 /// Delete every cache file; returns how many were removed.
-pub fn clear() -> usize {
+pub(crate) fn clear() -> usize {
     let Some(dir) = cache_dir() else {
         return 0;
     };

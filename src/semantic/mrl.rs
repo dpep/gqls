@@ -31,14 +31,14 @@
 //! once, since the width is part of the cache key.
 
 /// The compressed embedding width every stored/queried vector is reduced to.
-pub const MRL_DIMS: usize = 256;
+pub(crate) const MRL_DIMS: usize = 256;
 
 /// Truncate `raw_embedding` to the leading [`MRL_DIMS`] coordinates and
 /// L2-normalize it onto the unit sphere.
 ///
 /// # Panics
 /// Panics if `raw_embedding` has fewer than [`MRL_DIMS`] elements.
-pub fn compress_matryoshka_vector(raw_embedding: &[f32]) -> Vec<f32> {
+pub(crate) fn compress_matryoshka_vector(raw_embedding: &[f32]) -> Vec<f32> {
     assert!(
         raw_embedding.len() >= MRL_DIMS,
         "embedding has {} dims, need at least {MRL_DIMS}",
@@ -57,7 +57,7 @@ pub fn compress_matryoshka_vector(raw_embedding: &[f32]) -> Vec<f32> {
 
 /// Cosine similarity between two equal-length vectors. Returns `0.0` if either
 /// is degenerate or the lengths differ.
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }

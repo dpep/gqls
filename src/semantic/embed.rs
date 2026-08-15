@@ -14,16 +14,21 @@
 
 mod onnx;
 
-pub use onnx::{OnnxEmbedder, Workload};
+pub(crate) use onnx::OnnxEmbedder;
+// Unlike OnnxEmbedder, `Workload` does escape: semantic/mod.rs re-exports it
+// and `Session::new` takes one. The lint can't see past a re-export chain, so
+// it flags this link anyway.
+#[allow(unreachable_pub)]
+pub use onnx::Workload;
 
 use super::mrl::MRL_DIMS;
 
 /// Native width of the [`HashEmbedder`] fallback. The MRL stage only needs at
 /// least [`super::mrl::MRL_DIMS`] coordinates, so embedders may differ in width.
-pub const EMBED_DIMS: usize = 384;
+pub(crate) const EMBED_DIMS: usize = 384;
 
 /// Produces an embedding (length ≥ [`super::mrl::MRL_DIMS`]) for a chunk of text.
-pub trait Embedder: Send + Sync {
+pub(crate) trait Embedder: Send + Sync {
     fn embed(&self, text: &str) -> Vec<f32>;
 
     /// Stable identifier for diagnostics: `"onnx"` for the real model,
@@ -33,7 +38,7 @@ pub trait Embedder: Send + Sync {
 
 /// The best embedder available: the ONNX model if it loads, else the hash
 /// fallback. `model` is an optional `--model` request (path or name).
-pub fn default_embedder(model: Option<&str>, workload: Workload) -> Box<dyn Embedder> {
+pub(crate) fn default_embedder(model: Option<&str>, workload: Workload) -> Box<dyn Embedder> {
     // Built once per worker thread (see the thread_local pool in `Session::new`),
     // so announce the chosen backend only on the first construction in the
     // process — otherwise `-v` repeats this line once per core. (A small local
@@ -60,10 +65,10 @@ pub fn default_embedder(model: Option<&str>, workload: Workload) -> Box<dyn Embe
 /// word tokens. Not semantically trained, but stable and similarity-preserving
 /// at the lexical level — enough to exercise the vector pipeline.
 #[derive(Default, Clone, Copy, Debug)]
-pub struct HashEmbedder;
+pub(crate) struct HashEmbedder;
 
 impl HashEmbedder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }

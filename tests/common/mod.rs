@@ -18,7 +18,7 @@ use std::time::SystemTime;
 ///
 /// What planted the future timestamp is still unknown — twice now the fix
 /// destroyed the evidence. Hence the last line of the panic message.
-pub fn assert_binary_is_current(bin: &str) {
+pub(crate) fn assert_binary_is_current(bin: &str) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let bin_time = mtime(Path::new(bin)).expect("the binary under test should exist");
 

@@ -28,7 +28,7 @@ const DEFAULT_HF_REPO: &str = "Xenova/all-MiniLM-L6-v2";
 const HF_MODEL_FILE: &str = "onnx/model_quantized.onnx";
 const HF_TOKENIZER_FILE: &str = "tokenizer.json";
 
-pub struct OnnxEmbedder {
+pub(crate) struct OnnxEmbedder {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
 }
@@ -37,7 +37,7 @@ impl OnnxEmbedder {
     /// Load the embedder. `spec` is an optional `--model` request: a path (to a
     /// model dir or `.onnx` file) or a bare `org/name` Hub id. Returns `None`
     /// (→ hash fallback) if nothing usable loads.
-    pub fn load(spec: Option<&str>, workload: Workload) -> Option<Self> {
+    pub(crate) fn load(spec: Option<&str>, workload: Workload) -> Option<Self> {
         ensure_ort_dylib();
 
         if let Some(spec) = spec {
@@ -84,7 +84,7 @@ impl OnnxEmbedder {
         })
     }
 
-    pub fn dims(&self) -> usize {
+    pub(crate) fn dims(&self) -> usize {
         NATIVE_DIMS
     }
 
