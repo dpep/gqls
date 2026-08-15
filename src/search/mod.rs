@@ -24,7 +24,7 @@ const TAIL_CUTOFF: f64 = 0.4;
 /// share the prefix (`Company.employe` stays out of
 /// `CompanyProfileAndIntent`). `None` (unqualified, no type close enough, or
 /// a distance tie) falls back to plain fuzzy matching.
-pub fn parent_filter<'a>(query: &str, records: &'a [SchemaRecord]) -> Option<&'a str> {
+pub(crate) fn parent_filter<'a>(query: &str, records: &'a [SchemaRecord]) -> Option<&'a str> {
     let (_, Some(qualifier)) = score::parse_qualified(query) else {
         return None;
     };
@@ -61,7 +61,7 @@ pub fn parent_filter<'a>(query: &str, records: &'a [SchemaRecord]) -> Option<&'a
 /// kept as an intent signal by the caller — it means "around this", so the
 /// semantic combine stays on where a dot-typed exact hit would skip it.
 /// `None` for anything else (phrases, dots, no matching type).
-pub fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<String> {
+pub(crate) fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<String> {
     if query.contains('.') {
         return None;
     }
@@ -82,7 +82,7 @@ pub fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<String>
 /// of exact — the signal that the user typed a word that really exists, so
 /// meaning-based ranking would only append lookalike filler below it.
 /// (GraphQL names are ASCII by spec, so byte and char indices agree.)
-pub fn named_hit(query: &str, hits: &[Hit]) -> bool {
+pub(crate) fn named_hit(query: &str, hits: &[Hit]) -> bool {
     let (leaf, _) = score::parse_qualified(query);
     let leaf = leaf.to_ascii_lowercase();
     if leaf.is_empty() {
@@ -100,7 +100,7 @@ pub fn named_hit(query: &str, hits: &[Hit]) -> bool {
 
 /// How closely a query names a record, for the commands that act on one.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum NameMatch {
+pub(crate) enum NameMatch {
     /// The query is the record's name — and its type, where qualified.
     Exact,
     /// The same, once a small misspelling is corrected (`usre` → `user`).
@@ -117,7 +117,7 @@ pub enum NameMatch {
 /// operation for whatever `usr` subsequence-matched is a paste-ready answer to
 /// a question the user didn't ask; the candidate list and a re-run cost less
 /// than that.
-pub fn names_the_record(query: &str, record: &SchemaRecord) -> Option<NameMatch> {
+pub(crate) fn names_the_record(query: &str, record: &SchemaRecord) -> Option<NameMatch> {
     let (leaf, qualifier) = score::parse_qualified(query);
     let leaf = near_exact(leaf, &record.name)?;
     let qualifier = match qualifier {
@@ -140,7 +140,7 @@ pub fn names_the_record(query: &str, record: &SchemaRecord) -> Option<NameMatch>
 /// types are capitalised, fields aren't. So `Role` picks the enum out of a
 /// result set that also holds `User.role`, while `role` stays the ambiguous
 /// search it reads as.
-pub fn names_the_record_exactly(query: &str, record: &SchemaRecord) -> bool {
+pub(crate) fn names_the_record_exactly(query: &str, record: &SchemaRecord) -> bool {
     let (leaf, qualifier) = score::parse_qualified(query);
     leaf == record.name
         && match qualifier {
@@ -175,7 +175,7 @@ pub struct Filters<'a> {
 impl Filters<'_> {
     /// Compile once, then test many records — this is where the `returns`
     /// pattern gets parsed, rather than per record.
-    pub fn compile(&self) -> Predicate<'_> {
+    pub(crate) fn compile(&self) -> Predicate<'_> {
         Predicate {
             kind: self.kind,
             parent: self.parent,
@@ -185,7 +185,7 @@ impl Filters<'_> {
 }
 
 /// A compiled [`Filters`], ready to test records.
-pub struct Predicate<'a> {
+pub(crate) struct Predicate<'a> {
     kind: Option<Kind>,
     parent: Option<&'a str>,
     returns: Option<glob::Pattern>,
@@ -195,7 +195,7 @@ impl Predicate<'_> {
     /// Whether `r` passes every filter. A record with no type never satisfies
     /// a `returns` filter — asking what returns a `User` is asking about
     /// fields, not about the types themselves.
-    pub fn accepts(&self, r: &SchemaRecord) -> bool {
+    pub(crate) fn accepts(&self, r: &SchemaRecord) -> bool {
         self.kind.is_none_or(|k| r.kind == k)
             && self.parent.is_none_or(|p| {
                 r.parent

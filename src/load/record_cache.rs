@@ -52,7 +52,7 @@ pub fn load(source: &[u8]) -> Option<Vec<SchemaRecord>> {
 
 /// Write records for this source (best-effort — a cache write failure is
 /// never fatal), then prune the least-recently-used files.
-pub fn store(source: &[u8], records: &[SchemaRecord]) {
+pub(crate) fn store(source: &[u8], records: &[SchemaRecord]) {
     let Some(p) = path(source) else {
         return;
     };

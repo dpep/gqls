@@ -48,7 +48,7 @@ impl Kind {
 
     /// Static ranking bias by kind — roots and named types outrank leaf
     /// args. (In `rq` this is the `kind`-weight table in `score.rs`.)
-    pub fn weight(self) -> i64 {
+    pub(crate) fn weight(self) -> i64 {
         match self {
             Kind::Query | Kind::Mutation | Kind::Subscription => 60,
             Kind::Object
@@ -132,7 +132,7 @@ impl SchemaRecord {
     /// off — `[User!]!` → `User` — or `None` for a record that has no type
     /// (a type definition itself, a directive). This is the name to compare
     /// against when asking "what returns a `User`?".
-    pub fn base_type(&self) -> Option<&str> {
+    pub(crate) fn base_type(&self) -> Option<&str> {
         let base = self
             .type_ref
             .as_deref()?
@@ -146,7 +146,7 @@ impl SchemaRecord {
 /// by the SDL and introspection loaders so that one rule lives in one place;
 /// each loader fills in whichever roots its source declares.
 #[derive(Default)]
-pub struct Roots {
+pub(crate) struct Roots {
     pub query: Option<String>,
     pub mutation: Option<String>,
     pub subscription: Option<String>,
@@ -155,7 +155,7 @@ pub struct Roots {
 impl Roots {
     /// The [`Kind`] for a field defined on `type_name`: a root-operation kind if
     /// `type_name` is a root type, otherwise a plain object [`Kind::Field`].
-    pub fn field_kind(&self, type_name: &str) -> Kind {
+    pub(crate) fn field_kind(&self, type_name: &str) -> Kind {
         if self.query.as_deref() == Some(type_name) {
             Kind::Query
         } else if self.mutation.as_deref() == Some(type_name) {

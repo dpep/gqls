@@ -29,7 +29,7 @@ const STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// `opts.headers` (e.g. an `Authorization` token) and a TTL response cache
 /// (1h for remote endpoints, never for localhost) so repeated queries against a
 /// remote endpoint don't refetch all day.
-pub fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
+pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let ttl = ttl(url);
     // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
     // neither read nor write, so a schema you're actively editing is never stale.
@@ -200,7 +200,7 @@ fn is_localhost(url: &str) -> bool {
 }
 
 /// Delete all cached introspection responses; returns how many were removed.
-pub fn clear_cache() -> usize {
+pub(crate) fn clear_cache() -> usize {
     let Some(dir) = cache_dir() else { return 0 };
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return 0;
@@ -214,7 +214,7 @@ pub fn clear_cache() -> usize {
 /// Load a local introspection JSON dump — accepts `{data:{__schema}}`,
 /// `{__schema}`, or the bare schema object. Parsed records are cached keyed
 /// by the file's bytes (see `record_cache`); `opts.refresh` bypasses.
-pub fn from_json_file(path: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
+pub(crate) fn from_json_file(path: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     if !opts.refresh {
         if let Some(records) = super::record_cache::load(text.as_bytes()) {

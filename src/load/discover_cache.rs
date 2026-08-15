@@ -46,7 +46,7 @@ pub fn load(dir: &Path) -> Option<PathBuf> {
 
 /// Remember this directory's answer (best-effort — a failed write just means
 /// the next run walks again).
-pub fn store(dir: &Path, schema: &Path) {
+pub(crate) fn store(dir: &Path, schema: &Path) {
     if ttl().is_zero() {
         return;
     }

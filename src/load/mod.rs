@@ -92,7 +92,7 @@ impl Reach {
 ///
 /// The walk is the most expensive thing a warm query does, so its answer is
 /// remembered per directory (see [`discover_cache`]); `refresh` re-walks.
-pub fn discover(refresh: bool) -> Result<String> {
+pub(crate) fn discover(refresh: bool) -> Result<String> {
     let mut span = crate::profile::span("discover");
     let root = std::env::current_dir()?;
     if !refresh {

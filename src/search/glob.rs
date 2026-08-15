@@ -15,7 +15,7 @@ const MAX_ALTERNATIVES: usize = 64;
 
 /// A parsed wildcard pattern: brace groups expanded to their alternatives, any
 /// of which may match. Built once per query, then tested against every record.
-pub struct Pattern {
+pub(crate) struct Pattern {
     alternatives: Vec<String>,
 }
 
@@ -23,7 +23,7 @@ impl Pattern {
     /// Expand `pattern`'s brace groups. Malformed braces (unbalanced, or a `}`
     /// before its `{`) are left literal rather than rejected — a query is a
     /// user's guess, not a program.
-    pub fn new(pattern: &str) -> Self {
+    pub(crate) fn new(pattern: &str) -> Self {
         // `User.` is shorthand for `User.*` — a trailing dot reads as "and
         // what's inside", and needs no shell quoting the way a bare `*` does.
         let shorthand = trailing_dot(pattern).then(|| format!("{pattern}*"));
@@ -43,13 +43,13 @@ impl Pattern {
     }
 
     /// Whether any alternative matches `text`.
-    pub fn matches(&self, text: &str) -> bool {
+    pub(crate) fn matches(&self, text: &str) -> bool {
         self.alternatives.iter().any(|p| matches_one(p, text))
     }
 
     /// Whether this pattern addresses qualified paths (`User.*`) rather than
     /// leaf names (`get*`) — true when any alternative contains a `.`.
-    pub fn targets_path(&self) -> bool {
+    pub(crate) fn targets_path(&self) -> bool {
         self.alternatives.iter().any(|a| a.contains('.'))
     }
 }
@@ -59,7 +59,7 @@ impl Pattern {
 /// Patterns are single tokens: a query containing whitespace is prose, so a
 /// natural-language phrase ending in `?` ("how do I cancel a subscription?")
 /// stays a semantic query instead of becoming a glob that matches nothing.
-pub fn is_pattern(query: &str) -> bool {
+pub(crate) fn is_pattern(query: &str) -> bool {
     if query.split_whitespace().count() != 1 {
         return false;
     }

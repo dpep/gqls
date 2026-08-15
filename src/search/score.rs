@@ -11,7 +11,7 @@ use crate::model::SchemaRecord;
 
 /// Score `query` against a record, best-is-higher, or `None` if it doesn't
 /// match at all (not even as a subsequence).
-pub fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
+pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     // A qualified query (`Type.field`) names an enclosing type: match the leaf
     // against the name and reward a matching parent below.
     let (leaf, qualifier) = parse_qualified(query);
@@ -93,7 +93,7 @@ pub(crate) fn phrase_tokens(query: &str) -> Vec<&str> {
 /// Score a phrase against a record word by word: how many words matched, and
 /// their summed quality. `None` when no word matches. Callers rank on the count
 /// first — a name covering the whole phrase beats one echoing a single word.
-pub fn score_phrase(tokens: &[&str], rec: &SchemaRecord) -> Option<(usize, i64)> {
+pub(crate) fn score_phrase(tokens: &[&str], rec: &SchemaRecord) -> Option<(usize, i64)> {
     let mut matched = 0;
     let mut total = 0;
     for token in tokens {
