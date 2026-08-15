@@ -33,6 +33,24 @@ One install, and `claude plugin update code@dpep` keeps it current. It brings
 the `rq`, `git`, `find-skill` and `find-gem` skills along with it, which is
 either the point or the objection depending on the person.
 
+To have the marketplace refresh itself, set `autoUpdate` on its entry in
+`~/.claude/settings.json` (adding a marketplace may have set it already):
+
+```json
+"extraKnownMarketplaces": {
+  "dpep": {
+    "source": { "source": "github", "repo": "dpep/claude" },
+    "autoUpdate": true
+  }
+}
+```
+
+That keeps the marketplace *catalogue* current — the list of plugins and their
+versions. It does not upgrade a plugin you've installed: that still needs
+`claude plugin update code@dpep`, which compares versions rather than content.
+So an unchanged version number means no update even when the files behind it
+have moved.
+
 Prefer this unless there's a reason not to. A skill file describing an older
 binary than the one installed is the failure mode worth avoiding, and this is
 the route that gets updates.
@@ -49,11 +67,3 @@ lands. Right when the user wants nothing else from the marketplace, is offline,
 or is trying a modified version of the skill.
 
 Either way, restart Claude Code before it loads.
-
-## For whoever maintains this
-
-`claude/gqls-skill.md` is the source. `script/release.sh` copies it verbatim
-into the marketplace at release; the two files are meant to be byte-identical,
-which is why this document is separate rather than a section inside the skill —
-a sync that transforms its input is a sync that can be wrong about whether it
-ran.
