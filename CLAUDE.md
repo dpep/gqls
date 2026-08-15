@@ -35,12 +35,15 @@ is why it's in the base case and not behind a flag.
   this crate first, because cargo's fingerprint wedges "fresh" here and will
   otherwise validate code you didn't write (`cargo clean -p gqls-cli` is the
   manual fix if a build reports an error that contradicts the source).
-- **`script/release.sh <version | major | minor | patch>`** — the whole release:
-  bump, changelog heading, gate, tag, push, `cargo publish`, Homebrew formula
-  (sha, build, test, audit, tap push), the GitHub release page, and the plugin
-  skill copy. Use it rather than the nineteen steps by hand; `--dry-run` first
-  if unsure. Every step skips what's already done, so an interrupted run is
-  re-run with the same arguments.
+- **`release <version | major | minor | patch>`** — the whole release: bump,
+  changelog heading, gate, push, wait for CI, tag, `cargo publish`, Homebrew
+  formula (sha, build, test, audit, tap push), the GitHub release page, and the
+  plugin skill copy. Use it rather than the nineteen steps by hand; `--dry-run`
+  first if unsure. Every step skips what's already done, so an interrupted run
+  is re-run with the same arguments. It lives at `~/.claude/bin/release` and is
+  shared by every tool in the tap — this repo used to carry its own copy, and
+  the bugs in it were duplicated into rq's copy verbatim. `release --audit`
+  reports anything out of sync across all of them.
 - **`script/bench.sh`** — the performance baseline. `--save NAME` / `--diff NAME`.
 
 ## Two things that have burned this repo
@@ -58,7 +61,8 @@ is why it's in the base case and not behind a flag.
 
 Add the entry under `## Unreleased` in the same change that earns it — the
 release script turns that heading into the version and the release notes, and
-refuses to run if it's missing or empty.
+refuses to run if there's neither an `## Unreleased` heading nor a section for
+the version being released.
 
 ## The skill has three copies; keep them one
 
@@ -69,9 +73,10 @@ stripping — to:
 - whatever a user installed, which updates only when the **code plugin's
   version** moves in `plugins/code/.claude-plugin/plugin.json`
 
-`script/release.sh` does both at release time. **When you change the skill
-outside a release, copy it to the marketplace in the same commit and bump the
-code plugin's minor version**, or the change reaches nobody: `claude plugin
+`release` does both at release time, and `release --audit` reports a copy that
+has drifted. **When you change the skill outside a release, copy it to the
+marketplace in the same commit and bump the code plugin's minor version**, or
+the change reaches nobody: `claude plugin
 update` compares versions, not content, and will report a plugin current while
 it serves the old file. That has already happened once — four skill-touching
 commits shipped under one plugin version.
