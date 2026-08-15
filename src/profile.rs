@@ -27,7 +27,7 @@ thread_local! {
 }
 
 /// One measured phase.
-pub struct Phase {
+pub(crate) struct Phase {
     pub name: &'static str,
     pub elapsed: Duration,
     /// What the phase did — record counts, bytes, a cache verdict.
@@ -38,17 +38,17 @@ pub struct Phase {
 }
 
 /// Turn profiling on. Called once from the CLI when `--profile` is passed.
-pub fn enable() {
+pub(crate) fn enable() {
     ENABLED.store(true, Ordering::Relaxed);
 }
 
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
 /// Start timing a phase. The returned span records it when dropped; with
 /// profiling off it is inert.
-pub fn span(name: &'static str) -> Span {
+pub(crate) fn span(name: &'static str) -> Span {
     // No clock read, and no thread-local touched, when disabled — this is the
     // whole point.
     if !enabled() {
@@ -72,7 +72,7 @@ pub fn span(name: &'static str) -> Span {
     }
 }
 
-pub struct Span {
+pub(crate) struct Span {
     name: &'static str,
     start: Option<Instant>,
     note: Option<String>,
@@ -82,7 +82,7 @@ pub struct Span {
 impl Span {
     /// Attach detail to this phase. The closure runs only when profiling is on,
     /// so formatting a note never costs anything in a normal run.
-    pub fn note(&mut self, f: impl FnOnce() -> String) {
+    pub(crate) fn note(&mut self, f: impl FnOnce() -> String) {
         if self.start.is_some() {
             self.note = Some(f());
         }
@@ -116,7 +116,7 @@ fn unaccounted(phases: &[Phase], total: Duration) -> Duration {
 }
 
 /// Every phase recorded so far, in the order they finished.
-pub fn phases() -> Vec<Phase> {
+pub(crate) fn phases() -> Vec<Phase> {
     PHASES
         .lock()
         .map(|mut p| std::mem::take(&mut *p))
@@ -124,7 +124,7 @@ pub fn phases() -> Vec<Phase> {
 }
 
 /// The report, as lines ready for stderr. Empty when nothing was measured.
-pub fn report(total: Duration) -> Vec<String> {
+pub(crate) fn report(total: Duration) -> Vec<String> {
     let phases = phases();
     if phases.is_empty() {
         return Vec::new();
@@ -173,7 +173,7 @@ pub fn report(total: Duration) -> Vec<String> {
 }
 
 /// Phases as JSON, for storing a baseline and diffing runs.
-pub fn json(total: Duration) -> serde_json::Value {
+pub(crate) fn json(total: Duration) -> serde_json::Value {
     let phases = phases();
     serde_json::json!({
         "total_ms": total.as_secs_f64() * 1000.0,

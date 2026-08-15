@@ -14,12 +14,7 @@
 
 mod onnx;
 
-pub(crate) use onnx::OnnxEmbedder;
-// Unlike OnnxEmbedder, `Workload` does escape: semantic/mod.rs re-exports it
-// and `Session::new` takes one. The lint can't see past a re-export chain, so
-// it flags this link anyway.
-#[allow(unreachable_pub)]
-pub use onnx::Workload;
+pub(crate) use onnx::{OnnxEmbedder, Workload};
 
 use super::mrl::MRL_DIMS;
 

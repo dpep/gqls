@@ -18,7 +18,7 @@ use crate::model::{Kind, SchemaRecord};
 
 /// One code definition rq found, plus the candidate query that surfaced it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RqHit {
+pub(crate) struct RqHit {
     pub name: String,
     pub file: String,
     pub line: u64,
@@ -52,7 +52,7 @@ pub struct RqHit {
 /// Resolve `rec` to its code definition(s) via rq, best first. `schema_path`,
 /// when a local file, ranks hits by package proximity to the schema — the
 /// resolver in the schema's own subgraph wins over a same-named one elsewhere.
-pub fn resolve(
+pub(crate) fn resolve(
     rec: &SchemaRecord,
     code_dir: Option<&str>,
     schema_path: Option<&Path>,
@@ -174,7 +174,7 @@ fn shared_prefix(a: &Path, b: &Path) -> usize {
 
 /// graphql-ruby query candidates for a record, highest-priority first. Uses
 /// rq's qualified syntax (`Class#method`, `Module::Class`).
-pub struct Candidate {
+pub(crate) struct Candidate {
     pub query: String,
     /// A bare name search, matching any symbol anywhere in the repo rather than
     /// a graphql-ruby convention. Kept because it's sometimes the only thing
@@ -194,7 +194,7 @@ impl Candidate {
     }
 }
 
-pub fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
+pub(crate) fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
     let field = &rec.name;
     let snake = to_snake(field);
     let pascal = to_pascal(field);

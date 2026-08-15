@@ -145,7 +145,7 @@ impl Embedder for OnnxEmbedder {
 /// schema, one query embed is 21.9ms single-threaded against 8.7ms on four,
 /// while a whole-schema embed is 121s single-threaded against 133s on four.
 #[derive(Clone, Copy, PartialEq)]
-pub enum Workload {
+pub(crate) enum Workload {
     /// One query at a time: nothing else is running, so give ONNX the cores.
     Query,
     /// A whole schema: rayon already runs an inference per core, and intra-op

@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 ///
 /// Checked once — the answer can't change mid-run, and this is called per cell
 /// of every row.
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED
         .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
@@ -33,7 +33,7 @@ pub fn enabled() -> bool {
 /// and fixed rather than "whatever the terminal was" because piped output has
 /// to be reproducible: the test suite and any diff of two runs depend on the
 /// same input producing the same bytes.
-pub const FALLBACK_WIDTH: usize = 80;
+pub(crate) const FALLBACK_WIDTH: usize = 80;
 
 /// Columns available for output.
 ///
@@ -41,7 +41,7 @@ pub const FALLBACK_WIDTH: usize = 80;
 /// shells often don't export to child processes — it's set in the parent and
 /// simply absent here, so trusting it silently gives every piped run the wrong
 /// answer.
-pub fn width() -> usize {
+pub(crate) fn width() -> usize {
     static WIDTH: OnceLock<usize> = OnceLock::new();
     *WIDTH.get_or_init(|| {
         if !std::io::stdout().is_terminal() {
@@ -72,7 +72,7 @@ fn paint(text: &str, code: &str) -> String {
 /// of five `User.` rows and badly everywhere else: on a single result it
 /// fragments the one string you're looking at into two shades for no gain, and
 /// what you matched on was the whole path anyway.
-pub fn name(text: &str) -> String {
+pub(crate) fn name(text: &str) -> String {
     paint(text, "1")
 }
 
@@ -87,7 +87,7 @@ pub fn name(text: &str) -> String {
 /// Dim would be wrong for both. `muted` means "not what you asked for" — true
 /// of a description while you're scanning a list, false of the same description
 /// once you've named the record and it *is* the answer.
-pub fn answer(text: &str) -> String {
+pub(crate) fn answer(text: &str) -> String {
     text.to_string()
 }
 
@@ -97,13 +97,13 @@ pub fn answer(text: &str) -> String {
 /// One treatment for all of it, deliberately. An earlier version gave the
 /// return type its own colour, which meant three visual weights on a line whose
 /// job is to answer one question.
-pub fn muted(text: &str) -> String {
+pub(crate) fn muted(text: &str) -> String {
     paint(text, "2")
 }
 
 /// Deprecation. Rare and semantic, so it gets the one colour that interrupts a
 /// scan. Plain red, not bright red, which washes out on light backgrounds.
-pub fn warning(text: &str) -> String {
+pub(crate) fn warning(text: &str) -> String {
     paint(text, "31")
 }
 
@@ -116,7 +116,7 @@ pub fn warning(text: &str) -> String {
 /// text goes in through [`push`](Self::push), and the width is whatever went
 /// in.
 #[derive(Default)]
-pub struct Line {
+pub(crate) struct Line {
     styled: String,
     cols: usize,
     /// Where the current cell began, so [`pad_to`](Self::pad_to) can measure a
@@ -126,13 +126,13 @@ pub struct Line {
 
 impl Line {
     /// Append `text`, styled by `paint`, counting its visible columns.
-    pub fn push(&mut self, text: &str, paint: fn(&str) -> String) {
+    pub(crate) fn push(&mut self, text: &str, paint: fn(&str) -> String) {
         self.styled.push_str(&paint(text));
         self.cols += text.chars().count();
     }
 
     /// Two spaces, and start a new cell here.
-    pub fn gap(&mut self) {
+    pub(crate) fn gap(&mut self) {
         self.styled.push_str("  ");
         self.cols += 2;
         self.cell_start = self.cols;
@@ -141,7 +141,7 @@ impl Line {
     /// Pad the current cell out to `width` columns. Never truncates: a cell
     /// wider than its column pushes the rest of its own line right rather than
     /// being cut.
-    pub fn pad_to(&mut self, width: usize) {
+    pub(crate) fn pad_to(&mut self, width: usize) {
         let filled = self.cols - self.cell_start;
         let short = width.saturating_sub(filled);
         self.styled.push_str(&" ".repeat(short));
@@ -149,11 +149,11 @@ impl Line {
     }
 
     /// Columns used so far — where the next cell will start.
-    pub fn width(&self) -> usize {
+    pub(crate) fn width(&self) -> usize {
         self.cols
     }
 
-    pub fn finish(self) -> String {
+    pub(crate) fn finish(self) -> String {
         self.styled.trim_end().to_string()
     }
 }

@@ -14,14 +14,14 @@ pub mod cli;
 pub mod example;
 pub mod load;
 #[macro_use]
-pub mod logging;
+pub(crate) mod logging;
 pub mod model;
-pub mod paths;
-pub mod profile;
-pub mod render;
-pub mod resolve;
+pub(crate) mod paths;
+pub(crate) mod profile;
+pub(crate) mod render;
+pub(crate) mod resolve;
 pub mod search;
-pub mod style;
+pub(crate) mod style;
 
 #[cfg(feature = "_semantic")]
-pub mod semantic;
+pub(crate) mod semantic;

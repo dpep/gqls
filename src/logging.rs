@@ -10,15 +10,15 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-pub const QUIET: u8 = 0;
-pub const NORMAL: u8 = 1;
-pub const VERBOSE: u8 = 2;
+pub(crate) const QUIET: u8 = 0;
+pub(crate) const NORMAL: u8 = 1;
+pub(crate) const VERBOSE: u8 = 2;
 
 static LEVEL: AtomicU8 = AtomicU8::new(NORMAL);
 
 /// Set the global level from the parsed flags (called once at startup). `-v`
 /// and `-q` are mutually exclusive at the clap layer, so at most one is set.
-pub fn init(verbose: bool, quiet: bool) {
+pub(crate) fn init(verbose: bool, quiet: bool) {
     let level = if verbose {
         VERBOSE
     } else if quiet {
@@ -31,15 +31,15 @@ pub fn init(verbose: bool, quiet: bool) {
     init_log_backend(level);
 }
 
-pub fn level() -> u8 {
+pub(crate) fn level() -> u8 {
     LEVEL.load(Ordering::Relaxed)
 }
 
-pub fn is_quiet() -> bool {
+pub(crate) fn is_quiet() -> bool {
     level() == QUIET
 }
 
-pub fn is_verbose() -> bool {
+pub(crate) fn is_verbose() -> bool {
     level() >= VERBOSE
 }
 

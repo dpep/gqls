@@ -19,7 +19,7 @@ use crate::style;
 /// A ranked result — from either the fuzzy scorer or the semantic ranker, so
 /// both flow through one output path.
 #[derive(Clone, Copy)]
-pub struct Match<'a> {
+pub(crate) struct Match<'a> {
     pub record: &'a SchemaRecord,
     pub score: f64,
 }
@@ -30,7 +30,7 @@ const MAX_REFERENCES: usize = 6;
 
 /// One value of an enum, as an explanation reports it.
 #[derive(Serialize)]
-pub struct EnumValue<'a> {
+pub(crate) struct EnumValue<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
@@ -47,7 +47,7 @@ pub struct EnumValue<'a> {
 /// extra keys for `--json`. Two derivations of the same facts would drift, and
 /// the text output being richer than the machine output is backwards.
 #[derive(Serialize, Default)]
-pub struct Extras<'a> {
+pub(crate) struct Extras<'a> {
     /// An enum's values, so reading one doesn't need a second search.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     values: Vec<EnumValue<'a>>,
@@ -58,7 +58,7 @@ pub struct Extras<'a> {
     referenced_by: Vec<&'a str>,
 }
 
-pub fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> {
+pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> {
     let values = match record.kind {
         Kind::Enum => records
             .iter()
@@ -94,7 +94,7 @@ pub fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<
 /// their own indent — go after all of them rather than in the slot where they'd
 /// sit semantically, beside a union's `members`. When the values *do* fit on one
 /// line they join the table, in exactly that slot.
-pub fn annotations(record: &SchemaRecord, extras: &Extras, descriptions: bool) -> Vec<Note> {
+pub(crate) fn annotations(record: &SchemaRecord, extras: &Extras, descriptions: bool) -> Vec<Note> {
     let mut out = Vec::new();
     let note = |label, value: String| Note { label, value };
 
@@ -136,19 +136,19 @@ pub fn annotations(record: &SchemaRecord, extras: &Extras, descriptions: bool) -
 
 /// Whether an enum's values need the block form. Only when at least one of them
 /// has something to say — otherwise it's a list of names, which is a table row.
-pub fn values_need_a_block(values: &[EnumValue], descriptions: bool) -> bool {
+pub(crate) fn values_need_a_block(values: &[EnumValue], descriptions: bool) -> bool {
     descriptions && values.iter().any(|v| v.description.is_some())
 }
 
 /// One annotation: a label, and the value it answers for.
-pub struct Note {
+pub(crate) struct Note {
     label: &'static str,
     value: String,
 }
 
 /// Print the annotation table — every label sharing one column, values wrapped
 /// with a hanging indent under their own start.
-pub fn print_notes(notes: &[Note]) {
+pub(crate) fn print_notes(notes: &[Note]) {
     let label_w = notes.iter().map(|n| n.label.len()).max().unwrap_or(0);
     for note in notes {
         let indent = 2 + label_w + 2;
@@ -176,7 +176,7 @@ pub fn print_notes(notes: &[Note]) {
 /// search for `Role.`. When no value has a description — `-D`, or an enum
 /// nobody documented — there's nothing to lay out, so it collapses into the
 /// table above instead (see [`collapsed_values`]).
-pub fn print_values(values: &[EnumValue]) {
+pub(crate) fn print_values(values: &[EnumValue]) {
     println!("  {}", style::muted("values"));
     let name_w = values
         .iter()
@@ -229,7 +229,7 @@ pub fn print_values(values: &[EnumValue]) {
 }
 
 /// An enum's values on one line, for when none of them carries a description.
-pub fn collapsed_values(values: &[EnumValue]) -> String {
+pub(crate) fn collapsed_values(values: &[EnumValue]) -> String {
     values
         .iter()
         .map(|v| match v.deprecated {
@@ -267,7 +267,7 @@ const PATH_WIDTH: usize = 48;
 
 /// A row's cells, kept as plain text so the column widths can be measured, and
 /// styled only on the way out.
-pub struct Row {
+pub(crate) struct Row {
     path: String,
     args: String,
     ret: String,
@@ -285,7 +285,7 @@ impl Row {
     }
 }
 
-pub fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRecord]>) {
+pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[SchemaRecord]>) {
     // With one result there is no table: nothing else pays for a long signature,
     // and there's no column to align a description against. Both of those turn
     // into "show the whole thing" below.
@@ -424,7 +424,7 @@ pub fn print_text(matches: &[Match], descriptions: bool, explain: Option<&[Schem
 /// A word longer than the whole width (a URL, a long type name) is left to
 /// overflow rather than cut mid-token: breaking it produces two fragments that
 /// are each unsearchable, and the thing that overflows is a dim tail.
-pub fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
 
@@ -466,7 +466,7 @@ pub fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     lines
 }
 
-pub fn render_example(example: &crate::example::Example) -> Result<String> {
+pub(crate) fn render_example(example: &crate::example::Example) -> Result<String> {
     let mut out = String::new();
 
     // What the field does, above the operation that calls it. `-e` has already
