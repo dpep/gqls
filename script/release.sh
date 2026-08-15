@@ -269,20 +269,6 @@ fi
 # The step most likely to be skipped by hand, and the one nothing else catches:
 # a stale skill misinforms an agent for a whole release cycle, silently.
 
-# Whether the plugin's copy already matches, footer stripped the same way the
-# sync strips it.
-SKILL_CMP='
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-marker = "\nTo install this skill for Claude Code, copy it to"
-if marker in s:
-    s = s[: s.index(marker)].rstrip() + "\n"
-try:
-    sys.exit(0 if s == open(dst).read() else 1)
-except FileNotFoundError:
-    sys.exit(1)
-'
 
 # The plugin manifest whose version gates whether an installed copy updates.
 SKILL_PLUGIN_MANIFEST="$SKILL_REPO/plugins/code/.claude-plugin/plugin.json"
@@ -294,22 +280,16 @@ if $DRY_RUN; then
   # dry run hasn't written to — so it reports "current" for a skill that is in
   # fact stale, which is the one thing this step exists to catch. Compare the
   # files directly instead.
-  if python3 -c "$SKILL_CMP" "$SKILL_SRC" "$SKILL_DST"; then
+  if cmp -s "$SKILL_SRC" "$SKILL_DST"; then
     skip "plugin skill copy is current"
   else
     echo "    the plugin copy is stale; a real run updates and commits it"
   fi
 else
-  python3 - "$SKILL_SRC" "$SKILL_DST" <<'PY'
-import sys
-src, dst = sys.argv[1], sys.argv[2]
-s = open(src).read()
-# The install footer addresses someone reading the repo, not the installed skill.
-marker = "\nTo install this skill for Claude Code, copy it to"
-if marker in s:
-    s = s[: s.index(marker)].rstrip() + "\n"
-open(dst, "w").write(s)
-PY
+  # A copy, not a transform. The two files are meant to be byte-identical, so
+  # the staleness check above is a plain `cmp` — a sync that rewrites its input
+  # is a sync that can disagree with the check that decides whether it ran.
+  run cp "$SKILL_SRC" "$SKILL_DST"
 fi
 if $DRY_RUN; then
   : # the dry-run branch above already reported, by comparing the files

@@ -59,3 +59,22 @@ is why it's in the base case and not behind a flag.
 Add the entry under `## Unreleased` in the same change that earns it — the
 release script turns that heading into the version and the release notes, and
 refuses to run if it's missing or empty.
+
+## The skill has three copies; keep them one
+
+`claude/gqls-skill.md` is the source. It is copied verbatim — no edits, no
+stripping — to:
+
+- `~/code/lib/claude/plugins/code/skills/gqls/SKILL.md`, the public marketplace
+- whatever a user installed, which updates only when the **code plugin's
+  version** moves in `plugins/code/.claude-plugin/plugin.json`
+
+`script/release.sh` does both at release time. **When you change the skill
+outside a release, copy it to the marketplace in the same commit and bump the
+code plugin's minor version**, or the change reaches nobody: `claude plugin
+update` compares versions, not content, and will report a plugin current while
+it serves the old file. That has already happened once — four skill-touching
+commits shipped under one plugin version.
+
+Install guidance for humans lives in `claude/INSTALL.md`, deliberately outside
+the skill so the copy stays a copy.

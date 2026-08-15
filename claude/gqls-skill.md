@@ -248,5 +248,3 @@ Source + issues: <https://github.com/dpep/gqls>.
   JSON on stderr alongside `-j`. Reach for it when asked why gqls is slow on a
   schema, rather than guessing.
 - `gqls --help` prints the full help with examples.
-
-To install this skill for Claude Code, copy it to `~/.claude/skills/gqls/SKILL.md`.

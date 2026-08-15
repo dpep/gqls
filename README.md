@@ -242,12 +242,19 @@ Shell completions: `gqls --completions zsh` (or `bash`/`fish`/…).
 
 ## Using with Claude Code
 
-`gqls` ships with a Claude Code skill (`claude/gqls-skill.md`) so Claude reaches for it when navigating a GraphQL schema instead of grepping SDL by hand. Install it:
+`gqls` ships with a Claude Code skill (`claude/gqls-skill.md`) so Claude reaches for it when navigating a GraphQL schema instead of grepping SDL by hand. Two ways to install it — the marketplace plugin, which updates itself and brings the sibling skills, or a local copy of the one file:
+
+```
+/plugin marketplace add dpep/claude
+/plugin install code@dpep
+```
 
 ```sh
 mkdir -p ~/.claude/skills/gqls
 cp claude/gqls-skill.md ~/.claude/skills/gqls/SKILL.md
 ```
+
+The plugin is the better default; [`claude/INSTALL.md`](claude/INSTALL.md) covers when it isn't, and the binary install either route still needs.
 
 ## Development
 
