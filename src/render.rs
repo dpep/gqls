@@ -41,6 +41,20 @@ pub(crate) struct EnumValue<'a> {
     deprecated: Option<&'a str>,
 }
 
+/// One field of an input object, as an explanation reports it.
+#[derive(Serialize)]
+pub(crate) struct InputField<'a> {
+    name: &'a str,
+    /// Rendered with its wrappers — `[String!]`, `String!` — because the `!` is
+    /// the whole answer to "must I supply this one".
+    #[serde(rename = "type")]
+    type_ref: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deprecated: Option<&'a str>,
+}
+
 /// What an explanation knows that isn't already a field on the record.
 ///
 /// Computed once and rendered twice — as annotation lines for a person, as
@@ -51,11 +65,22 @@ pub(crate) struct Extras<'a> {
     /// An enum's values, so reading one doesn't need a second search.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     values: Vec<EnumValue<'a>>,
+    /// An input object's fields — the same fact for the same reason. You can't
+    /// construct one of these without knowing them, and unlike an object type's
+    /// fields there's no selection set anywhere else in the output that shows
+    /// them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fields: Vec<InputField<'a>>,
     /// Every path whose type is this one — the schema's answer to "how do I get
     /// one of these". The one fact here a consumer can't cheaply recompute: it
     /// would have to pull every record and scan.
+    ///
+    /// Both directions count: a field *returning* the type, and an argument
+    /// *taking* it, rendered `Mutation.createUser(input:)`. An input object only
+    /// ever appears in the second, so scanning return types alone reported
+    /// nothing at all for the kind that most needs the answer.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    referenced_by: Vec<&'a str>,
+    referenced_by: Vec<String>,
 }
 
 pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> {
@@ -71,18 +96,42 @@ pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> 
             .collect(),
         _ => Vec::new(),
     };
+    let fields = match record.kind {
+        Kind::InputObject => records
+            .iter()
+            .filter(|r| r.kind == Kind::InputField && r.parent.as_deref() == Some(&record.name))
+            .map(|r| InputField {
+                name: &r.name,
+                type_ref: r.type_ref.as_deref().unwrap_or(""),
+                description: r.description.as_deref(),
+                deprecated: r.deprecated.as_deref(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     // Types only — a field is already reachable through the type it hangs off,
     // which its own path shows.
     let referenced_by = match record.parent.is_none() && record.kind != Kind::Directive {
         true => records
             .iter()
-            .filter(|r| r.base_type() == Some(record.name.as_str()) && r.path != record.path)
-            .map(|r| r.path.as_str())
+            .filter(|r| r.path != record.path)
+            .flat_map(|r| {
+                let returns = (r.base_type() == Some(record.name.as_str()))
+                    .then(|| r.path.clone())
+                    .into_iter();
+                let takes = r
+                    .arg_types()
+                    .filter(|(_, ty)| *ty == record.name)
+                    .map(|(arg, _)| format!("{}({arg}:)", r.path))
+                    .collect::<Vec<_>>();
+                returns.chain(takes)
+            })
             .collect(),
         false => Vec::new(),
     };
     Extras {
         values,
+        fields,
         referenced_by,
     }
 }
@@ -220,6 +269,74 @@ pub(crate) fn print_values(values: &[EnumValue]) {
                 line.push(&first[marker.len()..], style::muted);
             }
             false => line.push(&first, style::muted),
+        }
+        println!("{}", line.finish());
+        for cont in lines {
+            println!("{}{}", " ".repeat(indent), style::muted(&cont));
+        }
+    }
+}
+
+/// An input object's fields, one per line with its type and what it means.
+///
+/// Always a block, never a collapsed row the way an enum's values can be: a
+/// field is a name *and* a type, and two columns want aligning. The `!` is the
+/// part to read — it's what says which of these you have to supply — so the
+/// type sits next to the name rather than trailing the description. That's also
+/// why `-D` only empties the third column here instead of collapsing the block:
+/// the two that remain still want their alignment.
+pub(crate) fn print_fields(fields: &[InputField], descriptions: bool) {
+    println!("  {}", style::muted("fields"));
+    let name_w = fields
+        .iter()
+        .map(|f| f.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let type_w = fields
+        .iter()
+        .map(|f| f.type_ref.chars().count())
+        .max()
+        .unwrap_or(0);
+    for field in fields {
+        let indent = 4 + name_w + 2 + type_w + 2;
+        let budget = style::width()
+            .saturating_sub(indent)
+            .max(MIN_DESCRIPTION_WIDTH);
+        let marker = match field.deprecated {
+            Some("") => "(deprecated)".to_string(),
+            Some(reason) => format!("(deprecated: {reason})"),
+            None => String::new(),
+        };
+        let mut text = marker.clone();
+        if let Some(d) = field.description.filter(|_| descriptions) {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(d);
+        }
+        let mut lines = wrap(&text, budget, usize::MAX).into_iter();
+        let first = lines.next().unwrap_or_default();
+
+        let mut line = style::Line::default();
+        line.push("    ", style::answer);
+        line.push(field.name, style::name);
+        line.pad_to(4 + name_w);
+        line.gap();
+        line.push(field.type_ref, style::answer);
+        if !first.is_empty() {
+            // Relative to the cell the type opened, not the line — `pad_to`
+            // measures a column width.
+            line.pad_to(type_w);
+            line.gap();
+            // Same as an enum value: the marker is styled apart only when it
+            // fits whole on this line, or a wrapped reason dangles its colour.
+            match first.starts_with(&marker) && !marker.is_empty() {
+                true => {
+                    line.push(&marker, style::warning);
+                    line.push(&first[marker.len()..], style::muted);
+                }
+                false => line.push(&first, style::muted),
+            }
         }
         println!("{}", line.finish());
         for cont in lines {
@@ -368,18 +485,22 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
                 let extras = extras(matches[0].record, all);
                 let notes = annotations(matches[0].record, &extras, descriptions);
                 let block = values_need_a_block(&extras.values, descriptions);
+                let fields = !extras.fields.is_empty();
                 // One blank line, and only between two things worth separating:
                 // prose above, a fact table below, at the same indent. Without
                 // it a wrapped description's last line is indistinguishable from
                 // the first annotation. `-e` separates its own sections the same
                 // way. Never when either side is empty — a separator with
                 // nothing on one side of it is just a gap.
-                if !row.desc.is_empty() && (!notes.is_empty() || block) {
+                if !row.desc.is_empty() && (!notes.is_empty() || block || fields) {
                     println!();
                 }
                 print_notes(&notes);
                 if block {
                     print_values(&extras.values);
+                }
+                if fields {
+                    print_fields(&extras.fields, descriptions);
                 }
             }
             continue;
@@ -488,16 +609,26 @@ pub(crate) fn render_example(example: &crate::example::Example) -> Result<String
             out.push_str(&format!("#   {arg}\n"));
         }
     }
-    if !example.input_types.is_empty() {
-        out.push_str("\n# input types:\n");
-        for line in example.input_types.iter().flatten() {
+    // Enums only, and named as such: everything else the variables refer to is
+    // expanded inside the block below, where you can paste it.
+    if !example.enums.is_empty() {
+        out.push_str("\n# enums:\n");
+        for line in &example.enums {
             out.push_str(&format!("#   {line}\n"));
         }
     }
     // An operation with no required arguments takes no variables; printing an
     // empty `{}` under a heading only invites the reader to look for something.
     if example.variables.as_object().is_some_and(|v| !v.is_empty()) {
-        out.push_str("\n# variables\n");
+        // An expanded variable's JSON key stops saying what type it is, and the
+        // signature that does say so is off the top of the block by now.
+        match example.variable_types.is_empty() {
+            true => out.push_str("\n# variables\n"),
+            false => out.push_str(&format!(
+                "\n# variables — {}\n",
+                example.variable_types.join(", ")
+            )),
+        }
         out.push_str(&format!(
             "{}\n",
             serde_json::to_string_pretty(&example.variables)?
@@ -528,7 +659,8 @@ mod tests {
             description: None,
             variables: serde_json::json!({}),
             optional: Vec::new(),
-            input_types: Vec::new(),
+            variable_types: Vec::new(),
+            enums: Vec::new(),
             deprecated: Vec::new(),
             via: None,
             alternatives: Vec::new(),

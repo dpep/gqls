@@ -57,21 +57,25 @@ decides when it's the only thing separating candidates, so `Role` explains the
 enum while `role` lists it alongside `User.role`. `--no-explain` forces the list
 back.
 
-That record carries three more keys — the signal that you found the thing
+That record carries four more keys — the signal that you found the thing
 rather than a shortlist:
 
 - `match` — `"exact"`, or `"corrected"` when the name was a small misspelling
 - `values` — an enum's values, each `{name, description?, deprecated?}`
+- `fields` — an input object's fields, each `{name, type, description?,
+  deprecated?}`; the `!` in `type` is what says which ones must be supplied
 - `referenced_by` — every path whose type is this one, which is the schema's
-  answer to "how do I get one of these"
+  answer to "how do I get one of these". Both directions: a field returning the
+  type, and an argument taking it (`Mutation.createUser(input:)`). An input
+  object is never returned, so the second is the only way it appears at all.
 
 `deprecated`, `directives` and `possible_types` are ordinary record fields and
 appear whenever the schema has them. The array shape never changes, so a reader
 that ignores the extra keys still works.
 
 Text output shows the description too — elided to one line in a list, in full
-for a record you named. `-D` drops descriptions and collapses an enum's values
-to their names.
+for a record you named. `-D` drops descriptions, collapses an enum's values to
+their names, and empties the description column of an input object's fields.
 
 ## Scope when you know more
 
@@ -176,9 +180,24 @@ markers — `--depth N` expands them when you want more. A union is written as
 inline fragments over its members (an interface adds one per implementor for
 the fields it adds), and deprecated fields stay in the selection
 marked `# deprecated: reason` with a stderr warning naming them (tell the user
-rather than pasting one silently). Input
-objects and enums referenced by the arguments are expanded underneath, so a
-`"<SomeInput!>"` placeholder can be filled without a second lookup.
+rather than pasting one silently). The `# variables` block is a fillable
+skeleton: an input-object argument is expanded into its fields in schema order,
+so what you hand over is directly pasteable, and the heading names the type an
+expanded key no longer states (`# variables — input: CreateUserInput!`). Enums
+are the one thing JSON can't express, so their values are listed under
+`# enums:`.
+
+Name an **input object** and `-e` drafts through the field that takes it —
+an input is never callable but always passable, so `gqls PostFilter -e` gives
+you `Query.posts(filter: $filter)`, with any other field taking one listed under
+`# paths`. An input *field* (`CreateUserInput.email`) drafts through its
+enclosing input. The argument carrying it is supplied even where the schema
+calls it optional, since a draft that omits it answers nothing. Such a draft
+stays about the input: the reply gets the barest selection a server accepts and
+only that input's own types are expanded, with `--depth 1` asking the payload
+back. Don't reach for `-e` to see what's *in* an input object — naming it plainly
+(`gqls PostFilter`) lists its fields with their types, which is the cheaper
+answer.
 
 `-e` and `-R` only act on a field the query names outright (or misspells
 slightly — `Did you mean X?` on stderr says which, and is worth passing on).

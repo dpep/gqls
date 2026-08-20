@@ -32,9 +32,10 @@ macro_rules! about_head {
 macro_rules! about_tail {
     () => {
         "Name one record and gqls explains it rather than listing: its description in full, \
-         deprecation, directives, an abstract type's members, an enum's values, and what \
-         references it. --example drafts an operation to paste, --resolve jumps to the \
-         graphql-ruby resolver via rq. All modes support -j/--json and -J/--ndjson."
+         deprecation, directives, an abstract type's members, an enum's values, an input \
+         object's fields, and what references it. --example drafts an operation to paste, \
+         --resolve jumps to the graphql-ruby resolver via rq. All modes support -j/--json \
+         and -J/--ndjson."
     };
 }
 
@@ -58,6 +59,7 @@ macro_rules! example_body {
 macro_rules! example_tail {
     () => {
         "  gqls Mutation.createUser -e         draft an operation to paste
+  gqls CreateUserInput -e             ...or draft through the field taking it
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
 "
@@ -190,15 +192,18 @@ struct Cli {
     completions: Option<Shell>,
 
     /// Draft a ready-to-paste example operation for the field the query names
-    /// — arguments as variables, one level of leaf fields selected. A query
-    /// that only comes close gets the candidate list instead.
+    /// — arguments as variables, one level of leaf fields selected. Name an
+    /// input object instead and it drafts through the field that takes it. A
+    /// query that only comes close gets the candidate list instead.
     #[arg(short = 'e', long, conflicts_with = "resolve")]
     example: bool,
 
     /// How many levels of fields --example selects (no effect without it).
     /// Deeper levels expand the object-valued fields level 1 leaves as markers.
-    #[arg(long, value_name = "N", default_value_t = 1)]
-    depth: usize,
+    /// Defaults to one level, or to the barest valid selection when the query
+    /// names an input object — that draft is about the argument, not the reply.
+    #[arg(long, value_name = "N")]
+    depth: Option<usize>,
 
     /// Jump to the graphql-ruby resolver/method for the field the query names,
     /// via `rq` (must be installed). A looser query gets the candidate list.
@@ -972,7 +977,7 @@ fn run_example(
     query: &str,
     records: &[SchemaRecord],
     filters: search::Filters<'_>,
-    depth: usize,
+    depth: Option<usize>,
     limit: usize,
     output: Output,
 ) -> Result<()> {
@@ -1000,7 +1005,8 @@ fn run_example(
         "operation": example.operation,
         "variables": example.variables,
         "optional_args": example.optional,
-        "input_types": example.input_types,
+        "enums": example.enums,
+        "variable_types": example.variable_types,
         "deprecated": example.deprecated,
         "paths": example.paths(),
     });

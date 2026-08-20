@@ -8,7 +8,53 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Added
+- **Naming an input object lists its fields.** It was the one composite kind
+  whose members the explanation never showed — an enum gave its values, a union
+  its members, an input object a single line — so `gqls CreateUserInput` said
+  nothing about what goes in one. Each field is listed with its type, its
+  description and its deprecation, and `--json` carries the same under a
+  `fields` key.
+- **`-e` drafts an input object through the field that takes it.** An input is
+  never callable but always passable, so `gqls PostFilter -e` now drafts
+  `Query.posts(filter: $filter)` instead of refusing. Other fields taking one
+  are listed under `# paths`; an input field (`CreateUserInput.email`) drafts
+  through its enclosing input. The argument carrying it is supplied even where
+  the schema calls it optional — a draft for `PostFilter` that leaves `filter`
+  out answers nothing. Such a draft stays about the input: the reply gets the
+  barest selection a server accepts, and only the named input's own types are
+  expanded, so `PostFilter` no longer spells out the three types hanging off a
+  sibling argument it doesn't fill in. `--depth 1` asks for the payload back.
+
 ### Changed
+- **The `-e` variables block is a fillable skeleton, and `# input types:` is
+  gone.** `"<CreateUserInput!>"` never said anything the `($input:
+  CreateUserInput!)` signature above it didn't, which is exactly why a second
+  block had to spell the type out in SDL — so the shape got printed twice, in
+  two notations, neither of which you could paste into a variables pane. An
+  input-object argument is now expanded into its fields, in the schema's own
+  order, inside the block you paste. A list gets one element; a self-reference
+  (`Filter { and: [Filter!] }`) closes as a placeholder, since its shape is in
+  the object containing it; an input the schema has no fields for stays a
+  placeholder rather than becoming a `{}` that claims it takes nothing.
+
+  What's left over is what JSON can't express, and it's named for what it is:
+  `# enums:` lists the values for each enum the variables reach. And because an
+  expanded key stops naming its type, the heading does — `# variables — input:
+  CreateUserInput!`.
+
+  **`--json` consumers:** `input_types` is replaced by `enums` (a list of
+  `"Role = ADMIN | MEMBER"` strings) and `variable_types` (a list of
+  `"input: CreateUserInput!"`). `variables` now nests instead of holding a flat
+  type placeholder per key.
+- **`--depth 0` now means the barest valid selection** rather than being
+  silently clamped to 1. It's what an input-object draft takes by default, and
+  what `--depth 0` always looked like it should do.
+- **`referenced by` counts arguments, not just return types.** It scanned what
+  *returns* a type and nothing else, so it reported nothing at all for input
+  objects, which are only ever passed in. An argument reference reads
+  `Mutation.createUser(input:)`, naming where the value goes. Applies to every
+  kind: `Role` now shows `@auth(requires:)` too.
 - **The library API is a fifth of its former size — 148 public items down to
   30.** `lib.rs` re-exported all twelve modules, so most of that surface was
   public by default rather than by decision — which the header above already
@@ -26,6 +72,10 @@ Nothing to do on upgrade: the `gqls` binary and its CLI surface are unchanged.
   invisible to `dead_code` only because `semantic` was a public module.
 
 ### Fixed
+- **A drafted selection set is never all comments.** A type whose fields are
+  every one object-valued got a selection set holding only `# field: Type { … }`
+  markers, which no server will parse. It now selects `__typename` alongside
+  them, the same answer already used for a type the schema doesn't detail.
 - `paths::temp_dir` is gated on `_semantic`, matching its only caller. It was
   compiled, and dead, in the fuzzy-only build.
 

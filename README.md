@@ -58,7 +58,7 @@ gqls 'cancel a subscription'     # a phrase — matched word by word
 
 ### Name one thing and gqls explains it
 
-Searching narrows; naming finds. When a query names exactly one of the records it matched, that record is shown on its own and annotated — its description in full, its deprecation reason, applied directives, a union's members or an interface's implementors, an enum's values with what each means, and every path that references the type.
+Searching narrows; naming finds. When a query names exactly one of the records it matched, that record is shown on its own and annotated — its description in full, its deprecation reason, applied directives, a union's members or an interface's implementors, an enum's values with what each means, an input object's fields with their types, and every path that references the type. A path counts in both directions: a field returning the type, and an argument taking it (`Mutation.createUser(input:)`) — which for an input object, never returned by anything, is the only direction it appears in at all.
 
 ```sh
 $ gqls Role
@@ -74,7 +74,24 @@ Role  [enum]
     OWNER   (deprecated: collapsed into ADMIN)
 ```
 
-Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values` and `referenced_by`, so a consumer gets the same facts.
+An input object gets the same treatment, which is what you need to construct one:
+
+```sh
+$ gqls UpdateUserInput
+UpdateUserInput  [input_object]
+  Fields to change on a user. Every field is optional; omitting one leaves that
+  part of the user as it was, which is why nothing here is non-null.
+
+  referenced by  Mutation.updateUser(input:)
+  fields
+    name     String
+    email    String   Re-triggers verification, and fails if another user
+                      already has it.
+    role     Role
+    isAdmin  Boolean  (deprecated: set role: ADMIN instead)
+```
+
+Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names and empties the description column of an input object's fields. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values`, `fields` and `referenced_by`, so a consumer gets the same facts.
 
 ### Many queries at once
 Pipe queries on stdin, one per line, and a single run answers them all — the schema, the embedding model and the vectors load once instead of once per query. On a 10k-record schema, 20 meaning-based queries drop from 1.83s to 0.52s:
@@ -152,17 +169,16 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
 # optional arguments:
 #   updateEmployee(dryRun: Boolean = false)
 
-# input types:
-#   EmployeeInput {
-#     name: String!
-#     role: Role
-#   }
+# enums:
 #   Role = ADMIN | MEMBER | GUEST
 
-# variables
+# variables — input: EmployeeInput!
 {
   "companyId": "<ID!>",
-  "input": "<EmployeeInput!>"
+  "input": {
+    "name": "<String!>",
+    "role": "<Role>"
+  }
 }
 ```
 
@@ -174,14 +190,17 @@ The rules are deliberately conservative, because a wrong guess costs more than a
 - **Anything the server can supply is left out and listed underneath** — a nullable argument, or one with a schema default (even a non-null one, like `first: Int! = 10`). The operation runs as-is, and the knobs you skipped are still visible with their defaults.
 - **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# field: Type { … }` marker per object-valued field.
 - **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
-- **Input objects and enums are expanded underneath** — every input type the arguments refer to, followed transitively through input fields, so you can fill in `"<EmployeeInput!>"` without opening the schema. Expansion is flat and each type appears once, so a self-referential filter (`Filter { and: [Filter!] }`) terminates.
+- **The variables block is a fillable skeleton, not a restatement.** An input-object argument is expanded into its fields in the schema's own order, so the thing you paste into a client is the thing that shows the shape — `"<EmployeeInput!>"` only ever repeated the signature twenty lines above it. A list gets one element; a self-reference (`Filter { and: [Filter!] }`) closes as `"<Filter!>"`, since its shape is in the object directly containing it. An input the schema has no fields for stays a placeholder rather than becoming a `{}` that claims it takes nothing. Since an expanded key no longer names its type, the heading does: `# variables — input: EmployeeInput!`.
+- **Enums are listed beside the block, not inside it** — JSON has no way to hold "one of these", so `# enums:` names the choice for each enum the variables reach. It's the only thing left that the skeleton can't express.
 - **Abstract types become inline fragments.** A union has no fields of its own, so it's written as `... on Member { … }` over each concrete type — the only form a server accepts. An interface selects its common fields once, then adds a fragment per implementor carrying only the fields that implementor *adds*, since those are otherwise unreachable. Big unions list the first few and name the rest.
 - **`--depth N` selects more levels**, expanding the object-valued fields that depth 1 leaves as markers.
 - **Deprecated fields are flagged, not dropped.** They stay in the selection marked `# deprecated: reason`, and a stderr line names them — silently omitting a field the schema still serves is its own surprise.
 - **A nested field is wrapped in a root that returns its type.** `gqls Company.employee -e` finds a root returning `Company` (preferring one with fewest required arguments) and nests through it. When several roots qualify, a `# paths` block lists them all with the drafted one first. When none does, it's an error with a pointer to `--returns`, not a guess.
+- **An input object is drafted through the field that takes it.** An input is never callable, but it is always passable, so `gqls PostFilter -e` drafts the operation whose argument it is — `Query.posts(filter:)`, listed in `# paths` alongside any other field taking one. Naming an input field (`CreateUserInput.email`) drafts through its enclosing input, the thing an operation can actually name. The argument carrying it is supplied even where the schema calls it optional: a draft for `PostFilter` that quietly leaves `filter` out answers nothing. When no field takes one, that's an error rather than a guess.
+- **An input draft stays about the input.** It asks where the value goes, not what comes back, so the reply gets the barest selection a server accepts (`__typename`) and only the named input's own types are expanded — `gqls PostFilter -e` was spelling out `PostOrder`, `PostOrderField` and `OrderDirection` off a sibling argument it doesn't even fill in. `--depth 1` asks for the payload back. (`--depth 0` means the same barest selection for any target; it used to be silently clamped to 1.)
 - **Each section appears only when it has something in it** — no empty `# variables` block for an operation that takes none, and no `# paths` block when there's only the one the draft already shows.
 
-Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, input_types, deprecated, paths}` for scripting.
+Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, enums, variable_types, deprecated, paths}` for scripting.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
@@ -213,7 +232,7 @@ An argument list collapses to `(…)` beside other results and spells out in ful
 when a result stands alone — the list is for telling rows apart, and one long
 signature would set the column width for every one of them.
 
-In a list a description is elided to one line — enough to tell one row from the next, and dropped when the columns leave no room for even that. A result shown on its own gets the whole thing, wrapped to your terminal. `-D`/`--no-description` drops descriptions and collapses an enum's values to their names. Every mode also supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line), which always carry the full description text. Status chatter goes to stderr, so JSON pipes clean:
+In a list a description is elided to one line — enough to tell one row from the next, and dropped when the columns leave no room for even that. A result shown on its own gets the whole thing, wrapped to your terminal. `-D`/`--no-description` drops descriptions, collapses an enum's values to their names, and empties the description column of an input object's fields. Every mode also supports `-j`/`--json` (pretty array) and `-J`/`--ndjson` (one record per line), which always carry the full description text. Status chatter goes to stderr, so JSON pipes clean:
 
 ```sh
 gqls repository schema.json -J | jq -r '.path'

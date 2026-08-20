@@ -332,6 +332,54 @@ fn an_annotation_carries_what_the_row_cannot() {
 }
 
 #[test]
+fn an_input_object_lists_its_fields() {
+    // The one composite kind whose members the explanation used to omit: an
+    // enum showed its values and a union its members, while naming an input
+    // object printed a single line.
+    let out = run(&["UpdateUserInput"]);
+    assert!(out.contains("fields"), "{out}");
+    // name and type share a column each, so the `!`s line up down the page
+    let name = out
+        .lines()
+        .find(|l| l.contains("name"))
+        .unwrap_or_else(|| panic!("{out}"));
+    let admin = out
+        .lines()
+        .find(|l| l.contains("isAdmin"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(
+        column_of(name, "String"),
+        column_of(admin, "Boolean"),
+        "type column not aligned:\n{out}"
+    );
+    // a deprecated input field says so, the same way a deprecated enum value does
+    assert!(
+        admin.contains("(deprecated: set role: ADMIN instead)"),
+        "{out}"
+    );
+
+    // -D empties the description column and leaves the other two aligned
+    let bare = run(&["UpdateUserInput", "-D"]);
+    assert!(bare.contains("fields"), "{bare}");
+    assert!(!bare.contains("Re-triggers verification"), "{bare}");
+    assert!(
+        bare.contains("(deprecated: set role: ADMIN instead)"),
+        "{bare}"
+    );
+}
+
+#[test]
+fn a_type_is_referenced_by_what_takes_it_as_well_as_what_returns_it() {
+    // An input object is never returned, so scanning return types alone
+    // reported nothing at all for the kind with the most to say.
+    let out = run(&["CreateUserInput"]);
+    assert!(
+        out.contains("referenced by  Mutation.createUser(input:)"),
+        "{out}"
+    );
+}
+
+#[test]
 fn no_line_ends_in_whitespace() {
     // Padding the last cell would leave invisible trailing spaces that break
     // diffs and `grep -c ' $'` style checks.
@@ -339,6 +387,7 @@ fn no_line_ends_in_whitespace() {
         &["*", "-l", "20"][..],
         &["User."][..],
         &["*", "-k", "object"][..],
+        &["UpdateUserInput"][..],
     ] {
         let out = run(args);
         for line in out.lines() {

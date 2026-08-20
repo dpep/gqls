@@ -65,7 +65,7 @@ fn drafted_operation_executes_against_the_live_endpoint() {
         .iter()
         .find(|r| r.path == "Query.country")
         .expect("expected a Query.country root field");
-    let drafted = gqls::example::build(target, &records, 1).expect("drafting should succeed");
+    let drafted = gqls::example::build(target, &records, None).expect("drafting should succeed");
 
     // `country(code: ID!)` — the one thing the caller must supply.
     assert_eq!(

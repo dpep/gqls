@@ -66,6 +66,9 @@ type Mutation {
 
   deleteUser(id: ID!): Boolean! @deprecated(reason: "use archiveUser")
 
+  """Change a user. Only the fields you supply are touched."""
+  updateUser(id: ID!, input: UpdateUserInput!): User!
+
   """Archive a user, keeping their posts. Reversible for 30 days."""
   archiveUser(id: ID!, reason: String): ArchiveUserPayload!
 
@@ -93,7 +96,7 @@ type User implements Node {
   role: Role!
 
   """Posts this user authored, newest first."""
-  posts(first: Int): [Post!]!
+  posts(first: Int, filter: PostFilter): [Post!]!
 
   avatarUrl: String
 
@@ -196,6 +199,21 @@ input CreateUserInput {
   email: String!
 
   role: Role = MEMBER
+}
+
+"""
+Fields to change on a user. Every field is optional; omitting one leaves that
+part of the user as it was, which is why nothing here is non-null.
+"""
+input UpdateUserInput {
+  name: String
+
+  """Re-triggers verification, and fails if another user already has it."""
+  email: String
+
+  role: Role
+
+  isAdmin: Boolean @deprecated(reason: "set role: ADMIN instead")
 }
 
 """Narrows `posts`. Every field is optional and they combine with AND."""

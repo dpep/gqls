@@ -133,11 +133,49 @@ impl SchemaRecord {
     /// (a type definition itself, a directive). This is the name to compare
     /// against when asking "what returns a `User`?".
     pub(crate) fn base_type(&self) -> Option<&str> {
-        let base = self
-            .type_ref
-            .as_deref()?
-            .trim_matches(|c| matches!(c, '[' | ']' | '!' | ' '));
+        let base = base_of(self.type_ref.as_deref()?);
         (!base.is_empty()).then_some(base)
+    }
+
+    /// The types this record's *arguments* refer to, wrappers peeled, each
+    /// paired with the argument that names it. The reverse of [`base_type`]:
+    /// what a field takes rather than what it gives back, which for an input
+    /// object is the only direction it appears in at all.
+    ///
+    /// [`base_type`]: SchemaRecord::base_type
+    pub(crate) fn arg_types(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.args.iter().map(|a| {
+            let arg = split_arg(a);
+            (arg.name, base_of(arg.type_ref))
+        })
+    }
+}
+
+/// A type reference with its list and non-null wrappers peeled: `[User!]!`
+/// → `User`.
+pub(crate) fn base_of(type_ref: &str) -> &str {
+    type_ref.trim_matches(|c| matches!(c, '[' | ']' | '!' | ' '))
+}
+
+/// One parsed argument signature.
+pub(crate) struct Arg<'a> {
+    pub name: &'a str,
+    pub type_ref: &'a str,
+    pub default: Option<&'a str>,
+}
+
+/// `"first: Int = 10"` → name `first`, type `Int`, default `10`. gqls renders
+/// arguments as `name: Type` with ` = default` appended when the schema has one.
+pub(crate) fn split_arg(arg: &str) -> Arg<'_> {
+    let (name, rest) = arg.split_once(':').unwrap_or((arg, ""));
+    let (type_ref, default) = match rest.split_once('=') {
+        Some((t, d)) => (t, Some(d.trim())),
+        None => (rest, None),
+    };
+    Arg {
+        name: name.trim(),
+        type_ref: type_ref.trim(),
+        default,
     }
 }
 

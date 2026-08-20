@@ -32,7 +32,10 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 graphql-parser = "0.4"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: a drafted variables skeleton follows the schema's field order,
+# which puts the required fields where the schema put them. Sorted, the block
+# stops matching the `fields` listing an explanation prints for the same type.
+serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
 ureq = { version = "2", features = ["json"] }  # URL introspection
 
@@ -55,7 +58,7 @@ terminal_size = "0.4"
 # checked against a real GraphQL grammar rather than string equality. Same
 # versions as above, so nothing extra is compiled.
 graphql-parser = "0.4"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 ureq = { version = "2", features = ["json"] }
 
 [features]

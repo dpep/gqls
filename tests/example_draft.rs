@@ -20,11 +20,16 @@ fn records() -> Vec<SchemaRecord> {
     load::load(SCHEMA, &opts).expect("the bundled example schema should load")
 }
 
+/// Draft at the default depth for the target's kind.
 fn draft(path: &str) -> example::Example {
-    draft_deep(path, 1)
+    draft_at(path, None)
 }
 
 fn draft_deep(path: &str, depth: usize) -> example::Example {
+    draft_at(path, Some(depth))
+}
+
+fn draft_at(path: &str, depth: Option<usize>) -> example::Example {
     let records = records();
     let target = records
         .iter()
@@ -55,24 +60,25 @@ fn drafts_a_root_query_with_typed_variables() {
 }
 
 #[test]
-fn expands_input_objects_and_the_enums_they_reference() {
+fn a_variable_skeleton_shows_the_input_rather_than_naming_it() {
+    // `"<CreateUserInput!>"` only restated the signature, so the shape had to
+    // be printed a second time as SDL. Expanding it makes the block you paste
+    // the block that shows the shape, in the schema's own field order.
     let ex = draft("Mutation.createUser");
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
 
-    let blocks: Vec<String> = ex.input_types.iter().map(|b| b.join("\n")).collect();
-    let input = blocks
-        .iter()
-        .find(|b| b.starts_with("CreateUserInput {"))
-        .unwrap_or_else(|| panic!("no CreateUserInput block in {blocks:?}"));
-    assert!(input.contains("name: String!"), "{input}");
-    assert!(input.contains("role: Role"), "{input}");
-
-    // Role is reached only through CreateUserInput.role — the expansion has to
-    // follow input fields, not just the argument list
-    assert!(
-        blocks.iter().any(|b| b.starts_with("Role = ")),
-        "enum not expanded: {blocks:?}"
+    assert_eq!(
+        ex.variables,
+        serde_json::json!({
+            "input": { "name": "<String!>", "email": "<String!>", "role": "<Role>" }
+        })
     );
+    // the key alone stops saying what type it is, so the heading says it
+    assert_eq!(ex.variable_types, ["input: CreateUserInput!"]);
+
+    // Role is reached only through CreateUserInput.role — JSON can't hold a
+    // choice, so the values are listed beside the block, not inside it
+    assert_eq!(ex.enums, ["Role = ADMIN | MEMBER | GUEST | OWNER"]);
 }
 
 #[test]
@@ -139,7 +145,7 @@ fn an_interface_reaches_its_implementors_extra_fields() {
         type Video implements Node { id: ID! createdAt: String! streamUrl: String! }\n";
     let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
     let target = records.iter().find(|r| r.path == "Query.node").unwrap();
-    let ex = example::build(target, &records, 1).expect("drafting should succeed");
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
 
     // common fields selected once, on the interface itself
@@ -197,4 +203,146 @@ fn a_deprecated_target_is_reported_and_still_drafted() {
         "{}",
         ex.operation
     );
+}
+
+#[test]
+fn drafts_an_input_object_through_the_field_that_takes_it() {
+    // CreateUserInput isn't callable — nothing returns it and no operation
+    // names it. What it answers is "where does this go", and the answer is the
+    // mutation whose argument it is.
+    let ex = draft("CreateUserInput");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(ex.via.as_deref(), Some("Mutation.createUser(input:)"));
+    assert!(
+        ex.operation
+            .starts_with("mutation CreateUser($input: CreateUserInput!) {"),
+        "{}",
+        ex.operation
+    );
+    // the skeleton, not a bare placeholder — see
+    // a_variable_skeleton_shows_the_input_rather_than_naming_it
+    assert_eq!(ex.variables["input"]["email"], "<String!>");
+}
+
+#[test]
+fn supplies_the_named_input_even_where_the_schema_calls_it_optional() {
+    // Query.posts(filter: PostFilter) is nullable, so the usual rule files it
+    // under "optional arguments" and leaves it out of the operation entirely —
+    // which would draft a query that never mentions the type asked about.
+    let ex = draft("PostFilter");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert!(
+        ex.operation.contains("posts(filter: $filter)"),
+        "{}",
+        ex.operation
+    );
+    // and it's a real variable, not merely mentioned
+    assert!(ex.variables["filter"].is_object(), "{:?}", ex.variables);
+    // the other optional argument is still left out, as it always was
+    assert!(
+        ex.optional.iter().any(|o| o.starts_with("posts(orderBy:")),
+        "{:?}",
+        ex.optional
+    );
+}
+
+#[test]
+fn an_input_taken_in_two_places_offers_both() {
+    // Query.posts and User.posts both take a PostFilter. The root wins — it's
+    // one hop — and the nested one is offered rather than dropped.
+    let ex = draft("PostFilter");
+    assert_eq!(ex.via.as_deref(), Some("Query.posts(filter:)"));
+    assert_eq!(ex.alternatives, ["User.posts(filter:)"]);
+}
+
+#[test]
+fn an_input_field_rides_on_the_input_object_that_holds_it() {
+    // CreateUserInput.email can't be passed on its own; the operation that can
+    // carry it is the one taking the whole input.
+    let ex = draft("CreateUserInput.email");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert_eq!(ex.via.as_deref(), Some("Mutation.createUser(input:)"));
+    assert_eq!(
+        ex.description.as_deref(),
+        Some("Must be unique across the account; a verification mail is sent here.")
+    );
+}
+
+#[test]
+fn an_input_draft_keeps_the_input_in_view_rather_than_the_payload() {
+    // The question is where the input goes, so the reply gets the barest
+    // selection a server will accept — eight lines of leaf fields buried the
+    // one line the draft exists to show. `--depth` asks for the payload back.
+    let bare = draft("PostFilter");
+    graphql_parser::parse_query::<String>(&bare.operation).expect("drafted invalid GraphQL");
+    assert!(bare.operation.contains("__typename"), "{}", bare.operation);
+    assert!(
+        !bare.operation.contains("publishedAt"),
+        "{}",
+        bare.operation
+    );
+
+    let full = draft_deep("PostFilter", 1);
+    graphql_parser::parse_query::<String>(&full.operation).expect("drafted invalid GraphQL");
+    assert!(full.operation.contains("publishedAt"), "{}", full.operation);
+
+    // a field target is untouched — one level, as it always was
+    assert!(draft("Query.posts").operation.contains("publishedAt"));
+}
+
+#[test]
+fn an_input_draft_expands_only_what_that_input_reaches() {
+    // Query.posts also takes an orderBy, whose PostOrder / PostOrderField /
+    // OrderDirection have nothing to do with the type asked about — and it
+    // isn't even filled in, since it carries a schema default.
+    let ex = draft("PostFilter");
+    assert_eq!(
+        ex.variables,
+        serde_json::json!({
+            "filter": {
+                "authorId": "<ID>",
+                "tags": ["<String!>"],
+                "publishedAfter": "<DateTime>",
+                // the self-reference closes here rather than recursing
+                "not": "<PostFilter>",
+            }
+        })
+    );
+    assert!(ex.enums.is_empty(), "{:?}", ex.enums);
+}
+
+#[test]
+fn a_nested_consumer_is_wrapped_in_a_root_and_an_unreachable_one_is_dropped() {
+    // Two fields take a Filter. `Orphan.search` is on a type no root returns,
+    // so it isn't a path you could call; `Post.search` is reached through the
+    // root that returns a Post.
+    let sdl = "\
+        type Query { posts: [Post!]! }\n\
+        type Post { search(where: Filter): [Post!]! }\n\
+        type Orphan { search(where: Filter): [Post!]! }\n\
+        input Filter { term: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Filter").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(ex.via.as_deref(), Some("Post.search(where:)"));
+    assert!(ex.alternatives.is_empty(), "{:?}", ex.alternatives);
+    assert!(ex.operation.contains("posts {"), "{}", ex.operation);
+    assert!(
+        ex.operation.contains("search(where: $where)"),
+        "{}",
+        ex.operation
+    );
+}
+
+#[test]
+fn an_input_nothing_takes_says_so_rather_than_inventing_a_path() {
+    let sdl = "type Query { ping: String }\ninput Orphan { a: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Orphan").unwrap();
+    let err = example::build(target, &records, None).expect_err("nothing takes an Orphan");
+    assert!(err.to_string().contains("Orphan"), "{err}");
 }

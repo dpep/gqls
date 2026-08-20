@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
 
-use crate::model::{Kind, SchemaRecord};
+use crate::model::{base_of, split_arg, Arg, Kind, SchemaRecord};
 
 /// A drafted operation and the variables it expects.
 #[derive(Debug)]
@@ -55,10 +55,13 @@ pub struct Example {
     /// Arguments left out because the server can supply them — rendered as
     /// `field(name: Type = default)`, ready to paste back in.
     pub optional: Vec<String>,
-    /// The input objects and enums the arguments refer to, expanded so the
-    /// variables can be filled in without opening the schema. Each entry is a
-    /// block of lines; nested input objects appear as their own entries.
-    pub input_types: Vec<Vec<String>>,
+    /// `filter: PostFilter` for each variable the skeleton expanded into an
+    /// object — its JSON key alone no longer names its type.
+    pub variable_types: Vec<String>,
+    /// The enums the variables reach, `Role = ADMIN | MEMBER | GUEST`. JSON has
+    /// no way to hold "one of these", so the choice is listed beside the block
+    /// rather than inside it.
+    pub enums: Vec<String>,
     /// Deprecated fields the draft touched — the target itself, or anything
     /// selected. Flagged inline too; this is for the caller to warn about.
     pub deprecated: Vec<String>,
@@ -82,13 +85,22 @@ impl Example {
 }
 
 /// Draft an operation that reaches `target`.
-pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> Result<Example> {
+/// `depth` is how many levels of fields to select; `None` takes the default for
+/// the kind of target — one for a field, and the barest valid selection for an
+/// input object, whose draft is about the argument rather than the payload.
+pub fn build(
+    target: &SchemaRecord,
+    records: &[SchemaRecord],
+    depth: Option<usize>,
+) -> Result<Example> {
     let schema = Schema::index(records);
 
-    // The chain of fields to nest, outermost first. A root operation field is
-    // already reachable; anything else needs a root that returns its parent.
-    let (chain, via, alternatives) = match target.kind {
-        Kind::Query | Kind::Mutation | Kind::Subscription => (vec![target], None, Vec::new()),
+    // The chain of fields to nest, outermost first, and the input type whose
+    // argument the draft exists to show — `None` unless the target *is* that
+    // input, in which case the argument carrying it must be supplied even where
+    // the schema calls it optional.
+    let (chain, via, alternatives, required) = match target.kind {
+        Kind::Query | Kind::Mutation | Kind::Subscription => (vec![target], None, Vec::new(), None),
         Kind::Field => {
             let parent = target
                 .parent
@@ -105,10 +117,35 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> R
             let chosen = roots.remove(0);
             let via = Some(chosen.path.clone());
             let alternatives = roots.iter().map(|r| r.path.clone()).collect();
-            (vec![chosen, target], via, alternatives)
+            (vec![chosen, target], via, alternatives, None)
+        }
+        // An input object is never callable, but it is always *passable*: the
+        // question it answers is "where does this go", and the answer is the
+        // field that takes it. So it's reached the same way a nested field is,
+        // along the other edge — an argument of this type rather than a return
+        // of it. An input field rides on its enclosing input object, which is
+        // the thing an operation can actually name.
+        Kind::InputObject | Kind::InputField => {
+            let input = match target.kind {
+                Kind::InputField => target
+                    .parent
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("{} has no enclosing input", target.path))?,
+                _ => target.name.as_str(),
+            };
+            let mut chains = schema.chains_taking(input);
+            if chains.is_empty() {
+                bail!(
+                    "no field takes an argument of type {input}, so there's no \
+                     operation to draft. Try `gqls {input}` to see what references it."
+                );
+            }
+            let (via, chain) = chains.remove(0);
+            let alternatives = chains.into_iter().map(|(path, _)| path).collect();
+            (chain, Some(via), alternatives, Some(input))
         }
         other => bail!(
-            "can't draft an operation for a {} — pick a field, query, or mutation",
+            "can't draft an operation for a {} — pick a field, query, mutation, or input",
             other.as_str()
         ),
     };
@@ -121,7 +158,7 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> R
 
     // Variables first: every argument along the chain, deduped so a repeated
     // name (two `id`s) doesn't collide in the signature.
-    let (vars, optional) = Variables::collect(&chain);
+    let (vars, optional) = Variables::collect(&chain, required);
 
     // Then the selection, innermost outward.
     let leaf_type = chain
@@ -136,7 +173,20 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> R
             false => format!("{} ({reason})", target.path),
         });
     }
-    let mut body = schema.selection(&leaf_type, depth.max(1), &mut deprecated);
+    // An input target asks "where does this go", not "what comes back", so it
+    // draws the barest selection the server will accept and leaves the payload
+    // to `--depth` — the eight lines of leaf fields were burying the one line
+    // the draft exists to show.
+    let depth = depth.unwrap_or(match required {
+        Some(_) => 0,
+        None => 1,
+    });
+    let mut body = schema.selection(&leaf_type, depth, &mut deprecated);
+    if body.is_empty() && !leaf_type.is_empty() && !schema.is_leaf(&leaf_type) {
+        // A selection set is mandatory on an object return, so depth 0 takes
+        // the one field that is always valid rather than emitting a parse error.
+        body.push("__typename".to_string());
+    }
 
     for (depth, field) in chain.iter().enumerate().rev() {
         let args = vars.rendered_for(depth);
@@ -164,11 +214,14 @@ pub fn build(target: &SchemaRecord, records: &[SchemaRecord], depth: usize) -> R
     }
     operation.push_str("}\n");
 
+    let placeholders = vars.placeholders(&schema);
     Ok(Example {
         operation,
         description: target.description.clone(),
-        variables: vars.placeholders(),
-        input_types: schema.input_types(&chain),
+        variables: placeholders.values,
+        variable_types: placeholders.named,
+        enums: placeholders.enums,
+
         optional,
         deprecated,
         via,
@@ -220,56 +273,126 @@ impl<'a> Schema<'a> {
         }
     }
 
-    /// Expand the input objects and enums an operation's arguments refer to,
-    /// so the variables can be filled in without going back to the schema. A
-    /// nested input object becomes its own entry rather than a deeper
-    /// indent — flat reads better and makes cycles (`Filter { and: [Filter] }`)
-    /// a non-issue, since each type is expanded once.
-    fn input_types(&self, chain: &[&SchemaRecord]) -> Vec<Vec<String>> {
-        /// Enough for any real argument list; a guard, not a policy.
-        const MAX_TYPES: usize = 12;
+    /// The JSON skeleton for one value of `type_ref`, and the enums it reaches.
+    ///
+    /// An input object becomes an object of its fields rather than a
+    /// `"<SomeInput!>"` placeholder that only restates the variable signature —
+    /// the block you paste into a client should be the one that shows the
+    /// shape. A list gets one element, since a second would say nothing the
+    /// first didn't.
+    ///
+    /// `ancestors` carries the input objects already open above this point, so
+    /// a self-referential filter (`Filter { and: [Filter!] }`) closes as a
+    /// `"<Filter>"` placeholder — its shape is on screen directly above, in the
+    /// object that contains it.
+    fn skeleton(
+        &self,
+        type_ref: &str,
+        ancestors: &mut Vec<String>,
+        enums: &mut Vec<String>,
+    ) -> Value {
+        /// Deep enough for any input anyone hand-writes; a guard, not a policy.
+        /// Past it the placeholder stands, and `gqls <Type>` lists the fields.
+        const MAX_NESTING: usize = 6;
 
-        let mut queue: Vec<String> = chain
-            .iter()
-            .flat_map(|f| f.args.iter())
-            .map(|a| base_of(split_arg(a).type_ref).to_string())
-            .collect();
-        let mut seen: Vec<String> = Vec::new();
-        let mut out = Vec::new();
+        let bare = type_ref.trim();
+        let bare = bare.strip_suffix('!').unwrap_or(bare).trim();
+        if let Some(inner) = bare.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            return Value::Array(vec![self.skeleton(inner, ancestors, enums)]);
+        }
 
-        while let Some(name) = queue.pop() {
-            if seen.contains(&name) || out.len() >= MAX_TYPES {
-                continue;
+        let placeholder = || Value::String(format!("<{}>", type_ref.trim()));
+        match self.kinds.get(bare) {
+            Some(Kind::Enum) => {
+                let values: Vec<&str> = self
+                    .fields
+                    .get(bare)
+                    .into_iter()
+                    .flatten()
+                    .map(|v| v.name.as_str())
+                    .collect();
+                // JSON can't hold a choice, so the values go in their own
+                // block and the placeholder names the type that indexes it.
+                if !values.is_empty() {
+                    let line = format!("{bare} = {}", values.join(" | "));
+                    if !enums.contains(&line) {
+                        enums.push(line);
+                    }
+                }
+                placeholder()
             }
-            seen.push(name.clone());
-            match self.kinds.get(name.as_str()) {
-                Some(Kind::InputObject) => {
-                    let mut block = vec![format!("{name} {{")];
-                    for f in self.fields.get(name.as_str()).into_iter().flatten() {
-                        let ty = f.type_ref.as_deref().unwrap_or("");
-                        block.push(format!("  {}: {}", f.name, ty));
-                        queue.push(base_of(ty).to_string());
+            Some(Kind::InputObject)
+                if !ancestors.iter().any(|a| a == bare) && ancestors.len() < MAX_NESTING =>
+            {
+                ancestors.push(bare.to_string());
+                let mut map = Map::new();
+                for f in self.fields.get(bare).into_iter().flatten() {
+                    if f.kind != Kind::InputField {
+                        continue;
                     }
-                    block.push("}".to_string());
-                    out.push(block);
+                    let ty = f.type_ref.as_deref().unwrap_or("");
+                    map.insert(f.name.clone(), self.skeleton(ty, ancestors, enums));
                 }
-                Some(Kind::Enum) => {
-                    let values: Vec<&str> = self
-                        .fields
-                        .get(name.as_str())
-                        .into_iter()
-                        .flatten()
-                        .map(|v| v.name.as_str())
-                        .collect();
-                    if !values.is_empty() {
-                        out.push(vec![format!("{name} = {}", values.join(" | "))]);
-                    }
+                ancestors.pop();
+                // An input this schema has no fields for: `{}` would claim it
+                // takes nothing, which is a stronger statement than we can
+                // make. The placeholder says "fill this in" and stays honest.
+                match map.is_empty() {
+                    true => placeholder(),
+                    false => Value::Object(map),
                 }
-                _ => {}
+            }
+            _ => placeholder(),
+        }
+    }
+
+    /// Every field taking an argument of type `input`, best first, each paired
+    /// with the chain of fields an operation nests to reach it.
+    ///
+    /// A root consumer is one hop. A consumer on a plain object needs a root
+    /// returning that object first, and is dropped when nothing does — an
+    /// alternative you can't call isn't one. Ordered like
+    /// [`roots_returning`](Self::roots_returning), with a root ahead of a
+    /// nested field, so the shortest callable path is what gets drafted.
+    fn chains_taking(&self, input: &str) -> Vec<(String, Vec<&'a SchemaRecord>)> {
+        let mut consumers: Vec<(&'a SchemaRecord, String)> = Vec::new();
+        // Every record with arguments hangs off some parent, so this covers the
+        // roots and the object fields both. Unordered, hence the sort below.
+        for r in self.fields.values().flatten().copied() {
+            for (arg, ty) in r.arg_types() {
+                if ty == input {
+                    consumers.push((r, arg.to_string()));
+                }
             }
         }
-        out.sort();
-        out
+        consumers.sort_by_key(|(r, arg)| {
+            (
+                !matches!(r.kind, Kind::Query | Kind::Mutation | Kind::Subscription),
+                required_args(r),
+                r.path.len(),
+                r.path.clone(),
+                arg.clone(),
+            )
+        });
+        consumers
+            .into_iter()
+            .filter_map(|(r, arg)| {
+                // The argument is named, not just the field: it's the whole
+                // answer to "where does this input go".
+                let label = format!("{}({arg}:)", r.path);
+                match r.kind {
+                    Kind::Query | Kind::Mutation | Kind::Subscription => Some((label, vec![r])),
+                    Kind::Field => {
+                        let root = self
+                            .roots_returning(r.parent.as_deref()?)
+                            .into_iter()
+                            .next()?;
+                        Some((label, vec![root, r]))
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     /// Root operation fields returning `type_name`, best first. Fewest required
@@ -358,13 +481,11 @@ impl<'a> Schema<'a> {
                 deferred.push(format!("# {}: {} {{ … }}", f.name, base));
             }
         }
-        lines.extend(deferred);
-
         // An interface's own fields are only the common ones. Its implementors
         // usually carry the fields you actually came for, and they're
         // unreachable without fragments — so append what each one adds.
-        if let Some(rec) = self.types.get(type_name) {
-            if rec.kind == Kind::Interface {
+        let fragments = match self.types.get(type_name) {
+            Some(rec) if rec.kind == Kind::Interface => {
                 let common: Vec<&str> = self
                     .fields
                     .get(type_name)
@@ -372,15 +493,21 @@ impl<'a> Schema<'a> {
                     .flatten()
                     .map(|f| f.name.as_str())
                     .collect();
-                lines.extend(self.inline_fragments(rec, depth, deprecated, &common));
+                self.inline_fragments(rec, depth, deprecated, &common)
             }
-        }
+            _ => Vec::new(),
+        };
 
-        if lines.is_empty() {
-            // A type this schema doesn't detail. `__typename` is always valid
-            // and keeps the query runnable.
+        // Measured before the markers are appended, because a marker is a
+        // comment: a type whose fields are *all* object-valued yields a
+        // selection set holding nothing but comments, which no server will
+        // parse. `__typename` is always valid and keeps the query runnable —
+        // it's equally the answer for a type this schema doesn't detail.
+        if lines.is_empty() && fragments.is_empty() {
             lines.push("__typename".to_string());
         }
+        lines.extend(deferred);
+        lines.extend(fragments);
         lines
     }
 
@@ -444,6 +571,17 @@ impl<'a> Schema<'a> {
     }
 }
 
+/// The variables block, ready to render.
+struct Placeholders {
+    values: Value,
+    /// `filter: PostFilter` for each variable expanded into an object or list,
+    /// whose JSON key alone no longer names its type.
+    named: Vec<String>,
+    /// Enum types the skeleton reached, `Role = ADMIN | MEMBER`. JSON has no
+    /// way to hold "one of these", so the choice is listed alongside.
+    enums: Vec<String>,
+}
+
 /// The operation's variables: one per argument along the field chain.
 struct Variables {
     /// `(depth, arg name, variable name, type)`
@@ -453,7 +591,12 @@ struct Variables {
 impl Variables {
     /// Split the chain's arguments: the ones a caller must supply become
     /// variables, the rest are returned as notes.
-    fn collect(chain: &[&SchemaRecord]) -> (Self, Vec<String>) {
+    ///
+    /// `required` names an input type whose arguments are supplied whatever the
+    /// schema says about them — the draft exists to show where that input goes,
+    /// and one that quietly omits it because the field tolerates its absence
+    /// answers nothing.
+    fn collect(chain: &[&SchemaRecord], required: Option<&str>) -> (Self, Vec<String>) {
         let mut entries: Vec<(usize, String, String, String)> = Vec::new();
         let mut optional = Vec::new();
         for (depth, field) in chain.iter().enumerate() {
@@ -465,7 +608,8 @@ impl Variables {
                 } = split_arg(arg);
                 // A default means the server fills it in, so even a non-null
                 // argument needs nothing from the caller.
-                if !type_ref.ends_with('!') || default.is_some() {
+                let demanded = required.is_some_and(|t| base_of(type_ref) == t);
+                if !demanded && (!type_ref.ends_with('!') || default.is_some()) {
                     optional.push(format!("{}({})", field.name, arg.trim()));
                     continue;
                 }
@@ -510,14 +654,30 @@ impl Variables {
         }
     }
 
-    /// Every variable is required by construction, so each placeholder names
-    /// its type — unmistakably a blank to fill rather than a usable value.
-    fn placeholders(&self) -> Value {
+    /// The variables block: JSON to paste, plus the two things it can't say.
+    ///
+    /// A scalar placeholder names its type (`"<ID!>"`) — unmistakably a blank
+    /// to fill rather than a usable value. An input object is expanded into its
+    /// fields instead, so the thing you paste is the thing that shows the shape.
+    fn placeholders(&self, schema: &Schema) -> Placeholders {
         let mut map = Map::new();
+        let mut enums = Vec::new();
+        let mut named = Vec::new();
         for (_, _, var, ty) in &self.entries {
-            map.insert(var.clone(), Value::String(format!("<{ty}>")));
+            let value = schema.skeleton(ty, &mut Vec::new(), &mut enums);
+            // Expanding costs the reader the type name: `"filter": { … }` no
+            // longer says it's a PostFilter, and the signature that does say so
+            // is twenty lines up.
+            if value.is_object() || value.is_array() {
+                named.push(format!("{var}: {ty}"));
+            }
+            map.insert(var.clone(), value);
         }
-        Value::Object(map)
+        Placeholders {
+            values: Value::Object(map),
+            named,
+            enums,
+        }
     }
 }
 
@@ -528,34 +688,6 @@ fn required_args(r: &SchemaRecord) -> usize {
         .map(|a| split_arg(a))
         .filter(|a| a.type_ref.ends_with('!') && a.default.is_none())
         .count()
-}
-
-/// A type reference with its list and non-null wrappers peeled: `[User!]!`
-/// → `User`.
-fn base_of(type_ref: &str) -> &str {
-    type_ref.trim_matches(|c| matches!(c, '[' | ']' | '!' | ' '))
-}
-
-/// One parsed argument signature.
-struct Arg<'a> {
-    name: &'a str,
-    type_ref: &'a str,
-    default: Option<&'a str>,
-}
-
-/// `"first: Int = 10"` → name `first`, type `Int`, default `10`. gqls renders
-/// arguments as `name: Type` with ` = default` appended when the schema has one.
-fn split_arg(arg: &str) -> Arg<'_> {
-    let (name, rest) = arg.split_once(':').unwrap_or((arg, ""));
-    let (type_ref, default) = match rest.split_once('=') {
-        Some((t, d)) => (t, Some(d.trim())),
-        None => (rest, None),
-    };
-    Arg {
-        name: name.trim(),
-        type_ref: type_ref.trim(),
-        default,
-    }
 }
 
 /// `updateEmployee` → `UpdateEmployee`, for the operation name.
@@ -699,7 +831,7 @@ mod tests {
     fn build_for(path: &str) -> Example {
         let records = schema();
         let target = records.iter().find(|r| r.path == path).unwrap();
-        build(target, &records, 1).unwrap()
+        build(target, &records, Some(1)).unwrap()
     }
 
     #[test]
@@ -775,7 +907,7 @@ mod tests {
             .position(|r| r.path == "UserError.message")
             .unwrap();
         let target = records.remove(target);
-        let err = build(&target, &records, 1).unwrap_err().to_string();
+        let err = build(&target, &records, Some(1)).unwrap_err().to_string();
         assert!(err.contains("no root field returns UserError"), "{err}");
     }
 
@@ -791,7 +923,7 @@ mod tests {
             &[],
         ));
         let target = records.iter().find(|r| r.path == "User.name").unwrap();
-        let ex = build(target, &records, 1).unwrap();
+        let ex = build(target, &records, Some(1)).unwrap();
         // both Query.user and Query.viewer return User
         assert_eq!(ex.alternatives.len(), 1);
     }
@@ -812,7 +944,7 @@ mod tests {
             ),
         ];
         let target = records.iter().find(|r| r.path == "Query.feed").unwrap();
-        let ex = build(target, &records, 1).unwrap();
+        let ex = build(target, &records, Some(1)).unwrap();
         assert_eq!(ex.operation, "query Feed {\n  feed\n}\n");
         assert_eq!(ex.variables, serde_json::json!({}));
         assert_eq!(
@@ -853,15 +985,14 @@ mod tests {
             ),
         ];
         let target = records.iter().find(|r| r.path == "Query.search").unwrap();
-        let ex = build(target, &records, 1).unwrap();
+        let ex = build(target, &records, Some(1)).unwrap();
+        // The cycle closes as a placeholder rather than recursing: `and`'s
+        // element type is the object it sits inside, whose shape is right there.
         assert_eq!(
-            ex.input_types,
-            vec![vec![
-                "Filter {".to_string(),
-                "  and: [Filter!]".to_string(),
-                "  eq: String".to_string(),
-                "}".to_string(),
-            ]]
+            ex.variables,
+            serde_json::json!({
+                "filter": { "and": ["<Filter!>"], "eq": "<String>" }
+            })
         );
     }
 
@@ -914,7 +1045,7 @@ mod tests {
             ),
         ];
         let target = records.iter().find(|r| r.path == "Thing.child").unwrap();
-        let ex = build(target, &records, 1).unwrap();
+        let ex = build(target, &records, Some(1)).unwrap();
         // the inner `id` collides with the root's, so it's prefixed
         assert!(
             ex.operation.contains("child(id: $childId, role: $role)"),
