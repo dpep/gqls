@@ -381,6 +381,7 @@ mod tests {
             description: None,
             deprecated: None,
             directives: vec![],
+            default: None,
             possible_types: vec![],
         }
     }

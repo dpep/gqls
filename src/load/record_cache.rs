@@ -18,7 +18,7 @@ use crate::model::{Kind, SchemaRecord};
 /// Bump when the on-disk encoding changes — old files then fail this check and
 /// re-parse. Changes to what the loaders *put* in a record are covered by the
 /// crate version in the key (see `path`), so they need no bump here.
-const MAGIC: u32 = 0x4751_5232; // "GQR2"
+const MAGIC: u32 = 0x4751_5233; // "GQR3"
 
 /// Records per decode chunk. The file stores where each chunk starts so they
 /// can be decoded in parallel — records are self-delimiting, but only from a
@@ -161,6 +161,7 @@ fn encode(records: &[SchemaRecord]) -> Vec<u8> {
         put_vec(&mut buf, &r.args);
         put_opt(&mut buf, r.description.as_deref());
         put_opt(&mut buf, r.deprecated.as_deref());
+        put_opt(&mut buf, r.default.as_deref());
         put_vec(&mut buf, &r.directives);
         put_vec(&mut buf, &r.possible_types);
     }
@@ -230,6 +231,7 @@ fn read_record(rd: &mut Reader) -> Option<SchemaRecord> {
         args: rd.vec()?,
         description: rd.opt()?,
         deprecated: rd.opt()?,
+        default: rd.opt()?,
         directives: rd.vec()?,
         possible_types: rd.vec()?,
     })
@@ -359,6 +361,7 @@ mod tests {
             description: None,
             deprecated: Some("use other".into()),
             directives: vec![],
+            default: Some("MEMBER".into()),
             possible_types: vec![],
         }
     }

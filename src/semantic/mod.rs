@@ -427,6 +427,7 @@ mod tests {
             description: Some("The employer".into()),
             deprecated: None,
             directives: vec![],
+            default: None,
             possible_types: vec![],
             args: vec![],
         };

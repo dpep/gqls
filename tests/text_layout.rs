@@ -369,6 +369,17 @@ fn an_input_object_lists_its_fields() {
 }
 
 #[test]
+fn an_input_fields_default_sits_beside_its_type() {
+    // Without it a non-null field with a default is indistinguishable from a
+    // mandatory one: `direction: OrderDirection! = ASC` may be omitted, and
+    // the `!` on its own says the opposite.
+    let out = run(&["PostOrder"]);
+    assert!(out.contains("OrderDirection! = ASC"), "{out}");
+    // and it's the type column that grew, so the descriptions still line up
+    assert!(out.contains("PostOrderField!"), "{out}");
+}
+
+#[test]
 fn a_type_is_referenced_by_what_takes_it_as_well_as_what_returns_it() {
     // An input object is never returned, so scanning return types alone
     // reported nothing at all for the kind with the most to say.

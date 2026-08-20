@@ -260,6 +260,7 @@ fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
             description: opt_str(d, "description"),
             deprecated: None,
             directives: Vec::new(),
+            default: None,
             possible_types: Vec::new(),
         });
     }
@@ -297,6 +298,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
         directives: Vec::new(),
         // Introspection reports a union's members and an interface's
         // implementors the same way, so both arrive here.
+        default: None,
         possible_types: array(t, "possibleTypes")
             .iter()
             .filter_map(|p| p.get("name").and_then(Value::as_str))
@@ -319,6 +321,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     description: opt_str(f, "description"),
                     deprecated: deprecation(f),
                     directives: Vec::new(),
+                    default: None,
                     possible_types: Vec::new(),
                 });
             }
@@ -336,6 +339,9 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     description: opt_str(f, "description"),
                     deprecated: deprecation(f),
                     directives: Vec::new(),
+                    // Arrives as a GraphQL literal in a string, same as an
+                    // argument's — see `args_of`.
+                    default: opt_str(f, "defaultValue"),
                     possible_types: Vec::new(),
                 });
             }
@@ -353,6 +359,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     description: opt_str(v, "description"),
                     deprecated: deprecation(v),
                     directives: Vec::new(),
+                    default: None,
                     possible_types: Vec::new(),
                 });
             }

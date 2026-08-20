@@ -113,6 +113,15 @@ pub struct SchemaRecord {
     /// Deprecation reason, if the entity is `@deprecated`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<String>,
+    /// What an input field falls back to when omitted, as the schema wrote it
+    /// (`MEMBER`, `[]`, `{field: CREATED_AT}`). A default is what makes a
+    /// non-null input field optional, so without it `role: Role = MEMBER` and
+    /// a mandatory `role: Role!` are indistinguishable. Arguments carry theirs
+    /// inside the [`args`] signature strings instead.
+    ///
+    /// [`args`]: SchemaRecord::args
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
     /// Applied directives, rendered like `@auth`. Populated from SDL; always
     /// empty when the schema is loaded by introspection, since applied
     /// directives aren't exposed by the standard introspection query — so the

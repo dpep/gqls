@@ -331,7 +331,14 @@ impl<'a> Schema<'a> {
                         continue;
                     }
                     let ty = f.type_ref.as_deref().unwrap_or("");
-                    map.insert(f.name.clone(), self.skeleton(ty, ancestors, enums));
+                    let mut value = self.skeleton(ty, ancestors, enums);
+                    // A default is what makes even a non-null field optional,
+                    // so a bare `"<OrderDirection!>"` reads as mandatory when
+                    // omitting it is fine. Written as the schema writes it.
+                    if let (Some(d), Value::String(p)) = (f.default.as_deref(), &mut value) {
+                        *p = format!("{} = {d}>", p.trim_end_matches('>'));
+                    }
+                    map.insert(f.name.clone(), value);
                 }
                 ancestors.pop();
                 // An input this schema has no fields for: `{}` would claim it
@@ -721,6 +728,7 @@ mod tests {
             description: None,
             deprecated: None,
             directives: vec![],
+            default: None,
             possible_types: vec![],
         }
     }

@@ -91,6 +91,8 @@ UpdateUserInput  [input_object]
     isAdmin  Boolean  (deprecated: set role: ADMIN instead)
 ```
 
+A field's default sits beside its type as the schema writes it — `direction  OrderDirection! = ASC`. It has to: a default is what makes even a non-null field optional, so the `!` alone would say the opposite.
+
 Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names and empties the description column of an input object's fields. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values`, `fields` and `referenced_by`, so a consumer gets the same facts.
 
 ### Many queries at once

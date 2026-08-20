@@ -62,8 +62,10 @@ rather than a shortlist:
 
 - `match` — `"exact"`, or `"corrected"` when the name was a small misspelling
 - `values` — an enum's values, each `{name, description?, deprecated?}`
-- `fields` — an input object's fields, each `{name, type, description?,
-  deprecated?}`; the `!` in `type` is what says which ones must be supplied
+- `fields` — an input object's fields, each `{name, type, default?,
+  description?, deprecated?}`. The `!` in `type` says which must be supplied —
+  unless there's a `default`, which is what makes even a non-null field
+  optional (`direction: OrderDirection! = ASC` may be omitted)
 - `referenced_by` — every path whose type is this one, which is the schema's
   answer to "how do I get one of these". Both directions: a field returning the
   type, and an argument taking it (`Mutation.createUser(input:)`). An input

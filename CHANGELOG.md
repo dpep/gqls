@@ -6,6 +6,20 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Added
+- **Input field defaults are kept.** `role: Role = MEMBER` loaded as plain
+  `Role`, which left a defaulted field indistinguishable from a mandatory one —
+  `direction: OrderDirection! = ASC` may be omitted, and the `!` on its own says
+  the opposite. `SchemaRecord` carries a `default` now, both loaders populate
+  it, and it shows beside the type: `direction  OrderDirection! = ASC` when you
+  name the input, and `"<OrderDirection! = ASC>"` in an `-e` skeleton.
+  `--json` carries it on input-field records and inside `fields`.
+
+  On upgrade the parsed-record cache re-reads once, since its on-disk format
+  gained a field. Nothing to do — a miss costs milliseconds.
+
 ## 0.23.0 — 2026-08-20
 
 ### Added

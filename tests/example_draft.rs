@@ -70,7 +70,7 @@ fn a_variable_skeleton_shows_the_input_rather_than_naming_it() {
     assert_eq!(
         ex.variables,
         serde_json::json!({
-            "input": { "name": "<String!>", "email": "<String!>", "role": "<Role>" }
+            "input": { "name": "<String!>", "email": "<String!>", "role": "<Role = MEMBER>" }
         })
     );
     // the key alone stops saying what type it is, so the heading says it
@@ -290,6 +290,17 @@ fn an_input_draft_keeps_the_input_in_view_rather_than_the_payload() {
 
     // a field target is untouched — one level, as it always was
     assert!(draft("Query.posts").operation.contains("publishedAt"));
+}
+
+#[test]
+fn a_defaulted_input_field_says_so_in_the_skeleton() {
+    // `"<OrderDirection!>"` reads as mandatory, but the schema fills it in.
+    let ex = draft("PostOrder");
+    assert_eq!(
+        ex.variables["orderBy"][0]["direction"],
+        "<OrderDirection! = ASC>"
+    );
+    assert_eq!(ex.variables["orderBy"][0]["field"], "<PostOrderField!>");
 }
 
 #[test]

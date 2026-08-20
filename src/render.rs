@@ -46,9 +46,15 @@ pub(crate) struct EnumValue<'a> {
 pub(crate) struct InputField<'a> {
     name: &'a str,
     /// Rendered with its wrappers — `[String!]`, `String!` — because the `!` is
-    /// the whole answer to "must I supply this one".
+    /// the whole answer to "must I supply this one"… unless there's a
+    /// `default`, which answers it the other way round.
     #[serde(rename = "type")]
     type_ref: &'a str,
+    /// What the server uses when the field is omitted. Shown beside the type as
+    /// the schema writes it, `Role = MEMBER`: a default is what makes even a
+    /// non-null field optional, so a type without it reads as mandatory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,6 +109,7 @@ pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> 
             .map(|r| InputField {
                 name: &r.name,
                 type_ref: r.type_ref.as_deref().unwrap_or(""),
+                default: r.default.as_deref(),
                 description: r.description.as_deref(),
                 deprecated: r.deprecated.as_deref(),
             })
@@ -292,9 +299,16 @@ pub(crate) fn print_fields(fields: &[InputField], descriptions: bool) {
         .map(|f| f.name.chars().count())
         .max()
         .unwrap_or(0);
+    // The default rides in the type cell, `Role = MEMBER`, the way the schema
+    // writes it — it belongs to the type, and a column of its own would be
+    // empty for most rows.
+    let signature = |f: &InputField| match f.default {
+        Some(d) => format!("{} = {d}", f.type_ref),
+        None => f.type_ref.to_string(),
+    };
     let type_w = fields
         .iter()
-        .map(|f| f.type_ref.chars().count())
+        .map(|f| signature(f).chars().count())
         .max()
         .unwrap_or(0);
     for field in fields {
@@ -322,7 +336,7 @@ pub(crate) fn print_fields(fields: &[InputField], descriptions: bool) {
         line.push(field.name, style::name);
         line.pad_to(4 + name_w);
         line.gap();
-        line.push(field.type_ref, style::answer);
+        line.push(&signature(field), style::answer);
         if !first.is_empty() {
             // Relative to the cell the type opened, not the line — `pad_to`
             // measures a column width.

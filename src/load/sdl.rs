@@ -253,6 +253,7 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
                 description: d.description.clone(),
                 deprecated: None,
                 directives: Vec::new(),
+                default: None,
                 possible_types: Vec::new(),
             }),
             Definition::TypeExtension(te) => emit_type_extension(te, &roots, &mut out),
@@ -376,6 +377,7 @@ fn type_record(
         description: description.clone(),
         deprecated: None,
         directives: directive_names(directives),
+        default: None,
         possible_types: Vec::new(),
     }
 }
@@ -392,6 +394,7 @@ fn field_record(type_name: &str, f: &Field<'_, String>, roots: &Roots) -> Schema
         description: f.description.clone(),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
+        default: None,
         possible_types: Vec::new(),
     }
 }
@@ -438,6 +441,7 @@ fn input_field_record(type_name: &str, f: &InputValue<'_, String>) -> SchemaReco
         description: f.description.clone(),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
+        default: f.default_value.as_ref().map(|d| d.to_string()),
         possible_types: Vec::new(),
     }
 }
@@ -453,6 +457,7 @@ fn enum_value_record(type_name: &str, v: &EnumValue<'_, String>) -> SchemaRecord
         description: v.description.clone(),
         deprecated: deprecated_reason(&v.directives),
         directives: directive_names(&v.directives),
+        default: None,
         possible_types: Vec::new(),
     }
 }
