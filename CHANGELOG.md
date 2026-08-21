@@ -6,7 +6,7 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
-## Unreleased
+## 0.23.1 — 2026-08-20
 
 ### Fixed
 - **Input field defaults were dropped at load time.** `role: Role = MEMBER` loaded as plain
