@@ -520,11 +520,15 @@ pub fn run() -> Result<()> {
         },
         (k, q) => (k, q),
     };
-    let queries: Vec<String> = match positional_query {
-        Some(q) => vec![q],
+    // Lazy, so a batch answers each line as it arrives rather than waiting for
+    // the producer to close stdin. Draining first is invisible in the output —
+    // the bytes are identical — but it makes `producer | gqls -J` silent until
+    // the producer finishes, which is not what a pipe is for.
+    let queries: Box<dyn Iterator<Item = Result<String>>> = match positional_query {
+        Some(q) => Box::new(std::iter::once(Ok(q))),
         // `--returns Company` on its own lists everything returning Company
-        _ if cli.returns.is_some() => vec!["*".into()],
-        _ if batch => read_queries()?,
+        _ if cli.returns.is_some() => Box::new(std::iter::once(Ok("*".into()))),
+        _ if batch => Box::new(read_queries()),
         _ => anyhow::bail!(
             "no query — pass one as an argument (`gqls user schema.graphql`) \
              or pipe one per line (`cat queries.txt | gqls schema.graphql -J`). \
@@ -534,11 +538,6 @@ pub fn run() -> Result<()> {
     if batch && (cli.resolve || cli.example) {
         anyhow::bail!("--resolve and --example take a single query, not piped input");
     }
-    crate::detail!(
-        "{} quer{}",
-        queries.len(),
-        if queries.len() == 1 { "y" } else { "ies" }
-    );
 
     // Built on the first query that needs it, then reused: loading the model is
     // the dominant cost of a semantic query, and paying it per line would undo
@@ -550,8 +549,11 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "_semantic")]
     let mut schema_key: Option<u64> = None;
 
-    for query in &queries {
+    let mut answered = 0usize;
+    for query in queries {
+        let query = query?;
         let query = query.as_str();
+        answered += 1;
         if batch {
             crate::detail!("query {query:?}");
         }
@@ -755,6 +757,16 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Reported after the fact: the query count is not knowable up front once
+    // the batch is lazy, and an empty pipe is the one case worth saying aloud.
+    crate::detail!("{answered} quer{}", if answered == 1 { "y" } else { "ies" });
+    if batch && answered == 0 {
+        anyhow::bail!(
+            "no query — nothing came down the pipe. Pass one as an argument \
+             (`gqls user schema.graphql`) or pipe one per line."
+        );
+    }
+
     if crate::profile::enabled() {
         // Always to stderr, so stdout stays exactly the results — and as JSON
         // when the caller asked for JSON, so a baseline can be stored and
@@ -773,30 +785,25 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Queries piped on stdin, one per line. Blank lines are skipped so a trailing
-/// newline or a padded list doesn't produce an empty search.
-fn read_queries() -> Result<Vec<String>> {
+/// Queries piped on stdin, one per line, yielded as they arrive. Blank lines
+/// are skipped so a trailing newline or a padded list doesn't produce an empty
+/// search.
+///
+/// The empty case is handled by the caller rather than here: a lazy iterator
+/// cannot know it yielded nothing until the loop is over.
+fn read_queries() -> impl Iterator<Item = Result<String>> {
     use std::io::BufRead;
-    let mut out = Vec::new();
-    for line in std::io::stdin().lock().lines() {
-        let line = line?;
-        let q = line.trim();
-        if !q.is_empty() {
-            out.push(q.to_string());
-        }
-    }
-    if out.is_empty() {
-        // Reached whenever stdin isn't a terminal and nothing came down it —
-        // CI, a script, an agent session — which is exactly where "pipe one per
-        // line" is unhelpful on its own, because the reader may simply not have
-        // known a positional query was an option. Say both ways.
-        anyhow::bail!(
-            "no query — pass one as an argument (`gqls user schema.graphql`) \
-             or pipe one per line (`cat queries.txt | gqls schema.graphql -J`). \
-             See --help."
-        );
-    }
-    Ok(out)
+    std::io::stdin()
+        .lock()
+        .lines()
+        .map(|line| line.map_err(anyhow::Error::from))
+        .filter_map(|line| match line {
+            Ok(line) => {
+                let q = line.trim();
+                (!q.is_empty()).then(|| Ok(q.to_string()))
+            }
+            Err(e) => Some(Err(e)),
+        })
 }
 
 impl Output {

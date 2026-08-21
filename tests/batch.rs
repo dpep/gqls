@@ -102,3 +102,44 @@ fn an_explicit_query_wins_over_piped_input() {
     assert_eq!(rows.len(), 1, "only the explicit query ran: {out}");
     assert_eq!(rows[0]["name"], "user");
 }
+
+/// A batch answers each query as it arrives, rather than draining stdin first.
+///
+/// The assertion is the *timing*, because the output is byte-identical either
+/// way: draining first makes `producer | gqls -J` silent until the producer
+/// closes, which for a long-running producer means silent forever.
+#[test]
+fn a_batch_answers_before_the_producer_closes() {
+    use std::io::{BufRead, BufReader};
+
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args([SCHEMA, "-J", "--fuzzy", "-q"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("gqls should be runnable");
+
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    writeln!(stdin, "user").expect("writing the first query");
+    stdin.flush().expect("flushing the first query");
+
+    // Read with stdin still open. If the batch drained first this blocks
+    // forever, so a reader thread bounds the wait.
+    let mut out = BufReader::new(child.stdout.take().expect("stdout was piped"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = out.read_line(&mut line);
+        let _ = tx.send(line);
+    });
+
+    let first = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("no answer before EOF: the batch is draining stdin, not streaming");
+    assert!(first.contains("\"query\""), "{first}");
+
+    drop(stdin);
+    child.wait().expect("gqls should exit");
+}

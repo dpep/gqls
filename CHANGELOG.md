@@ -6,6 +6,15 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **A piped batch now answers each query as it arrives.** `read_queries` drained
+  stdin to EOF before searching anything, so `producer | gqls schema.graphql -J`
+  stayed silent until the producer closed — and never printed at all for a
+  producer that doesn't. The output bytes are identical either way, which is why
+  this went unnoticed; the new test asserts the timing instead.
+
 ## 0.23.1 — 2026-08-20
 
 ### Fixed
