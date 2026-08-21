@@ -8,8 +8,8 @@ early entries are terser than what follows.
 
 ## Unreleased
 
-### Added
-- **Input field defaults are kept.** `role: Role = MEMBER` loaded as plain
+### Fixed
+- **Input field defaults were dropped at load time.** `role: Role = MEMBER` loaded as plain
   `Role`, which left a defaulted field indistinguishable from a mandatory one —
   `direction: OrderDirection! = ASC` may be omitted, and the `!` on its own says
   the opposite. `SchemaRecord` carries a `default` now, both loaders populate
