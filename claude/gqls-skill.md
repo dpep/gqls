@@ -1,6 +1,6 @@
 ---
 name: gqls
-description: Search a GraphQL schema — find a type, field, argument, or directive by fuzzy name or by meaning, or jump to a field's graphql-ruby resolver — with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", or navigating a large schema (an SDL file, an introspection JSON dump, or a live endpoint). Prefer over grep/rg for schema lookups — it ranks the intended match first and handles camelCase/snake_case/typos. Not for raw text search.
+description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User.`), or finding a record by meaning rather than name ("cancel a subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and handles camelCase/snake_case/typos. Not for raw text search.
 ---
 
 # gqls — search a GraphQL schema
