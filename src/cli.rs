@@ -1067,6 +1067,12 @@ fn run_example(
             example.deprecated.join(", ")
         );
     }
+    if let Some(through) = &example.through {
+        // The draft passes something larger than what was asked about, and the
+        // signature names only that larger thing — so the connection between
+        // the two is only in the variables block unless it's said out loud.
+        crate::status!("{} is passed inside {through}", target.path);
+    }
     if let Some(via) = &example.via {
         // The operation itself shows which root it nests through, so this is a
         // diagnostic; the runners-up, which the draft can't show, go underneath
@@ -1079,6 +1085,7 @@ fn run_example(
         "operation": example.operation,
         "variables": example.variables,
         "optional_args": example.optional,
+        "passed_inside": example.through,
         // `[[name, what it's for], …]` — ordered like the operation's own
         // arguments, and only the ones the schema documents.
         "arguments": example.arguments,

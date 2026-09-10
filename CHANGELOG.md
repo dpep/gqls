@@ -6,6 +6,19 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Added
+- **`-e` reaches an input object that only another input holds.** An input is
+  drafted through the field that takes it, and one nothing takes was refused —
+  though it may still be *held* by one that something takes
+  (`AddressValidationInput { address: AddressInput! }`), which is exactly where
+  a caller needs to see it go. The draft is the outer input's, with the one you
+  asked about expanded where it sits inside the variables block, and a stderr
+  line saying which input carries it. That takes one production schema's
+  draftable input objects from 198 of 230 to all 230. `--json` carries
+  `passed_inside`.
+
 ## 0.23.2 — 2026-09-09
 
 ### Added

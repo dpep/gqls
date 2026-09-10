@@ -357,8 +357,11 @@ fn an_input_nothing_takes_says_so_rather_than_inventing_a_path() {
     let sdl = "type Query { ping: String }\ninput Orphan { a: String }\n";
     let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
     let target = records.iter().find(|r| r.path == "Orphan").unwrap();
-    let err = example::build(target, &records, None).expect_err("nothing takes an Orphan");
-    assert!(err.to_string().contains("Orphan"), "{err}");
+    let err = example::build(target, &records, None)
+        .expect_err("nothing takes an Orphan, and no input holds one either");
+    let err = err.to_string();
+    assert!(err.contains("Orphan"), "{err}");
+    assert!(err.contains("holds one is taken"), "{err}");
 }
 
 #[test]
@@ -760,5 +763,34 @@ fn an_argument_name_repeated_along_a_chain_gets_a_variable_of_its_own() {
         ex.operation.contains("node(id: $nodeId2)"),
         "{}",
         ex.operation
+    );
+}
+
+#[test]
+fn an_input_only_another_input_holds_is_drafted_through_that_one() {
+    // Nothing takes an Address, so there was no operation to draft — while the
+    // input that holds it is taken, and the draft showing where an Address goes
+    // is that one's, with the shape nested inside where you'd paste it.
+    let sdl = "\
+        type Query { ping: String }\n\
+        type Mutation { validate(input: Validation!): Boolean! }\n\
+        input Validation { address: Address! }\n\
+        input Address { city: String! zip: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Address").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    // the operation passes the input that is actually an argument
+    assert_eq!(ex.through.as_deref(), Some("Validation"));
+    assert!(
+        ex.operation.contains("validate(input: $input)"),
+        "{}",
+        ex.operation
+    );
+    // and the thing asked about is expanded where it sits inside it
+    assert_eq!(
+        ex.variables,
+        serde_json::json!({ "input": { "address": { "city": "<String!>", "zip": "<String!>" } } })
     );
 }

@@ -84,6 +84,10 @@ pub struct Example {
     pub deprecated: Vec<String>,
     /// The root field a nested target was reached through, if it needed one.
     pub via: Option<String>,
+    /// The input an argument actually carries, when the target only rides
+    /// inside it — `AddressInput` passed as part of `AddressValidationInput`.
+    /// `None` whenever the draft passes the target itself.
+    pub through: Option<String>,
     /// Other root fields that could have reached a nested target. Non-empty
     /// only when the choice was ambiguous.
     pub alternatives: Vec<String>,
@@ -112,6 +116,9 @@ pub fn build(
 ) -> Result<Example> {
     let schema = Schema::index(records);
 
+    // The input actually carried by an argument, when the one asked about only
+    // rides inside it. Set by the input arm below.
+    let mut through: Option<String> = None;
     // The chain of fields to nest, outermost first, and the input type whose
     // argument the draft exists to show — `None` unless the target *is* that
     // input, in which case the argument carrying it must be supplied even where
@@ -147,16 +154,18 @@ pub fn build(
                     .ok_or_else(|| anyhow::anyhow!("{} has no enclosing input", target.path))?,
                 _ => target.name.as_str(),
             };
-            let mut chains = schema.chains_taking(input);
-            if chains.is_empty() {
+            let Some(passed) = schema.passable_input(input) else {
                 bail!(
-                    "no field takes an argument of type {input}, so there's no \
-                     operation to draft. Try `gqls {input}` to see what references it."
+                    "nothing takes an argument of type {input}, and no input that \
+                     holds one is taken either, so there's no operation to draft. \
+                     Try `gqls {input}` to see what references it."
                 );
-            }
+            };
+            through = (passed != input).then(|| passed.to_string());
+            let mut chains = schema.chains_taking(passed);
             let (via, chain) = chains.remove(0);
             let alternatives = chains.into_iter().map(|(path, _)| path).collect();
-            (chain, Some(via), alternatives, Some(input))
+            (chain, Some(via), alternatives, Some(passed))
         }
         // A type is not callable either, but asking for one is asking how to
         // fetch one — so it drafts the root that reaches it, narrowed to it
@@ -303,6 +312,7 @@ pub fn build(
     let placeholders = vars.placeholders(&schema);
     Ok(Example {
         arguments: described_args(&chain),
+        through,
         operation,
         description: target.description.clone(),
         variables: placeholders.values,
@@ -443,6 +453,47 @@ impl<'a> Schema<'a> {
             }
             _ => placeholder(),
         }
+    }
+
+    /// The input a draft can actually reach, starting from the one asked about.
+    ///
+    /// An input object is passable through the field that takes it — but one
+    /// nothing takes may still be *held* by one that something takes
+    /// (`AddressValidationInput { address: AddressInput! }`), and then the
+    /// operation that shows where it goes is the outer one's. Nearest holder
+    /// first, so what you paste is the smallest thing that contains what you
+    /// asked about. `None` when nothing along that path is taken at all.
+    fn passable_input(&self, input: &'a str) -> Option<&'a str> {
+        let mut seen: HashSet<&str> = [input].into_iter().collect();
+        let mut frontier = vec![input];
+        while !frontier.is_empty() {
+            if let Some(&taken) = frontier
+                .iter()
+                .find(|at| !self.chains_taking(at).is_empty())
+            {
+                return Some(taken);
+            }
+            frontier = frontier
+                .iter()
+                .flat_map(|&at| self.inputs_holding(at))
+                .filter(|holder| seen.insert(holder))
+                .collect();
+        }
+        None
+    }
+
+    /// The input objects with a field of type `input` — the way *in* to it.
+    fn inputs_holding(&self, input: &str) -> Vec<&'a str> {
+        let mut holders: Vec<&str> = self
+            .fields
+            .values()
+            .flatten()
+            .filter(|r| r.kind == Kind::InputField && r.base_type() == Some(input))
+            .filter_map(|r| r.parent.as_deref())
+            .collect();
+        holders.sort_unstable();
+        holders.dedup();
+        holders
     }
 
     /// Every field taking an argument of type `input`, best first, each paired

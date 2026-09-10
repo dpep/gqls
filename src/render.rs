@@ -782,6 +782,7 @@ mod tests {
             variables: serde_json::json!({}),
             optional: Vec::new(),
             arguments: Vec::new(),
+            through: None,
             variable_types: Vec::new(),
             enums: Vec::new(),
             deprecated: Vec::new(),
