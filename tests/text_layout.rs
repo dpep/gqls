@@ -461,3 +461,23 @@ fn too_many_fields_are_elided_with_the_command_that_lists_them() {
     assert!(out.contains("field01"), "{out}");
     assert!(!out.contains("field30"), "{out}");
 }
+
+#[test]
+fn a_wildcard_enumerates_rather_than_explaining_its_type() {
+    // `Query.` asks for the fields, not for the type — and a trailing dot is
+    // one character from the type's own name, so the naming check will happily
+    // call it a corrected match if it's allowed to run.
+    let out = run(&["Query."]);
+    assert!(rows(&out).len() > 3, "{out}");
+    assert!(out.starts_with("Query."), "{out}");
+}
+
+#[test]
+fn a_union_with_nothing_to_enumerate_answers_with_itself() {
+    // A union has no fields, so the literal answer to `SearchResult.` is
+    // nothing — while the union it names is right there and is what was asked
+    // about.
+    let out = run_against(SCHEMA, &["SearchResult."]);
+    assert!(out.starts_with("SearchResult  [union]"), "{out}");
+    assert!(out.contains("members"), "{out}");
+}

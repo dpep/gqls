@@ -746,15 +746,6 @@ pub fn run() -> Result<()> {
         crate::detail!("ranked in {:.1?}", t_rank.elapsed());
         let out_span = crate::profile::span("output");
 
-        if matches.is_empty() {
-            // `--returns` with no QUERY searches for `*`, which is gqls's own
-            // wildcard rather than anything the user typed — report the filter
-            // they actually gave.
-            match cli.returns.as_deref().filter(|_| query == "*") {
-                Some(ty) => crate::status!("nothing returns {ty}"),
-                None => crate::status!("no matches for {query:?}"),
-            }
-        }
         // Explain mode: the query named exactly one of the records it matched,
         // so the user has found the thing rather than narrowed toward it.
         //
@@ -763,8 +754,12 @@ pub fn run() -> Result<()> {
         // only the enum — casing is what separates them, and GraphQL convention
         // makes that reliable. `role` names all three and stays a list, which is
         // what an ambiguous query should get.
+        // A wildcard enumerates rather than searches, so it never explains:
+        // `Query.` asks for the fields, not for the type. Unless it enumerated
+        // nothing — `SearchHit.` on a union has no members to list, and the
+        // union is the answer that does exist.
         let predicate = filters.compile();
-        let explained = (!batch && !cli.no_explain)
+        let explained = (!batch && !cli.no_explain && (!pattern || matches.is_empty()))
             .then(|| explained_match(query, records.iter().filter(|r| predicate.accepts(r))))
             .flatten();
         if let Some((record, _)) = explained {
@@ -785,6 +780,16 @@ pub fn run() -> Result<()> {
                 .find(|m| std::ptr::eq(m.record, record))
                 .map_or(0.0, |m| m.score);
             matches = vec![Match { record, score }];
+        }
+        if matches.is_empty() {
+            // Said after the explain decision, which can answer a query the
+            // search itself matched nothing for — `--returns` with no QUERY
+            // also searches for `*`, gqls's own wildcard rather than anything
+            // the caller typed, so report the filter they actually gave.
+            match cli.returns.as_deref().filter(|_| query == "*") {
+                Some(ty) => crate::status!("nothing returns {ty}"),
+                None => crate::status!("no matches for {query:?}"),
+            }
         }
         let explained = explained.map(|(_, m)| m);
         output.write_matches(&matches, batch.then_some(query), explained, &records)?;
