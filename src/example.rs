@@ -660,19 +660,34 @@ impl<'a> Schema<'a> {
         }
         let mut fragments = Vec::new();
         for member in rec.possible_types.iter().take(MAX_MEMBERS) {
-            let mut inner: Vec<String> = self
-                .selection(member, depth, deprecated)
-                .into_iter()
-                // Drop only what the abstract type already selected. Dropping
-                // every marker instead dropped whole implementors: one whose
-                // additions are all object-valued has nothing but markers, and
-                // vanished from the draft with nothing saying it exists.
-                .filter(|l| {
-                    let named = l.strip_prefix("# ").unwrap_or(l);
-                    let name = named.split([' ', '{', ':']).next().unwrap_or(named);
-                    !skip.contains(&name)
-                })
-                .collect();
+            // Drop what the abstract type already selected — and drop it
+            // whole. A field with a selection set spans several lines, so
+            // dropping its opening line alone left the body and the closing
+            // brace behind, and the operation didn't parse. Only the outermost
+            // block's closer is unindented at this level, which is what ends
+            // the drop.
+            //
+            // Dropping every marker instead, as this once did, dropped whole
+            // implementors: one whose additions are all object-valued has
+            // nothing but markers, and vanished with nothing saying it exists.
+            let mut inner: Vec<String> = Vec::new();
+            let mut dropping = false;
+            for line in self.selection(member, depth, deprecated) {
+                if dropping {
+                    dropping = line != "}";
+                    continue;
+                }
+                let named = line.strip_prefix("# ").unwrap_or(&line);
+                let name = named.split([' ', '{', ':']).next().unwrap_or(named);
+                if skip.contains(&name) {
+                    // Measured on the code, not the whole line: a deprecated
+                    // field carries its note past the brace.
+                    let code = line.split('#').next().unwrap_or_default();
+                    dropping = code.trim_end().ends_with('{');
+                    continue;
+                }
+                inner.push(line);
+            }
             if inner.is_empty() {
                 continue; // this implementor adds nothing of its own
             }

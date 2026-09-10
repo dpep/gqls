@@ -513,3 +513,30 @@ fn an_implementor_that_only_adds_object_fields_still_appears() {
         ex.operation
     );
 }
+
+#[test]
+fn a_field_the_interface_already_selected_is_dropped_whole() {
+    // Dropping only the opening line of a `field { … }` the interface had
+    // already selected left its body and closing brace orphaned, and the
+    // operation didn't parse. The deprecated case is the one that survives a
+    // fix testing the line's last character: the note sits past the brace.
+    let sdl = "\
+        type Query { things: [Thing!]! }\n\
+        interface Thing { owner: Owner @deprecated(reason: \"use holder\") }\n\
+        type Widget implements Thing { owner: Owner @deprecated(reason: \"use holder\") size: Int }\n\
+        type Owner { name: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.things").unwrap();
+    let ex = example::build(target, &records, Some(2)).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    // the interface selects it once, and the implementor adds only its own
+    assert_eq!(
+        ex.operation.matches("owner {").count(),
+        1,
+        "{}",
+        ex.operation
+    );
+    assert!(ex.operation.contains("... on Widget {"), "{}", ex.operation);
+    assert!(ex.operation.contains("size"), "{}", ex.operation);
+}

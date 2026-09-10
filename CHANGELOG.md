@@ -42,6 +42,10 @@ early entries are terser than what follows.
   unbalanced. It fired at the default depth, since the errors convention is
   always expanded: 8 of 130 root operations in one production schema were
   affected.
+- **`-e` orphaned a selection set it meant to drop.** A field an interface had
+  already selected was dropped from its implementors' fragments one line at a
+  time, so a field with a selection set left its body and closing brace behind
+  and the operation didn't parse.
 - **`-e` dropped an interface's implementors.** One whose added fields are all
   object-valued has nothing but `# field: Type { … }` markers, and the
   interface path dropped every marker — so the fragment came out empty and the
