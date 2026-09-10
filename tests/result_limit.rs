@@ -80,3 +80,12 @@ fn naming_one_record_explains_it_at_any_limit() {
         assert!(stderr.contains("3 other matches"), "{stderr}");
     }
 }
+
+#[test]
+fn an_empty_page_is_not_a_miss() {
+    // `-l 0` shows nothing, which is not the same as nothing matching.
+    let (stdout, stderr) = run(&["user", "-l", "0"]);
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(!stderr.contains("no matches"), "{stderr}");
+    assert!(stderr.contains("showing top 0"), "{stderr}");
+}

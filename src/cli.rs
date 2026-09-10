@@ -600,22 +600,23 @@ pub fn run() -> Result<()> {
             }
         }
 
+        // Wrappers come off the flag the way they come off the schema: the
+        // type as the schema writes it (`[Card!]!`) is what gets pasted back,
+        // and it matched nothing. A wildcard has none to peel.
+        let returns = cli.returns.as_deref().map(crate::model::base_of);
         // A `--returns` that nothing satisfies outright is widened to what
         // narrows to the type, rather than dead-ending on a precise "no".
-        let widened = cli
-            .returns
-            .as_deref()
-            .and_then(|t| search::widened_returns(t, &records));
+        let widened = returns.and_then(|t| search::widened_returns(t, &records));
         if widened.is_some() {
             crate::status!(
                 "nothing returns {} outright — showing fields returning a type it narrows from",
-                cli.returns.as_deref().unwrap_or_default()
+                returns.unwrap_or_default()
             );
         }
         let filters = search::Filters {
             kind,
             parent,
-            returns: widened.as_deref().or(cli.returns.as_deref()),
+            returns: widened.as_deref().or(returns),
         };
 
         if cli.resolve {
@@ -781,12 +782,14 @@ pub fn run() -> Result<()> {
                 .map_or(0.0, |m| m.score);
             matches = vec![Match { record, score }];
         }
-        if matches.is_empty() {
-            // Said after the explain decision, which can answer a query the
-            // search itself matched nothing for — `--returns` with no QUERY
-            // also searches for `*`, gqls's own wildcard rather than anything
-            // the caller typed, so report the filter they actually gave.
-            match cli.returns.as_deref().filter(|_| query == "*") {
+        // A miss is nothing matching, not an empty page of matches: `-l 0`
+        // reported "no matches" for a query with five of them. Said after the
+        // explain decision too, which can answer a query the search itself
+        // matched nothing for. `--returns` with no QUERY searches for `*` —
+        // gqls's own wildcard, not anything the caller typed — so that case
+        // reports the filter they actually gave.
+        if total == 0 && explained.is_none() {
+            match returns.filter(|_| query == "*") {
                 Some(ty) => crate::status!("nothing returns {ty}"),
                 None => crate::status!("no matches for {query:?}"),
             }
