@@ -660,18 +660,26 @@ impl<'a> Schema<'a> {
         }
         let mut fragments = Vec::new();
         for member in rec.possible_types.iter().take(MAX_MEMBERS) {
-            let inner: Vec<String> = self
+            let mut inner: Vec<String> = self
                 .selection(member, depth, deprecated)
                 .into_iter()
-                // Drop what the abstract type already selected, and the
-                // markers that come with it — repeating them adds nothing.
+                // Drop only what the abstract type already selected. Dropping
+                // every marker instead dropped whole implementors: one whose
+                // additions are all object-valued has nothing but markers, and
+                // vanished from the draft with nothing saying it exists.
                 .filter(|l| {
-                    let name = l.split([' ', '{']).next().unwrap_or(l);
-                    !skip.contains(&name) && !(l.starts_with('#') && !skip.is_empty())
+                    let named = l.strip_prefix("# ").unwrap_or(l);
+                    let name = named.split([' ', '{', ':']).next().unwrap_or(named);
+                    !skip.contains(&name)
                 })
                 .collect();
             if inner.is_empty() {
                 continue; // this implementor adds nothing of its own
+            }
+            // A marker is a comment, so markers alone are an empty selection
+            // set, which no server parses.
+            if inner.iter().all(|l| l.starts_with('#')) {
+                inner.insert(0, "__typename".to_string());
             }
             fragments.push(format!("... on {member} {{"));
             fragments.extend(inner.into_iter().map(|l| format!("  {l}")));

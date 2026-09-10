@@ -480,7 +480,35 @@ fn a_deprecated_object_valued_field_keeps_its_brace_out_of_the_comment() {
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
 
     assert!(
-        ex.operation.contains("errors {  # deprecated: use problems"),
+        ex.operation
+            .contains("errors {  # deprecated: use problems"),
+        "{}",
+        ex.operation
+    );
+}
+
+#[test]
+fn an_implementor_that_only_adds_object_fields_still_appears() {
+    // Its additions are all object-valued, so it has nothing but markers —
+    // and dropping every marker inside an interface's fragments dropped the
+    // implementor with them, leaving nothing to say it exists.
+    let sdl = "\
+        type Query { animals: [Animal!]! }\n\
+        interface Animal { id: ID! }\n\
+        type Dog implements Animal { id: ID! toy: Toy }\n\
+        type Cat implements Animal { id: ID! lives: Int }\n\
+        type Toy { name: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.animals").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert!(ex.operation.contains("... on Dog {"), "{}", ex.operation);
+    assert!(ex.operation.contains("# toy: Toy"), "{}", ex.operation);
+    // the interface's own field is selected once, not repeated per implementor
+    assert_eq!(
+        ex.operation.matches("\n    id\n").count(),
+        1,
         "{}",
         ex.operation
     );
