@@ -23,7 +23,7 @@ const HIDE_SEMANTIC: bool = !cfg!(feature = "_semantic");
 /// counts.
 macro_rules! about_head {
     () => {
-        "Find the types, fields, args, and directives in a GraphQL schema from the terminal. \
+        "Find the types, fields and directives in a GraphQL schema from the terminal. \
          The source is an SDL file, a local introspection JSON dump, or a live http(s) \
          endpoint; with none given, gqls discovers a schema in the current tree. "
     };
@@ -32,8 +32,8 @@ macro_rules! about_head {
 macro_rules! about_tail {
     () => {
         "Name one record and gqls explains it rather than listing: its description in full, \
-         deprecation, directives, an abstract type's members, an enum's values, an input \
-         object's fields, and what references it. --example drafts an operation to paste, \
+         deprecation, directives, an abstract type's members, an enum's values, a \
+         type's fields, and what references it. --example drafts an operation to paste, \
          --resolve jumps to the graphql-ruby resolver via rq. All modes support -j/--json \
          and -J/--ndjson."
     };

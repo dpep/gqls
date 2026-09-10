@@ -9,6 +9,11 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **A `Type.` query with nothing to enumerate answers with the type.** A union
+  has no fields, so `gqls 'SearchHit.'` reported no matches while the union it
+  named sat one line away with its members and what references it. An
+  enumeration that finds something still never explains — a trailing dot is one
+  character from the type's own name, and `Query.` means the root fields.
 - **Naming an object or an interface lists its fields.** Only an input object
   did, on the reasoning that an object's fields show up in a selection set
   somewhere else — they don't, and reaching them meant a second search
@@ -31,6 +36,43 @@ early entries are terser than what follows.
   already returns.
 
 ### Fixed
+- **A deprecated object-valued field drafted an operation that doesn't parse.**
+  The `# deprecated` note was appended to the field name, so on a field with a
+  selection set the `{` landed inside the comment and the document came out
+  unbalanced. It fired at the default depth, since the errors convention is
+  always expanded: 8 of 130 root operations in one production schema were
+  affected.
+- **`-e` dropped an interface's implementors.** One whose added fields are all
+  object-valued has nothing but `# field: Type { … }` markers, and the
+  interface path dropped every marker — so the fragment came out empty and the
+  implementor vanished, with nothing saying it existed. A union in the same
+  position kept its markers, so the two abstract paths disagreed.
+- **`-l` decided whether an answer was a list or an explanation.** Whether a
+  query names exactly one record was read off the top `-l` rows, so the display
+  limit changed the answer and, on a big schema, which record got explained —
+  `user -l 1`, `-l 2` and `-l 3` each answered differently, one of them
+  explaining a deprecated field as an exact match out of 84. The decision now
+  runs over every record the filters admit, and the count of what it set aside
+  is out of the whole match set.
+- **`--profile` printed nothing with `-e` or `-R`.** Both return before the
+  report block.
+- **The semantic index was promised when nothing was building it.** With
+  `GQLS_NO_AUTOWARM` set — or when no warm could be spawned — the "building the
+  semantic index in the background" line printed every run regardless, forever.
+- **An annotation row stayed a row.** `implemented by` was uncapped while
+  `referenced by` elided past six, so GitHub's `Node` printed 128 implementor
+  names. `-D` also swapped `values` and `referenced by`, though it only chooses
+  between an enum's block and collapsed forms.
+- **`@join__*` matched nothing.** A pattern only addressed paths when it held a
+  `.`, so pasting back a directive the way gqls prints it silently missed.
+- **`--returns '[Card!]!'` matched nothing.** Wrappers came off the schema side
+  of the comparison but not off the flag, so the type as the schema writes it
+  was the one spelling that failed.
+- **`-l 0` reported "no matches"** for a query with five of them: a miss is
+  nothing matching, not an empty page.
+- **The README and `--help` claimed arguments were searchable.** They aren't
+  records, so `gqls followRenames` finds nothing; you reach an argument through
+  the field that takes it. The claim is gone rather than the gap papered over.
 - **`--returns` with no QUERY reported `no matches for "*"`.** The wildcard is
   gqls's own — nothing the caller typed — so the miss now names the filter:
   `nothing returns Zork`.

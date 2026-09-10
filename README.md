@@ -5,7 +5,7 @@
 [![crates.io](https://img.shields.io/crates/v/gqls-cli.svg)](https://crates.io/crates/gqls-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Point `gqls` at a schema and find the type, field, argument, or directive you're after — by approximate name, by meaning, or by jumping straight to its resolver in code. It reads an SDL file, an introspection dump, a live endpoint, or a federated supergraph, so instead of grepping SDL and guessing the exact spelling you get ranked matches — even on schemas too big to scroll, where GitHub's ~68k-line API answers in ~0.15s.
+Point `gqls` at a schema and find the type, field or directive you're after — by approximate name, by meaning, or by jumping straight to its resolver in code. It reads an SDL file, an introspection dump, a live endpoint, or a federated supergraph, so instead of grepping SDL and guessing the exact spelling you get ranked matches — even on schemas too big to scroll, where GitHub's ~68k-line API answers in ~0.15s.
 
 ```sh
 gqls user schema.graphql              # fuzzy: usr, usre, User.email all match
@@ -62,11 +62,12 @@ Searching narrows; naming finds. When a query names exactly one of the records i
 
 ```sh
 $ gqls Role
-gqls: 2 other matches for "Role" (--no-explain to list them)
+gqls: 3 other matches for "Role" (--no-explain to list them)
 Role  [enum]
   What a user is allowed to do.
 
-  referenced by  User.role, CreateUserInput.role
+  referenced by  @auth(requires:), User.role, CreateUserInput.role,
+                 UpdateUserInput.role
   values
     ADMIN   Full access, including billing and member management.
     MEMBER  Ordinary access to the account's own content.
@@ -126,6 +127,8 @@ gqls --returns Company -k query         # ...just the root queries — an entry 
 gqls --returns '*Payload'               # wildcards work here too
 gqls employee --returns Employee        # combined with a name search
 ```
+
+Arguments are not searchable by name — they aren't records of their own, so `gqls followRenames` finds nothing. You reach one through the field that takes it: name the field and its signature is spelled out (`gqls Query.repository`), and `gqls Company` lists `Mutation.createUser(input:)` among what references the type, which is the other direction.
 
 A name search can't answer this: `Query.myEmployer: Company` doesn't contain the word "Company" anywhere in its name or path. With no QUERY at all, `--returns` lists everything it matches.
 
