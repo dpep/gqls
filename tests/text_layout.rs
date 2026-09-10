@@ -418,3 +418,46 @@ fn piped_output_carries_no_escapes() {
         );
     }
 }
+
+#[test]
+fn an_object_lists_its_fields_and_says_which_take_arguments() {
+    // Same reason an input object does: naming one thing is asking what it is,
+    // and for an object the answer is mostly its fields. Reaching them through
+    // `User.` instead means a ranked, truncated search.
+    let out = run(&["User"]);
+    assert!(out.contains("fields"), "{out}");
+    let posts = out
+        .lines()
+        .find(|l| l.contains("posts"))
+        .unwrap_or_else(|| panic!("{out}"));
+    // `(…)` says the field takes arguments without a column of signatures
+    assert!(posts.contains("posts(…)"), "{out}");
+    let email = out
+        .lines()
+        .find(|l| l.trim_start().starts_with("email"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(
+        column_of(posts, "[Post!]!"),
+        column_of(email, "String!"),
+        "type column not aligned:\n{out}"
+    );
+}
+
+#[test]
+fn an_interface_lists_its_own_fields() {
+    let out = run(&["Commentable"]);
+    assert!(out.contains("implemented by"), "{out}");
+    assert!(out.contains("comments(…)"), "{out}");
+}
+
+#[test]
+fn too_many_fields_are_elided_with_the_command_that_lists_them() {
+    let out = run_against("tests/fixtures/wide_type.graphql", &["Wide"]);
+    // the count is the fixture's, and the command is spelled with it
+    assert!(
+        out.contains("… and 6 more — `gqls 'Wide.' -l 30` lists them all"),
+        "{out}"
+    );
+    assert!(out.contains("field01"), "{out}");
+    assert!(!out.contains("field30"), "{out}");
+}

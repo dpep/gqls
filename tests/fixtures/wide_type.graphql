@@ -1,0 +1,37 @@
+# A type with more fields than the explanation prints, so the elision and
+# the command it points at are exercised on something that really is too
+# wide to read in full.
+type Query { wide: Wide }
+
+type Wide {
+  field01: String
+  field02: String
+  field03: String
+  field04: String
+  field05: String
+  field06: String
+  field07: String
+  field08: String
+  field09: String
+  field10: String
+  field11: String
+  field12: String
+  field13: String
+  field14: String
+  field15: String
+  field16: String
+  field17: String
+  field18: String
+  field19: String
+  field20: String
+  field21: String
+  field22: String
+  field23: String
+  field24: String
+  field25: String
+  field26: String
+  field27: String
+  field28: String
+  field29: String
+  field30: String
+}

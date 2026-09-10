@@ -8,6 +8,16 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Added
+- **Naming an object or an interface lists its fields.** Only an input object
+  did, on the reasoning that an object's fields show up in a selection set
+  somewhere else — they don't, and reaching them meant a second search
+  (`User.`) that ranks and truncates rather than listing. Each field comes with
+  its type, description and deprecation; one taking arguments is marked
+  `posts(…)`. Past a couple of dozen the list is elided with the command that
+  spells out the rest (`… and 121 more — `gqls 'Repository.' -l 145` lists them
+  all`); `--json` carries every field and every argument signature.
+
 ### Fixed
 - **`-e` reaches a field through the fragment that narrows to it.** A field was
   only drafted when some root field returned its enclosing type outright, so

@@ -58,7 +58,7 @@ gqls 'cancel a subscription'     # a phrase — matched word by word
 
 ### Name one thing and gqls explains it
 
-Searching narrows; naming finds. When a query names exactly one of the records it matched, that record is shown on its own and annotated — its description in full, its deprecation reason, applied directives, a union's members or an interface's implementors, an enum's values with what each means, an input object's fields with their types, and every path that references the type. A path counts in both directions: a field returning the type, and an argument taking it (`Mutation.createUser(input:)`) — which for an input object, never returned by anything, is the only direction it appears in at all.
+Searching narrows; naming finds. When a query names exactly one of the records it matched, that record is shown on its own and annotated — its description in full, its deprecation reason, applied directives, a union's members or an interface's implementors, an enum's values with what each means, its fields with their types — an object's, an interface's or an input object's — and every path that references the type. A path counts in both directions: a field returning the type, and an argument taking it (`Mutation.createUser(input:)`) — which for an input object, never returned by anything, is the only direction it appears in at all.
 
 ```sh
 $ gqls Role
@@ -74,7 +74,7 @@ Role  [enum]
     OWNER   (deprecated: collapsed into ADMIN)
 ```
 
-An input object gets the same treatment, which is what you need to construct one:
+Every kind that has fields lists them, which for an object or an interface is most of what it is — reaching them through `User.` instead is a ranked search that stops at `-l`. A field taking arguments is marked `posts(…)` rather than given a column of signatures; naming the field spells them out. A type with more fields than fit is elided with the command that lists the rest (`… and 121 more — `gqls 'Repository.' -l 145` lists them all`); `--json` is never elided.
 
 ```sh
 $ gqls UpdateUserInput
@@ -92,6 +92,16 @@ UpdateUserInput  [input_object]
 ```
 
 A field's default sits beside its type as the schema writes it — `direction  OrderDirection! = ASC`. It has to: a default is what makes even a non-null field optional, so the `!` alone would say the opposite.
+
+```sh
+$ gqls Commentable
+Commentable  [interface]
+  Anything readers can comment on.
+
+  implemented by  Post
+  fields
+    comments(…)  [Comment!]!  Comments, newest first.
+```
 
 Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names and empties the description column of an input object's fields. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values`, `fields` and `referenced_by`, so a consumer gets the same facts.
 

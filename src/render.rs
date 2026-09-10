@@ -28,6 +28,12 @@ pub(crate) struct Match<'a> {
 /// forty places has told you what you needed by the fifth.
 const MAX_REFERENCES: usize = 6;
 
+/// Most fields to print before saying how many are left. Nearly every type has
+/// a handful and prints whole; the few that run to hundreds can't be read in
+/// full anyway, and what you want from one of those is the count and a way to
+/// search inside it. `--json` is never capped — a machine reader has no wall.
+const MAX_FIELDS: usize = 24;
+
 /// One value of an enum, as an explanation reports it.
 #[derive(Serialize)]
 pub(crate) struct EnumValue<'a> {
@@ -41,10 +47,15 @@ pub(crate) struct EnumValue<'a> {
     deprecated: Option<&'a str>,
 }
 
-/// One field of an input object, as an explanation reports it.
+/// One field of a type, as an explanation reports it.
 #[derive(Serialize)]
-pub(crate) struct InputField<'a> {
+pub(crate) struct Field<'a> {
     name: &'a str,
+    /// The field's argument signatures. Collapsed to `(…)` beside the name in
+    /// text, since a column of signatures would dwarf the types they hang off;
+    /// `--json` carries them in full, and naming the field spells them out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    args: Vec<&'a str>,
     /// Rendered with its wrappers — `[String!]`, `String!` — because the `!` is
     /// the whole answer to "must I supply this one"… unless there's a
     /// `default`, which answers it the other way round.
@@ -71,12 +82,13 @@ pub(crate) struct Extras<'a> {
     /// An enum's values, so reading one doesn't need a second search.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     values: Vec<EnumValue<'a>>,
-    /// An input object's fields — the same fact for the same reason. You can't
-    /// construct one of these without knowing them, and unlike an object type's
-    /// fields there's no selection set anywhere else in the output that shows
-    /// them.
+    /// A type's fields — the same fact for the same reason. Naming one thing
+    /// is asking what it is, and for an object, an interface or an input
+    /// object the answer is mostly its fields. Reaching them any other way
+    /// means a second search (`User.`), which ranks and truncates rather than
+    /// listing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    fields: Vec<InputField<'a>>,
+    fields: Vec<Field<'a>>,
     /// Every path whose type is this one — the schema's answer to "how do I get
     /// one of these". The one fact here a consumer can't cheaply recompute: it
     /// would have to pull every record and scan.
@@ -102,20 +114,26 @@ pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> 
             .collect(),
         _ => Vec::new(),
     };
-    let fields = match record.kind {
-        Kind::InputObject => records
-            .iter()
-            .filter(|r| r.kind == Kind::InputField && r.parent.as_deref() == Some(&record.name))
-            .map(|r| InputField {
-                name: &r.name,
-                type_ref: r.type_ref.as_deref().unwrap_or(""),
-                default: r.default.as_deref(),
-                description: r.description.as_deref(),
-                deprecated: r.deprecated.as_deref(),
-            })
-            .collect(),
-        _ => Vec::new(),
+    // Schema order, not sorted: a schema puts `id` first for a reason, and a
+    // field's neighbours are part of what it means.
+    // A union has no fields of its own, and its members are already a note.
+    let member = match record.kind {
+        Kind::InputObject => Some(Kind::InputField),
+        Kind::Object | Kind::Interface => Some(Kind::Field),
+        _ => None,
     };
+    let fields = records
+        .iter()
+        .filter(|r| member == Some(r.kind) && r.parent.as_deref() == Some(&record.name))
+        .map(|r| Field {
+            name: &r.name,
+            type_ref: r.type_ref.as_deref().unwrap_or(""),
+            args: r.args.iter().map(String::as_str).collect(),
+            default: r.default.as_deref(),
+            description: r.description.as_deref(),
+            deprecated: r.deprecated.as_deref(),
+        })
+        .collect();
     // Types only — a field is already reachable through the type it hangs off,
     // which its own path shows.
     let referenced_by = match record.parent.is_none() && record.kind != Kind::Directive {
@@ -292,17 +310,25 @@ pub(crate) fn print_values(values: &[EnumValue]) {
 /// type sits next to the name rather than trailing the description. That's also
 /// why `-D` only empties the third column here instead of collapsing the block:
 /// the two that remain still want their alignment.
-pub(crate) fn print_fields(fields: &[InputField], descriptions: bool) {
+pub(crate) fn print_fields(fields: &[Field], owner: &str, descriptions: bool) {
     println!("  {}", style::muted("fields"));
+    let total = fields.len();
+    let fields = &fields[..total.min(MAX_FIELDS)];
+    // `posts(…)`: enough to say the field takes arguments, which changes how
+    // you'd select it, without a column of signatures.
+    let name = |f: &Field| match f.args.is_empty() {
+        true => f.name.to_string(),
+        false => format!("{}(…)", f.name),
+    };
     let name_w = fields
         .iter()
-        .map(|f| f.name.chars().count())
+        .map(|f| name(f).chars().count())
         .max()
         .unwrap_or(0);
     // The default rides in the type cell, `Role = MEMBER`, the way the schema
     // writes it — it belongs to the type, and a column of its own would be
     // empty for most rows.
-    let signature = |f: &InputField| match f.default {
+    let signature = |f: &Field| match f.default {
         Some(d) => format!("{} = {d}", f.type_ref),
         None => f.type_ref.to_string(),
     };
@@ -333,7 +359,7 @@ pub(crate) fn print_fields(fields: &[InputField], descriptions: bool) {
 
         let mut line = style::Line::default();
         line.push("    ", style::answer);
-        line.push(field.name, style::name);
+        line.push(&name(field), style::name);
         line.pad_to(4 + name_w);
         line.gap();
         line.push(&signature(field), style::answer);
@@ -356,6 +382,17 @@ pub(crate) fn print_fields(fields: &[InputField], descriptions: bool) {
         for cont in lines {
             println!("{}{}", " ".repeat(indent), style::muted(&cont));
         }
+    }
+    // The way out of the elision is spelled with the count it takes, so it's
+    // one paste rather than a guess at `-l`.
+    if total > fields.len() {
+        println!(
+            "    {}",
+            style::muted(&format!(
+                "… and {} more — `gqls '{owner}.' -l {total}` lists them all",
+                total - fields.len()
+            ))
+        );
     }
 }
 
@@ -514,7 +551,7 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
                     print_values(&extras.values);
                 }
                 if fields {
-                    print_fields(&extras.fields, descriptions);
+                    print_fields(&extras.fields, &matches[0].record.name, descriptions);
                 }
             }
             continue;

@@ -1,6 +1,6 @@
 ---
 name: gqls
-description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User.`), or finding a record by meaning rather than name ("cancel a subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and handles camelCase/snake_case/typos. Not for raw text search.
+description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or finding a record by meaning rather than name ("cancel a subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and handles camelCase/snake_case/typos. Not for raw text search.
 ---
 
 # gqls — search a GraphQL schema
@@ -62,10 +62,12 @@ rather than a shortlist:
 
 - `match` — `"exact"`, or `"corrected"` when the name was a small misspelling
 - `values` — an enum's values, each `{name, description?, deprecated?}`
-- `fields` — an input object's fields, each `{name, type, default?,
-  description?, deprecated?}`. The `!` in `type` says which must be supplied —
-  unless there's a `default`, which is what makes even a non-null field
-  optional (`direction: OrderDirection! = ASC` may be omitted)
+- `fields` — the fields of an object, an interface or an input object, each
+  `{name, args?, type, default?, description?, deprecated?}`. The `!` in `type`
+  says which must be supplied — unless there's a `default`, which is what makes
+  even a non-null field optional (`direction: OrderDirection! = ASC` may be
+  omitted). Never elided in JSON; the text form stops at a couple of dozen and
+  prints the command that lists the rest
 - `referenced_by` — every path whose type is this one, which is the schema's
   answer to "how do I get one of these". Both directions: a field returning the
   type, and an argument taking it (`Mutation.createUser(input:)`). An input
@@ -77,7 +79,13 @@ that ignores the extra keys still works.
 
 Text output shows the description too — elided to one line in a list, in full
 for a record you named. `-D` drops descriptions, collapses an enum's values to
-their names, and empties the description column of an input object's fields.
+their names, and empties the description column of a type's fields.
+
+**Naming a type is how you list its fields** — `gqls User`, not `gqls User.`.
+The wildcard form is a ranked search that stops at `-l` and can drop fields
+without the answer looking incomplete; naming the type lists them in schema
+order with types, descriptions and deprecations. Keep `User.` for when you want
+to *search* within a type (`gqls 'User.*email*'`).
 
 ## Scope when you know more
 
