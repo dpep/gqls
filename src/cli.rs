@@ -331,28 +331,30 @@ fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) ->
 /// background — the next run gets combined fuzzy+semantic results with no wait.
 /// Opt out with `GQLS_NO_AUTOWARM`. Best-effort; failures are ignored.
 #[cfg(feature = "_semantic")]
-fn spawn_background_warm(source: &str, headers: &[String]) {
+fn spawn_background_warm(source: &str, headers: &[String]) -> bool {
     if std::env::var_os("GQLS_NO_AUTOWARM").is_some() {
-        return;
+        return false;
     }
     // Single-flight: a detached warm for this source may already be running.
     // A short-lived lockfile keeps a burst of cold queries from spawning a herd
     // that all embed the same schema and race the cache.
     if !claim_warm_lock(source) {
-        return;
+        // Someone else holds it, so a warm is running either way.
+        return true;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let mut cmd = std::process::Command::new(exe);
-        cmd.arg("--warm").arg(source);
-        for h in headers {
-            cmd.arg("--header").arg(h);
-        }
-        let _ = cmd
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--warm").arg(source);
+    for h in headers {
+        cmd.arg("--header").arg(h);
     }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 /// Best-effort single-flight guard for background warming: returns true (and
@@ -718,11 +720,19 @@ pub fn run() -> Result<()> {
                     );
                     (combine(fuzzy, semantic, cli.limit), total)
                 } else {
-                    spawn_background_warm(&source, &cli.header);
-                    crate::status!(
-                        "building the semantic index in the background; next run ranks by \
-                     meaning (--semantic to wait, --fuzzy to skip)"
-                    );
+                    // Only promise the index when one is actually being built:
+                    // opted out with GQLS_NO_AUTOWARM, or unable to spawn, the
+                    // old message repeated the same false claim every run.
+                    match spawn_background_warm(&source, &cli.header) {
+                        true => crate::status!(
+                            "building the semantic index in the background; next run ranks by \
+                             meaning (--semantic to wait, --fuzzy to skip)"
+                        ),
+                        false => crate::detail!(
+                            "no semantic index, and none being built — ranking by name \
+                             (--semantic to build one now)"
+                        ),
+                    }
                     (fuzzy, total)
                 }
             }
