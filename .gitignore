@@ -1,1 +1,5 @@
 /target
+
+# Scratch worktrees for background agents — repos of their own, and never
+# part of a commit here.
+/.claude/worktrees/
