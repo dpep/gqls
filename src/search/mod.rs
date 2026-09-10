@@ -655,6 +655,33 @@ mod tests {
     }
 
     #[test]
+    fn a_field_is_found_by_the_name_of_an_argument_it_takes() {
+        // An argument isn't a record, so the field that takes it is the answer
+        // — and naming that field then says what the argument is for.
+        let sdl = "type Query { repository(owner: String!, followRenames: Boolean): String }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        let hits = search("followRenames", &records, Default::default());
+        assert_eq!(
+            hits.first().map(|h| h.record.path.as_str()),
+            Some("Query.repository")
+        );
+    }
+
+    #[test]
+    fn an_argument_match_never_outranks_a_name_match() {
+        // What keeps a Relay schema's 348 `first` arguments from burying a
+        // search that meant a field: the weak-tail cut drops an argument match
+        // the moment any name matches.
+        let sdl = "type Query { firstDay: String\n things(first: Int): String }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        let paths: Vec<&str> = search("first", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths, ["Query.firstDay"]);
+    }
+
+    #[test]
     fn returns_filter_accepts_wildcards_and_composes() {
         let records = vec![
             typed_rec("a", Some("Mutation"), Kind::Mutation, Some("APayload!")),

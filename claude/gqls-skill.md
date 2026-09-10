@@ -106,6 +106,10 @@ to *search* within a type (`gqls 'User.*email*'`).
   shell would expand `*`/`?`/`{}` first. `*`/`?` span `.`, patterns are
   anchored, and semantic ranking is skipped: this enumerates, it doesn't
   search.
+- Argument name: `gqls followRenames` finds the field that *takes* that
+  argument — an argument is not a record of its own, so the field is the
+  answer, and naming it then shows what the argument is for. Ranked below
+  every name and path match, so it only surfaces when nothing else matched.
 - Return type: `gqls --returns Company` finds fields returning Company even
   when the name doesn't say so (`Query.myEmployer: Company`), ignoring
   `[]`/`!` wrappers; wildcards allowed (`--returns '*Payload'`). Add

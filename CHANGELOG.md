@@ -9,6 +9,13 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **An argument's name finds the field that takes it.** `gqls followRenames`
+  found nothing: arguments aren't records, so their names were unsearchable and
+  the README promised otherwise. The field that takes one is now matched by it —
+  which is what you'd call anyway, and naming that field says what the argument
+  is for. It ranks below every name and path match and so only surfaces when
+  nothing else matched, which is what keeps a Relay schema's 348 `first`
+  arguments from burying a search that meant a field.
 - **`-e` reaches an input object that only another input holds.** An input is
   drafted through the field that takes it, and one nothing takes was refused —
   though it may still be *held* by one that something takes

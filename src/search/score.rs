@@ -42,10 +42,13 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     };
 
     // No name match: fall back to the qualified path (`user.email` vs
-    // `User.email`) — a weaker signal, and required to match at all.
+    // `User.email`), then to the record's argument names — a weaker signal
+    // each time, and one of them is required to match at all.
     if !name_matched {
-        let s = subsequence_score(&query.to_ascii_lowercase(), &rec.path)?;
-        total += (s * 0.5).min(300.0);
+        match subsequence_score(&query.to_ascii_lowercase(), &rec.path) {
+            Some(s) => total += (s * 0.5).min(300.0),
+            None => total += best_arg_match(&q, rec)?,
+        }
     }
 
     // Qualifier boost — the user named the enclosing type (`Repository.name`);
@@ -60,6 +63,26 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     total += rec.kind.weight() as f64;
 
     Some(total.round() as i64)
+}
+
+/// How well `query` matches any of `rec`'s argument names, or `None` for none.
+///
+/// An argument isn't a record of its own, so the field that *takes* it is the
+/// answer — which is what you'd call anyway, and naming it then says what the
+/// argument is for. Scored below every real match on purpose: these only
+/// surface when nothing matched a name or a path, because the weak-tail cut
+/// drops them the moment something did. That is what keeps `first` on a Relay
+/// schema — where 348 fields take one — from burying a search that meant a
+/// field.
+fn best_arg_match(query: &str, rec: &SchemaRecord) -> Option<f64> {
+    rec.arg_types()
+        .filter_map(|(name, _)| match name.to_ascii_lowercase() == query {
+            true => Some(200.0),
+            false => subsequence_score(query, name).map(|s| (s * 0.25).min(100.0)),
+        })
+        .fold(None, |best: Option<f64>, s| {
+            Some(best.map_or(s, |b| b.max(s)))
+        })
 }
 
 /// Words too common to narrow a phrase: they subsequence-match nearly every

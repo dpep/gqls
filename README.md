@@ -128,7 +128,7 @@ gqls --returns '*Payload'               # wildcards work here too
 gqls employee --returns Employee        # combined with a name search
 ```
 
-Arguments are not searchable by name — they aren't records of their own, so `gqls followRenames` finds nothing. You reach one through the field that takes it: name the field and you get its signature *and* what the schema says each argument is for, which is the half a signature can't carry — `owner: String!` never says it wants a login:
+An argument's own name finds the field that takes it: `gqls followRenames` answers `Query.repository`, since an argument isn't a record of its own and the field is what you'd call anyway. That match ranks below every name and path match, so it only surfaces when nothing else matched — a Relay schema's several hundred `first` arguments never bury a search that meant a field. Name the field and you get its signature *and* what the schema says each argument is for, which is the half a signature can't carry — `owner: String!` never says it wants a login:
 
 ```sh
 $ gqls Query.repository
