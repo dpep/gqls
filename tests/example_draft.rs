@@ -463,3 +463,25 @@ fn something_no_operation_can_select_points_at_what_returns_one() {
         .to_string();
     assert!(!err.contains("--returns"), "{err}");
 }
+
+#[test]
+fn a_deprecated_object_valued_field_keeps_its_brace_out_of_the_comment() {
+    // The note is a `#` comment, so everything after it on the line is comment
+    // too. Appending it before the `{` left the document unbalanced — and the
+    // errors convention is always expanded, so this fired at the default depth.
+    let sdl = "\
+        type Query { ping: String }\n\
+        type Mutation { save(id: ID!): SavePayload }\n\
+        type SavePayload { errors: [UserError!]! @deprecated(reason: \"use problems\") ok: Boolean! }\n\
+        type UserError { message: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Mutation.save").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert!(
+        ex.operation.contains("errors {  # deprecated: use problems"),
+        "{}",
+        ex.operation
+    );
+}

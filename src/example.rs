@@ -591,7 +591,10 @@ impl<'a> Schema<'a> {
                 // Deeper levels on request; the payload/errors convention is
                 // always expanded, because a mutation without it reads wrong.
                 let inner = self.selection(base, depth.saturating_sub(1).max(1), deprecated);
-                lines.push(format!("{}{note} {{", f.name));
+                // After the brace, never before it: a note is a `#` comment,
+                // and everything past it on the line — the `{` included — is
+                // comment too, which leaves the document unbalanced.
+                lines.push(format!("{} {{{note}", f.name));
                 lines.extend(inner.into_iter().map(|l| format!("  {l}")));
                 lines.push("}".to_string());
             } else {
