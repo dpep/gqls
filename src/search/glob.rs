@@ -47,10 +47,17 @@ impl Pattern {
         self.alternatives.iter().any(|p| matches_one(p, text))
     }
 
-    /// Whether this pattern addresses qualified paths (`User.*`) rather than
-    /// leaf names (`get*`) — true when any alternative contains a `.`.
+    /// Whether this pattern addresses qualified paths (`User.*`, `@join__*`)
+    /// rather than leaf names (`get*`).
+    ///
+    /// A `.` or a leading `@` is the tell: both appear in a path and never in a
+    /// name, so a pattern carrying one was copied from something gqls printed.
+    /// Without the `@`, `@join__*` matched nothing while `join__*` worked —
+    /// pasting back the identifier as displayed is the obvious move.
     pub(crate) fn targets_path(&self) -> bool {
-        self.alternatives.iter().any(|a| a.contains('.'))
+        self.alternatives
+            .iter()
+            .any(|a| a.contains('.') || a.starts_with('@'))
     }
 }
 
@@ -254,10 +261,13 @@ mod tests {
     }
 
     #[test]
-    fn targets_path_follows_the_dot() {
+    fn targets_path_follows_the_dot_or_the_at() {
         assert!(Pattern::new("User.*").targets_path());
         assert!(!Pattern::new("get*").targets_path());
         assert!(Pattern::new("{User.id,name}").targets_path());
+        // a directive prints as `@auth`, so that's what gets pasted back
+        assert!(Pattern::new("@join__*").targets_path());
+        assert!(Pattern::new("@*").targets_path());
     }
 
     #[test]
