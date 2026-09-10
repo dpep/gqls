@@ -144,16 +144,72 @@ pub fn build(
             let alternatives = chains.into_iter().map(|(path, _)| path).collect();
             (chain, Some(via), alternatives, Some(input))
         }
-        other => bail!(
-            "can't draft an operation for a {} — pick a field, query, mutation, or input",
-            other.as_str()
-        ),
+        // A type is not callable either, but asking for one is asking how to
+        // fetch one — so it drafts the root that reaches it, narrowed to it
+        // where the root returns something broader.
+        Kind::Object | Kind::Interface | Kind::Union => {
+            let mut roots = schema.roots_reaching(&target.name);
+            if roots.is_empty() {
+                bail!(
+                    "nothing reaches {} — no root field returns it, or anything it \
+                     narrows from. Try `gqls --returns {}` to see what's close.",
+                    target.name,
+                    target.name
+                );
+            }
+            let chosen = roots.remove(0);
+            let via = Some(chosen.path.clone());
+            let alternatives = roots.iter().map(|r| r.path.clone()).collect();
+            (vec![chosen], via, alternatives, None)
+        }
+        // An enum, a scalar, a directive: nothing you can select, and nothing
+        // that carries an operation. What you *can* ask is which fields hand
+        // one back.
+        _ => {
+            // The useful question about something unselectable is which fields
+            // hand one back — asked about the type itself, which for an enum
+            // value is the enum it belongs to. A directive is returned by
+            // nothing, so it gets no pointer rather than a wrong one.
+            let returns = match target.kind {
+                Kind::Directive => None,
+                Kind::EnumValue => target.parent.as_deref(),
+                _ => Some(target.name.as_str()),
+            };
+            let hint = returns
+                .map(|t| format!(" Try `gqls --returns {t}` for the fields that give one back."))
+                .unwrap_or_default();
+            bail!("{} can't be selected by an operation.{hint}", target.path)
+        }
     };
 
-    // A root broader than the field's own parent reaches it only through the
-    // fragment that narrows it: `Query.pets` returns `Animal`, so `Pet.nickname`
-    // is `pets { ... on Pet { nickname } }`.
-    let narrow = schema.narrowing(&chain);
+    // The type the innermost selection describes, and the inline fragment that
+    // has to enclose it when the chain only reaches it through something
+    // broader — paired with the index of the field the fragment sits inside.
+    // `Query.pets` returns `Animal`, so a `Pet` under it is
+    // `pets { ... on Pet { … } }`.
+    let (selected, narrow) = match target.kind {
+        // A type is selected directly inside the root that reaches it.
+        Kind::Object | Kind::Interface | Kind::Union => {
+            let base = chain[0].base_type().unwrap_or_default();
+            let narrow = schema.narrowing(base, &target.name).map(|on| (0, on));
+            (target.name.clone(), narrow)
+        }
+        // A field is selected on its own enclosing type, which the field one
+        // hop out has to return — the only place a fragment can go.
+        _ => {
+            let inner = chain.last().expect("a chain always has its target");
+            let narrow = match chain.len() >= 2 {
+                true => {
+                    let outer = chain[chain.len() - 2].base_type().unwrap_or_default();
+                    schema
+                        .narrowing(outer, inner.parent.as_deref().unwrap_or_default())
+                        .map(|on| (chain.len() - 2, on))
+                }
+                false => None,
+            };
+            (inner.base_type().unwrap_or_default().to_string(), narrow)
+        }
+    };
 
     let operation_kind = match chain[0].kind {
         Kind::Mutation => "mutation",
@@ -166,11 +222,6 @@ pub fn build(
     let (vars, optional) = Variables::collect(&chain, required);
 
     // Then the selection, innermost outward.
-    let leaf_type = chain
-        .last()
-        .and_then(|r| r.base_type())
-        .unwrap_or_default()
-        .to_string();
     let mut deprecated = Vec::new();
     if let Some(reason) = &target.deprecated {
         deprecated.push(match reason.is_empty() {
@@ -186,14 +237,28 @@ pub fn build(
         Some(_) => 0,
         None => 1,
     });
-    let mut body = schema.selection(&leaf_type, depth, &mut deprecated);
-    if body.is_empty() && !leaf_type.is_empty() && !schema.is_leaf(&leaf_type) {
+    let mut body = schema.selection(&selected, depth, &mut deprecated);
+    if body.is_empty() && !selected.is_empty() && !schema.is_leaf(&selected) {
         // A selection set is mandatory on an object return, so depth 0 takes
         // the one field that is always valid rather than emitting a parse error.
         body.push("__typename".to_string());
     }
 
     for (depth, field) in chain.iter().enumerate().rev() {
+        // Innermost first, so the fragment is wrapped before the field that
+        // encloses it — with the `__typename` that makes the response readable
+        // back.
+        if let Some((_, on)) = narrow.as_ref().filter(|(at, _)| *at == depth) {
+            // An abstract selection already emits its own `__typename`, and it
+            // lands at the same level in the response.
+            let named = body.iter().any(|l| l == "__typename");
+            let mut fragment = match named {
+                true => Vec::new(),
+                false => vec!["__typename".to_string()],
+            };
+            fragment.extend(block(format!("... on {on}"), body));
+            body = fragment;
+        }
         let args = vars.rendered_for(depth);
         body = if body.is_empty() {
             // A leaf-returning field takes no selection set at all.
@@ -201,19 +266,16 @@ pub fn build(
         } else {
             block(format!("{}{}", field.name, args), body)
         };
-        // The fragment goes directly inside the field whose return it narrows,
-        // with the `__typename` that makes the response readable back.
-        if let Some(on) = narrow.as_deref().filter(|_| depth + 1 == chain.len()) {
-            let mut fragment = vec!["__typename".to_string()];
-            fragment.extend(block(format!("... on {on}"), body));
-            body = fragment;
-        }
     }
 
     let mut operation = String::new();
     operation.push_str(operation_kind);
     operation.push(' ');
-    operation.push_str(&pascal_case(&chain.last().unwrap().name));
+    let named_for = match target.kind {
+        Kind::Object | Kind::Interface | Kind::Union => &target.name,
+        _ => &chain.last().expect("a chain always has its target").name,
+    };
+    operation.push_str(&pascal_case(named_for));
     operation.push_str(&vars.signature());
     operation.push_str(" {\n");
     for line in &body {
@@ -453,29 +515,21 @@ impl<'a> Schema<'a> {
         hits
     }
 
-    /// The concrete types a value of `type_name` can be at runtime: an abstract
-    /// type's members, or an object type itself. Empty for anything else — a
-    /// scalar narrows to nothing.
+    /// What a value of `type_name` can be at runtime, by name.
     fn possible(&self, type_name: &str) -> Vec<&'a str> {
-        match self.types.get(type_name).copied() {
-            Some(rec) if matches!(rec.kind, Kind::Union | Kind::Interface) => {
-                rec.possible_types.iter().map(String::as_str).collect()
-            }
-            Some(rec) if rec.kind == Kind::Object => vec![rec.name.as_str()],
-            _ => Vec::new(),
-        }
+        self.types
+            .get(type_name)
+            .copied()
+            .map(SchemaRecord::runtime_types)
+            .unwrap_or_default()
     }
 
-    /// The inline fragment the last hop of `chain` needs, if any. An object
-    /// implementing the interface needs none — the field is already on it.
-    fn narrowing(&self, chain: &[&SchemaRecord]) -> Option<String> {
-        let [.., outer, inner] = chain else {
-            return None;
-        };
-        let parent = inner.parent.as_deref()?;
-        let base = outer.base_type()?;
-        let selectable = base.eq_ignore_ascii_case(parent) || self.possible(parent).contains(&base);
-        (!selectable).then(|| parent.to_string())
+    /// The inline fragment needed to select `wanted`'s fields inside a field
+    /// returning `base`. `None` when they're already selectable there — an
+    /// object implementing the interface carries its fields itself.
+    fn narrowing(&self, base: &str, wanted: &str) -> Option<String> {
+        let selectable = base.eq_ignore_ascii_case(wanted) || self.possible(wanted).contains(&base);
+        (!selectable).then(|| wanted.to_string())
     }
 
     /// Whether a type needs no selection set — a scalar, an enum, or a name

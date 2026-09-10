@@ -400,3 +400,66 @@ fn a_root_returning_an_implementor_selects_the_field_without_a_fragment() {
     assert!(ex.operation.contains("posts {"), "{}", ex.operation);
     assert!(ex.operation.contains("comments {"), "{}", ex.operation);
 }
+
+#[test]
+fn a_type_drafts_the_root_that_fetches_one() {
+    // Asking about a type is asking how to fetch one, and the only path to a
+    // Cat is the union — so the draft is the root, narrowed to it.
+    let sdl = "\
+        type Query { pets: [Animal!]! }\n\
+        union Animal = Cat | Dog\n\
+        type Cat { nickname: String! livesLeft: Int! }\n\
+        type Dog { nickname: String! breed: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Cat").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(ex.via.as_deref(), Some("Query.pets"));
+    assert_eq!(
+        ex.operation,
+        "query Cat {\n  \
+           pets {\n    \
+             __typename\n    \
+             ... on Cat {\n      \
+               nickname\n      \
+               livesLeft\n    \
+             }\n  \
+           }\n\
+         }\n"
+    );
+}
+
+#[test]
+fn a_type_a_root_returns_outright_needs_no_fragment() {
+    let ex = draft("Node");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(ex.via.as_deref(), Some("Query.node"));
+    assert!(
+        ex.operation.starts_with("query Node($id: ID!) {"),
+        "{}",
+        ex.operation
+    );
+    // narrowed to nothing — but its implementors still get their fragments
+    assert!(!ex.operation.contains("... on Node"), "{}", ex.operation);
+    assert!(ex.operation.contains("... on User {"), "{}", ex.operation);
+}
+
+#[test]
+fn something_no_operation_can_select_points_at_what_returns_one() {
+    let records = records();
+    for (path, hint) in [("Role", "--returns Role"), ("Role.ADMIN", "--returns Role")] {
+        let target = records.iter().find(|r| r.path == path).unwrap();
+        let err = example::build(target, &records, None)
+            .expect_err("an enum can't be selected")
+            .to_string();
+        assert!(err.contains(hint), "{err}");
+    }
+    // A directive is returned by nothing, so it gets no pointer at all.
+    let target = records.iter().find(|r| r.path == "@auth").unwrap();
+    let err = example::build(target, &records, None)
+        .expect_err("a directive can't be selected")
+        .to_string();
+    assert!(!err.contains("--returns"), "{err}");
+}

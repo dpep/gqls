@@ -197,6 +197,13 @@ expanded key no longer states (`# variables — input: CreateUserInput!`). Enums
 are the one thing JSON can't express, so their values are listed under
 `# enums:`.
 
+Name a **type** and `-e` drafts the root that fetches one, narrowed to it
+where that root returns something broader: `gqls Cat -e` against a schema whose
+only path is `Query.pets: [Animal!]!` gives you `pets { ... on Cat { … } }`. An
+enum or a scalar can't be selected by any operation, and says so pointing at
+`--returns` — the question that does have an answer. Don't reach for `-e` to
+see what's *in* a type either; naming it plainly lists its fields.
+
 Name an **input object** and `-e` drafts through the field that takes it —
 an input is never callable but always passable, so `gqls PostFilter -e` gives
 you `Query.posts(filter: $filter)`, with any other field taking one listed under
@@ -222,8 +229,9 @@ Two things still need your judgment:
   picks the one with the fewest required arguments; in a federated schema
   another path may be the right one. Ask the user rather than silently
   accepting the pick.
-- **Unreachable fields.** If it reports no root returns the type, don't invent
-  a path — run `gqls --returns <Type>` and show what actually exists.
+- **Unreachable fields.** A field on a type nothing reaches is an error, not a
+  guess. It fires only when the type can't be narrowed to from anything either,
+  so don't invent a path — run `gqls --returns <Type>` and show what exists.
 
 ## Jump to the resolver (graphql-ruby)
 

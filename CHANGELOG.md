@@ -17,6 +17,12 @@ early entries are terser than what follows.
   `posts(…)`. Past a couple of dozen the list is elided with the command that
   spells out the rest (`… and 121 more — `gqls 'Repository.' -l 145` lists them
   all`); `--json` carries every field and every argument signature.
+- **`-e` drafts an operation for a type.** `gqls Animal -e` used to answer
+  "can't draft an operation for a union". Asking about a type is asking how to
+  fetch one, so it now drafts the root that reaches it — narrowed to it where
+  that root returns something broader, so `gqls Cat -e` is
+  `pets { ... on Cat { … } }`. An enum or a scalar still can't be selected, but
+  says so pointing at `--returns`, which is the question with an answer.
 
 ### Fixed
 - **`-e` reaches a field through the fragment that narrows to it.** A field was

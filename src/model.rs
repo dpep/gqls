@@ -146,6 +146,22 @@ impl SchemaRecord {
         (!base.is_empty()).then_some(base)
     }
 
+    /// The concrete types a value of this type can be at runtime: an abstract
+    /// type's members, or an object type itself. Empty for every other kind —
+    /// a scalar narrows to nothing, and neither does a field.
+    ///
+    /// This is what makes two type names comparable when neither is the other:
+    /// a `Cat` is an `Animal` and a `Pet` because all three share a member.
+    pub(crate) fn runtime_types(&self) -> Vec<&str> {
+        match self.kind {
+            Kind::Union | Kind::Interface => {
+                self.possible_types.iter().map(String::as_str).collect()
+            }
+            Kind::Object => vec![self.name.as_str()],
+            _ => Vec::new(),
+        }
+    }
+
     /// The types this record's *arguments* refer to, wrappers peeled, each
     /// paired with the argument that names it. The reverse of [`base_type`]:
     /// what a field takes rather than what it gives back, which for an input
