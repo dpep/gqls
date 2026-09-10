@@ -114,7 +114,7 @@ cat queries.txt | gqls schema.graphql -J
 printf 'cancel a subscription\ndispute a transaction\n' | gqls schema.graphql -J
 ```
 
-Every row carries the `query` that produced it, so one stream stays untangleable, and a query that matched nothing still reports `{"query": …, "status": "no_matches"}` rather than vanishing. A single query's output is unchanged — no `query` field — so existing callers parse exactly what they always did. An explicit query beats a pipe, and `--resolve`/`--example` take one query only.
+Every row carries the `query` that produced it, so one stream stays untangleable, and a query that matched nothing still reports `{"query": …, "status": "no_matches"}` rather than vanishing. A single query's output is unchanged — no `query` field — so existing callers parse exactly what they always did. A piped query that names one record explains it, exactly as the same query typed as an argument would: the asymmetry was invisible, and a pipe is how an agent drives this. An explicit query beats a pipe, and `--resolve`/`--example` take one query only.
 
 A multi-word query is matched one word at a time, so a phrase isn't a hard zero when semantic ranking is unavailable or still warming. Noise words (`a`, `the`, `of`, …) are dropped, and the records covering the most words win outright — `cancelSubscription` beats the many that merely echo `subscription`. When nothing covers the whole phrase, every single-word match stands. Only whitespace opens this path: `User.email` is still scored whole, and `User email` becomes the qualified form before the search runs.
 

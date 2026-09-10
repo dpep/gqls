@@ -168,7 +168,10 @@ gqls schema.graphql -J < questions.txt
 Each row carries the `query` that produced it, so one stream stays
 attributable, and a query that matched nothing still reports
 `{"query": …, "status": "no_matches"}` rather than dropping out. A single
-query's output is unchanged, so existing parsing is unaffected. An explicit
+query's output is unchanged, so existing parsing is unaffected. A piped query
+that names one record explains it, the same as one typed as an argument —
+so a batch is a way to ask for several explanations at once, not a weaker
+mode. An explicit
 query beats a pipe; `-R` and `-e` take one query only.
 
 ## Draft a query to paste (`-e`)

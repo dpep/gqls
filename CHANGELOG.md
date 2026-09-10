@@ -9,6 +9,12 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **A piped query explains what it names.** The explanation tier — the
+  annotations, and the `match`/`values`/`fields`/`referenced_by` keys — was
+  switched off for stdin, so the same query answered differently depending on
+  whether it arrived as an argument or down a pipe, with nothing saying so. A
+  pipe is how an agent drives gqls, which is where the fuller answer is worth
+  most. `--no-explain` still forces the list.
 - **A `Type.` query with nothing to enumerate answers with the type.** A union
   has no fields, so `gqls 'SearchHit.'` reported no matches while the union it
   named sat one line away with its members and what references it. An

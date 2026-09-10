@@ -760,7 +760,7 @@ pub fn run() -> Result<()> {
         // nothing — `SearchHit.` on a union has no members to list, and the
         // union is the answer that does exist.
         let predicate = filters.compile();
-        let explained = (!batch && !cli.no_explain && (!pattern || matches.is_empty()))
+        let explained = (!cli.no_explain && (!pattern || matches.is_empty()))
             .then(|| explained_match(query, records.iter().filter(|r| predicate.accepts(r))))
             .flatten();
         if let Some((record, _)) = explained {

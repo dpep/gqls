@@ -143,3 +143,25 @@ fn a_batch_answers_before_the_producer_closes() {
     drop(stdin);
     child.wait().expect("gqls should exit");
 }
+
+#[test]
+fn a_piped_query_that_names_one_record_explains_it() {
+    // The explanation was switched off for piped input, so the same query
+    // answered differently depending on how it arrived — and a pipe is how an
+    // agent drives this tool, which is exactly where the extra facts pay off.
+    let out = run(&[SCHEMA, "-J"], "Role\n");
+    let rows = rows(&out);
+    assert_eq!(rows.len(), 1, "naming one record explains it: {out}");
+    assert_eq!(rows[0]["match"], "exact");
+    assert!(rows[0]["values"].is_array(), "{out}");
+    // still says which query it answers, like every other batch row
+    assert_eq!(rows[0]["query"], "Role");
+}
+
+#[test]
+fn a_piped_query_that_names_nothing_stays_a_list() {
+    let out = run(&[SCHEMA, "-J", "-l", "5"], "user\n");
+    let rows = rows(&out);
+    assert!(rows.len() > 1, "{out}");
+    assert!(rows.iter().all(|r| r.get("match").is_none()), "{out}");
+}
