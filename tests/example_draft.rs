@@ -254,7 +254,10 @@ fn an_input_taken_in_two_places_offers_both() {
     // one hop — and the nested one is offered rather than dropped.
     let ex = draft("PostFilter");
     assert_eq!(ex.via.as_deref(), Some("Query.posts(filter:)"));
-    assert_eq!(ex.alternatives, ["User.posts(filter:)"]);
+    // The nested one is named by the whole path to it, not by the field alone:
+    // a consumer four hops out is no answer to "where does this go" unless the
+    // way in comes with it.
+    assert_eq!(ex.alternatives, ["Query.users > User.posts(filter:)"]);
 }
 
 #[test]
@@ -339,7 +342,7 @@ fn a_nested_consumer_is_wrapped_in_a_root_and_an_unreachable_one_is_dropped() {
     let ex = example::build(target, &records, None).expect("drafting should succeed");
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
 
-    assert_eq!(ex.via.as_deref(), Some("Post.search(where:)"));
+    assert_eq!(ex.via.as_deref(), Some("Query.posts > Post.search(where:)"));
     assert!(ex.alternatives.is_empty(), "{:?}", ex.alternatives);
     assert!(ex.operation.contains("posts {"), "{}", ex.operation);
     assert!(
@@ -587,5 +590,175 @@ fn a_draft_says_what_its_documented_arguments_are_for() {
         !ex.arguments.iter().any(|a| a.name == "id"),
         "{:?}",
         ex.arguments
+    );
+}
+
+#[test]
+fn a_target_many_hops_from_a_root_is_reached_through_the_whole_chain() {
+    // The namespaced-root pattern: the root hands back a container and the
+    // fields people actually want hang several levels off it. Refusing
+    // anything past one hop refused most of a schema shaped like this.
+    let sdl = "\
+        type Query { payroll: PayrollQueries }\n\
+        type PayrollQueries { company: Company }\n\
+        type Company { employee(id: ID!): Employee }\n\
+        type Employee { badge: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Employee.badge").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(
+        ex.via.as_deref(),
+        Some("Query.payroll > PayrollQueries.company > Company.employee")
+    );
+    assert_eq!(
+        ex.operation,
+        "query Badge($id: ID!) {\n  \
+           payroll {\n    \
+             company {\n      \
+               employee(id: $id) {\n        \
+                 badge\n      \
+               }\n    \
+             }\n  \
+           }\n\
+         }\n"
+    );
+}
+
+#[test]
+fn a_cycle_in_the_type_graph_closes_rather_than_looping() {
+    // `User.posts` beside `Post.author` is the shape every schema has. The
+    // walk settles a type the first time it sees one, so the chain is the
+    // shortest way in and never passes back through a type it already used.
+    let sdl = "\
+        type Query { user: User }\n\
+        type User { posts: [Post!]! }\n\
+        type Post { author: User! comments: [Comment!]! }\n\
+        type Comment { body: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Comment.body").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(
+        ex.via.as_deref(),
+        Some("Query.user > User.posts > Post.comments")
+    );
+    // the way back round is never taken, however many times it's offered
+    assert!(!ex.operation.contains("author"), "{}", ex.operation);
+}
+
+#[test]
+fn a_target_past_the_hop_cap_is_refused_with_the_distance_it_sits_at() {
+    // Seven types deep, so the last one is out of reach and the one before it
+    // is the last that isn't — the cap has to be a boundary, not a wall.
+    let sdl = "\
+        type Query { a: A }\n\
+        type A { b: B }\n\
+        type B { c: C }\n\
+        type C { d: D }\n\
+        type D { e: E }\n\
+        type E { f: F }\n\
+        type F { g: G }\n\
+        type G { deep: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+
+    let far = records.iter().find(|r| r.path == "G.deep").unwrap();
+    let err = example::build(far, &records, None)
+        .expect_err("seven hops is past the cap")
+        .to_string();
+    assert!(err.contains("7 hops"), "{err}");
+    assert!(err.contains("6-hop cap"), "{err}");
+
+    let near = records.iter().find(|r| r.path == "F.g").unwrap();
+    let ex = example::build(near, &records, None).expect("six hops is still drafted");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+}
+
+#[test]
+fn a_deep_consumer_is_reached_through_the_chain_that_carries_the_input() {
+    // The other edge of the same walk: an input is reached by the path to the
+    // field taking it, however far out that field sits.
+    let sdl = "\
+        type Query { admin: AdminQueries }\n\
+        type AdminQueries { users: UserQueries }\n\
+        type UserQueries { search(where: UserFilter): [User!]! }\n\
+        type User { id: ID! }\n\
+        input UserFilter { term: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "UserFilter").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(
+        ex.via.as_deref(),
+        Some("Query.admin > AdminQueries.users > UserQueries.search(where:)")
+    );
+    assert!(
+        ex.operation.contains("search(where: $where)"),
+        "{}",
+        ex.operation
+    );
+    assert!(ex.variables["where"].is_object(), "{:?}", ex.variables);
+}
+
+#[test]
+fn every_hop_that_needs_a_fragment_gets_one() {
+    // A chain through two abstract types needs narrowing twice, at different
+    // levels of the same operation — the single fragment position a one-hop
+    // draft could get away with silently dropped the outer one.
+    let sdl = "\
+        type Query { feed: Feed }\n\
+        union Feed = Article\n\
+        type Article { body: Block }\n\
+        union Block = Quote\n\
+        type Quote { text: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Quote.text").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(
+        ex.operation,
+        "query Text {\n  \
+           feed {\n    \
+             __typename\n    \
+             ... on Article {\n      \
+               body {\n        \
+                 __typename\n        \
+                 ... on Quote {\n          \
+                   text\n        \
+                 }\n      \
+               }\n    \
+             }\n  \
+           }\n\
+         }\n"
+    );
+}
+
+#[test]
+fn an_argument_name_repeated_along_a_chain_gets_a_variable_of_its_own() {
+    // Three `node(id:)` hops: qualifying by field name alone gave the inner
+    // two the same `$nodeId`, which is a duplicate variable the server
+    // rejects. Every hop has to end up with a name nothing else took.
+    let sdl = "\
+        type Query { node(id: ID!): Level1 }\n\
+        type Level1 { node(id: ID!): Level2 }\n\
+        type Level2 { node(id: ID!): Level3 }\n\
+        type Level3 { name: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Level3.name").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(
+        ex.variables,
+        serde_json::json!({ "id": "<ID!>", "nodeId": "<ID!>", "nodeId2": "<ID!>" })
+    );
+    assert!(
+        ex.operation.contains("node(id: $nodeId2)"),
+        "{}",
+        ex.operation
     );
 }

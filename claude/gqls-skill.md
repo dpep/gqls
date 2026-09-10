@@ -193,9 +193,14 @@ Each argument you must supply becomes a variable, with a `"<ID!>"` placeholder
 that names its type. Anything the server can supply — nullable, or carrying a
 schema default — is left out of the operation and listed underneath, so what
 it prints runs as-is. An `# arguments:` block carries what the schema says each
-argument is for, when it says anything. It selects one level of leaf fields, expands an `errors`
-block only when the payload really has one, and wraps a nested field in a root
-that returns its type. Object-valued fields become `# field: Type { … }`
+argument is for, when it says anything. It selects one level of leaf fields,
+expands an `errors` block only when the payload really has one, and nests a
+field through the chain of fields that reaches it — one hop where a root
+returns its type, and as many as it takes where a schema namespaces its roots
+(`Query.payroll: PayrollQueries`, with the real fields hanging off that), up to
+six. The chain is reported as `Query.payroll > PayrollQueries.company`; past six
+hops, and for a type nothing reaches, `-e` says so and names the distance rather
+than guessing. Object-valued fields become `# field: Type { … }`
 markers — `--depth N` expands them when you want more. A union is written as
 inline fragments over its members (an interface adds one per implementor for
 the fields it adds, aliased by member where two of them type the same field
@@ -208,8 +213,8 @@ expanded key no longer states (`# variables — input: CreateUserInput!`). Enums
 are the one thing JSON can't express, so their values are listed under
 `# enums:`.
 
-Name a **type** and `-e` drafts the root that fetches one, narrowed to it
-where that root returns something broader: `gqls Cat -e` against a schema whose
+Name a **type** and `-e` drafts the chain that fetches one, narrowed to it
+where the last hop returns something broader: `gqls Cat -e` against a schema whose
 only path is `Query.pets: [Animal!]!` gives you `pets { ... on Cat { … } }`. An
 enum or a scalar can't be selected by any operation, and says so pointing at
 `--returns` — the question that does have an answer. Don't reach for `-e` to
@@ -218,7 +223,8 @@ see what's *in* a type either; naming it plainly lists its fields.
 Name an **input object** and `-e` drafts through the field that takes it —
 an input is never callable but always passable, so `gqls PostFilter -e` gives
 you `Query.posts(filter: $filter)`, with any other field taking one listed under
-`# paths`. An input *field* (`CreateUserInput.email`) drafts through its
+`# paths` — carrying the whole way in when the field taking it is itself
+several hops out. An input *field* (`CreateUserInput.email`) drafts through its
 enclosing input. The argument carrying it is supplied even where the schema
 calls it optional, since a draft that omits it answers nothing. Such a draft
 stays about the input: the reply gets the barest selection a server accepts and

@@ -9,6 +9,28 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **`-e` reaches a target through as many hops as it takes.** It only ever
+  drafted a field or type one hop from a root operation field, which on a schema
+  that namespaces its roots (`Query.early_pay: EarlyPayQueryRoot`, with the real
+  fields hanging off that) is a small fraction of what's there. Across the two
+  production schemas gqls is swept against, 340 of 1737 types and 643 of 1102
+  drafted before; 1734 and 1101 do now, and everything still refused is
+  genuinely unreachable rather than too deep. It walks the type graph out from
+  the roots and nests through the shortest chain it finds, on both edges — a
+  field or type by what returns it, an input object by what takes it, which
+  takes one schema's draftable input objects from 168 of 230 to 198. The walk is
+  cycle-safe, prefers the chain asking fewest arguments among equals, and stops
+  at six hops — a cap neither schema reaches, since every type either one can
+  reach at all lands inside it. Past the cap the refusal names the distance, so
+  "too deep" reads differently from "not there".
+
+  `via` and each `# paths` entry now spell the whole chain, `Query.early_pay >
+  EarlyPayQueryRoot.status`, in text and `--json` alike. A one-hop path is
+  unchanged; the one label that moves is a nested input consumer's, which used
+  to name only the field taking the input and now carries the way in as well.
+
+  Still refused: an input object that no field takes and only another input
+  object holds — a third edge, and 32 of that schema's 230.
 - **Arguments carry what they're for.** Both loaders dropped argument
   descriptions — the introspection query had always asked for them — so the one
   thing a signature can't tell you was the one thing gqls couldn't show:

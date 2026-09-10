@@ -29,11 +29,17 @@
 //! * **An `errors` block only when the schema has one.** The payload/errors
 //!   convention is widespread but not universal, so it's expanded only when
 //!   that field really exists.
-//! * **A nested field is reached through a root.** `Company.employee` isn't
-//!   callable on its own, so it's wrapped in a root field that returns
-//!   `Company`. When several roots qualify, the caller is told, rather than the
-//!   pick being passed off as obvious.
+//! * **A nested field is reached through a chain of fields from a root.**
+//!   `Company.employee` isn't callable on its own, so it's nested inside
+//!   whatever sequence of fields leads to a `Company`: one hop where a root
+//!   returns one, and as many as it takes where a schema namespaces its roots
+//!   (`Query.payroll: PayrollQueries`, with the real fields hanging off that).
+//!   The shortest chain wins, then the fewest arguments to fill in; when
+//!   several tie, the caller is told, rather than the pick being passed off as
+//!   obvious. The same walk answers the other edge — an input object is
+//!   reached by the chain leading to the field that *takes* it.
 
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
@@ -117,18 +123,15 @@ pub fn build(
                 .parent
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("{} has no enclosing type", target.path))?;
-            let mut roots = schema.roots_reaching(parent);
-            if roots.is_empty() {
-                bail!(
-                    "{} isn't reachable in one hop — no root field returns {parent}. \
-                     Try `gqls --returns {parent}` to see what's close.",
-                    target.path
-                );
+            let (hops, mut chains) = schema.chains_reaching(parent, false);
+            if chains.is_empty() {
+                bail!("{} {}", target.path, out_of_reach(parent, hops));
             }
-            let chosen = roots.remove(0);
-            let via = Some(chosen.path.clone());
-            let alternatives = roots.iter().map(|r| r.path.clone()).collect();
-            (vec![chosen, target], via, alternatives, None)
+            let mut chain = chains.remove(0);
+            let via = Some(label(&chain));
+            let alternatives = chains.iter().map(|c| label(c)).collect();
+            chain.push(target);
+            (chain, via, alternatives, None)
         }
         // An input object is never callable, but it is always *passable*: the
         // question it answers is "where does this go", and the answer is the
@@ -159,19 +162,14 @@ pub fn build(
         // fetch one — so it drafts the root that reaches it, narrowed to it
         // where the root returns something broader.
         Kind::Object | Kind::Interface | Kind::Union => {
-            let mut roots = schema.roots_reaching(&target.name);
-            if roots.is_empty() {
-                bail!(
-                    "nothing reaches {} — no root field returns it, or anything it \
-                     narrows from. Try `gqls --returns {}` to see what's close.",
-                    target.name,
-                    target.name
-                );
+            let (hops, mut chains) = schema.chains_reaching(&target.name, true);
+            if chains.is_empty() {
+                bail!("{} {}", target.name, out_of_reach(&target.name, hops));
             }
-            let chosen = roots.remove(0);
-            let via = Some(chosen.path.clone());
-            let alternatives = roots.iter().map(|r| r.path.clone()).collect();
-            (vec![chosen], via, alternatives, None)
+            let chain = chains.remove(0);
+            let via = Some(label(&chain));
+            let alternatives = chains.iter().map(|c| label(c)).collect();
+            (chain, via, alternatives, None)
         }
         // An enum, a scalar, a directive: nothing you can select, and nothing
         // that carries an operation. What you *can* ask is which fields hand
@@ -193,33 +191,39 @@ pub fn build(
         }
     };
 
-    // The type the innermost selection describes, and the inline fragment that
-    // has to enclose it when the chain only reaches it through something
-    // broader — paired with the index of the field the fragment sits inside.
-    // `Query.pets` returns `Animal`, so a `Pet` under it is
-    // `pets { ... on Pet { … } }`.
-    let (selected, narrow) = match target.kind {
-        // A type is selected directly inside the root that reaches it.
+    // The inline fragments the chain needs on the way in. At hop `i` sits the
+    // fragment enclosing everything nested inside it, because the next hop's
+    // field lives on a type broader than what hop `i` returns: `Query.pets`
+    // returns `Animal`, so a `Pet` under it is `pets { ... on Pet { … } }`. A
+    // long chain can need one at more than one hop, which is why this is a
+    // fragment per position rather than the single index it used to be.
+    let mut narrows: Vec<Option<String>> = vec![None; chain.len()];
+    for i in 1..chain.len() {
+        let outer = chain[i - 1].base_type().unwrap_or_default();
+        let inner = chain[i].parent.as_deref().unwrap_or_default();
+        narrows[i - 1] = schema.narrowing(outer, inner);
+    }
+    // The type the innermost selection describes.
+    let last = chain.len() - 1;
+    let selected = match target.kind {
+        // A type is selected inside the last hop that reaches it, narrowed to
+        // it where the chain only gets as far as something broader.
         Kind::Object | Kind::Interface | Kind::Union => {
-            let base = chain[0].base_type().unwrap_or_default();
-            let narrow = schema.narrowing(base, &target.name).map(|on| (0, on));
-            (target.name.clone(), narrow)
+            let base = chain[last].base_type().unwrap_or_default();
+            narrows[last] = schema.narrowing(base, &target.name);
+            // A chain that arrives at one *member* of an abstract type has
+            // already narrowed: the response there can only be that member, so
+            // its own fields are the selection. Selecting the abstract type
+            // would spread fragments for the members it can't be, which a
+            // server rejects — `Query.viewer: User!` can't hold `... on Bot`.
+            match narrows[last].is_none() && !base.eq_ignore_ascii_case(&target.name) {
+                true => base.to_string(),
+                false => target.name.clone(),
+            }
         }
-        // A field is selected on its own enclosing type, which the field one
-        // hop out has to return — the only place a fragment can go.
-        _ => {
-            let inner = chain.last().expect("a chain always has its target");
-            let narrow = match chain.len() >= 2 {
-                true => {
-                    let outer = chain[chain.len() - 2].base_type().unwrap_or_default();
-                    schema
-                        .narrowing(outer, inner.parent.as_deref().unwrap_or_default())
-                        .map(|on| (chain.len() - 2, on))
-                }
-                false => None,
-            };
-            (inner.base_type().unwrap_or_default().to_string(), narrow)
-        }
+        // A field is selected on its own enclosing type, which the hop before
+        // it already had to reach.
+        _ => chain[last].base_type().unwrap_or_default().to_string(),
     };
 
     let operation_kind = match chain[0].kind {
@@ -259,7 +263,7 @@ pub fn build(
         // Innermost first, so the fragment is wrapped before the field that
         // encloses it — with the `__typename` that makes the response readable
         // back.
-        if let Some((_, on)) = narrow.as_ref().filter(|(at, _)| *at == depth) {
+        if let Some(on) = narrows[depth].as_ref() {
             // An abstract selection already emits its own `__typename`, and it
             // lands at the same level in the response.
             let named = body.iter().any(|l| l == "__typename");
@@ -321,6 +325,10 @@ struct Schema<'a> {
     types: HashMap<&'a str, &'a SchemaRecord>,
     fields: HashMap<&'a str, Vec<&'a SchemaRecord>>,
     roots: Vec<&'a SchemaRecord>,
+    /// Filled by [`reach`](Schema::reach) the first time a draft asks how to
+    /// get somewhere. A root target never asks, and the walk is the only part
+    /// of drafting that touches the whole schema.
+    reached: OnceCell<Reach<'a>>,
 }
 
 impl<'a> Schema<'a> {
@@ -353,6 +361,7 @@ impl<'a> Schema<'a> {
             types,
             fields,
             roots,
+            reached: OnceCell::new(),
         }
     }
 
@@ -439,92 +448,206 @@ impl<'a> Schema<'a> {
     /// Every field taking an argument of type `input`, best first, each paired
     /// with the chain of fields an operation nests to reach it.
     ///
-    /// A root consumer is one hop. A consumer on a plain object needs a root
-    /// returning that object first, and is dropped when nothing does — an
-    /// alternative you can't call isn't one. Ordered like
-    /// [`roots_returning`](Self::roots_returning), with a root ahead of a
-    /// nested field, so the shortest callable path is what gets drafted.
+    /// A root consumer is the whole chain by itself. A consumer on a plain
+    /// object is reached the way any nested field is — through the chain
+    /// leading to the type it hangs off — and is dropped when nothing leads
+    /// there, since an alternative you can't call isn't one. Shortest chain
+    /// first, so what gets drafted is the least operation carrying the input.
     fn chains_taking(&self, input: &str) -> Vec<(String, Vec<&'a SchemaRecord>)> {
-        let mut consumers: Vec<(&'a SchemaRecord, String)> = Vec::new();
+        let mut chains: Vec<(String, Vec<&'a SchemaRecord>)> = Vec::new();
         // Every record with arguments hangs off some parent, so this covers the
         // roots and the object fields both. Unordered, hence the sort below.
         for r in self.fields.values().flatten().copied() {
             for (arg, ty) in r.arg_types() {
-                if ty == input {
-                    consumers.push((r, arg.to_string()));
+                if ty != input {
+                    continue;
+                }
+                let mut chain = match r.kind {
+                    Kind::Query | Kind::Mutation | Kind::Subscription => Vec::new(),
+                    Kind::Field => {
+                        let Some(parent) = r.parent.as_deref() else {
+                            continue;
+                        };
+                        match self.chains_reaching(parent, false).1.into_iter().next() {
+                            Some(prefix) => prefix,
+                            None => continue,
+                        }
+                    }
+                    _ => continue,
+                };
+                chain.push(r);
+                // The argument is named, not just the path: it's the whole
+                // answer to "where does this input go".
+                chains.push((format!("{}({arg}:)", label(&chain)), chain));
+            }
+        }
+        chains.sort_by(|(a, x), (b, y)| chain_order(x).cmp(&chain_order(y)).then(a.cmp(b)));
+        chains
+    }
+
+    /// Every shortest chain of fields from a root that reaches `type_name`,
+    /// best first, paired with how many hops that took.
+    ///
+    /// "Reaches" is whatever [`narrowing`](Self::narrowing) can then make
+    /// selectable: a field returning the type itself, or one returning
+    /// something whose runtime types overlap it — `Query.pets: [Animal!]!`
+    /// reaches `Pet.nickname` as `pets { ... on Pet { nickname } }`, and
+    /// calling a field you can query unreachable is the worse answer. An exact
+    /// return beats a narrowing at the same distance but never across
+    /// distances: a shorter path is the friendlier draft however it gets there.
+    ///
+    /// The hop count comes back even when the chains don't, because "eight hops
+    /// away" and "not there at all" are different news for the caller.
+    fn chains_reaching(
+        &self,
+        type_name: &str,
+        whole: bool,
+    ) -> (Option<usize>, Vec<Vec<&'a SchemaRecord>>) {
+        let reach = self.reach();
+        let wanted = self.possible(type_name);
+        // (hops, 0 for the type itself and 1 for something it narrows from),
+        // so the plain minimum is the pick and its ties are the alternatives.
+        let mut goals: Vec<(usize, usize, &str)> = Vec::new();
+        for (&at, &hops) in &reach.hops {
+            // Zero hops is a root type: where a walk starts, not somewhere a
+            // field arrives, so there's no chain to draft.
+            if hops == 0 {
+                continue;
+            }
+            // 0: the type itself. 1: something broader, which a fragment
+            // narrows to it. 2: one of its members — already narrower, so when
+            // the *type* is what was asked for the draft can only answer a
+            // smaller question, and it loses to either of the above at the same
+            // distance. A field on the type is on that member too, so reaching
+            // it there costs nothing and the penalty doesn't apply.
+            let member = if whole { 2 } else { 1 };
+            let tier = if at.eq_ignore_ascii_case(type_name) {
+                0
+            } else if wanted.contains(&at) {
+                member
+            } else if self.possible(at).iter().any(|m| wanted.contains(m)) {
+                1
+            } else {
+                continue;
+            };
+            goals.push((hops, tier, at));
+        }
+        let Some(&(hops, tier, _)) = goals.iter().min() else {
+            return (None, Vec::new());
+        };
+        if hops > MAX_HOPS {
+            return (Some(hops), Vec::new());
+        }
+        let mut chains: Vec<Vec<&'a SchemaRecord>> = goals
+            .iter()
+            .filter(|g| (g.0, g.1) == (hops, tier))
+            .flat_map(|&(_, _, at)| reach.edges.get(at).into_iter().flatten())
+            .map(|&(from, field)| {
+                let mut chain = reach.chain_to(from);
+                chain.push(field);
+                chain
+            })
+            .collect();
+        chains.sort_by_key(|c| chain_order(c));
+        (Some(hops), chains)
+    }
+
+    /// The type graph as seen from the root operation fields, walked at most
+    /// once per draft and shared by both edges: reaching a nested field and
+    /// reaching the field that *takes* an input are the same walk.
+    fn reach(&self) -> &Reach<'a> {
+        self.reached.get_or_init(|| self.walk())
+    }
+
+    /// One breadth-first walk out from the root operation fields.
+    ///
+    /// Breadth-first is what makes a cyclic type graph safe without tracking a
+    /// path per node: a type is settled the first time it's seen, so
+    /// `User.posts: [Post!]!` beside `Post.author: User!` closes instead of
+    /// looping, every chain is a shortest one, and no chain passes through a
+    /// type twice.
+    fn walk(&self) -> Reach<'a> {
+        let mut hops: HashMap<&'a str, usize> = HashMap::new();
+        let mut edges: HashMap<&'a str, Vec<(&'a str, &'a SchemaRecord)>> = HashMap::new();
+        let mut frontier: Vec<&'a str> = Vec::new();
+        for r in &self.roots {
+            if let Some(p) = r.parent.as_deref() {
+                if hops.insert(p, 0).is_none() {
+                    frontier.push(p);
                 }
             }
         }
-        consumers.sort_by_key(|(r, arg)| {
-            (
-                !matches!(r.kind, Kind::Query | Kind::Mutation | Kind::Subscription),
-                required_args(r),
-                r.path.len(),
-                r.path.clone(),
-                arg.clone(),
-            )
-        });
-        consumers
-            .into_iter()
-            .filter_map(|(r, arg)| {
-                // The argument is named, not just the field: it's the whole
-                // answer to "where does this input go".
-                let label = format!("{}({arg}:)", r.path);
-                match r.kind {
-                    Kind::Query | Kind::Mutation | Kind::Subscription => Some((label, vec![r])),
-                    Kind::Field => {
-                        let root = self
-                            .roots_reaching(r.parent.as_deref()?)
-                            .into_iter()
-                            .next()?;
-                        Some((label, vec![root, r]))
+        frontier.sort_unstable();
+        let mut depth = 0;
+        while !frontier.is_empty() {
+            depth += 1;
+            let mut next: Vec<&'a str> = Vec::new();
+            for &from in &frontier {
+                for field in self.outgoing(from) {
+                    let Some(base) = field.base_type() else {
+                        continue;
+                    };
+                    // A scalar or enum return is the end of the road: nothing
+                    // to select underneath it, so nothing further to reach.
+                    if self.is_leaf(base) {
+                        continue;
                     }
-                    _ => None,
+                    match hops.get(base).copied() {
+                        // Settled nearer already; a longer way in isn't a way.
+                        Some(seen) if seen < depth => continue,
+                        Some(_) => {}
+                        None => {
+                            hops.insert(base, depth);
+                            next.push(base);
+                        }
+                    }
+                    edges.entry(base).or_default().push((from, field));
                 }
-            })
-            .collect()
-    }
-
-    /// Root operation fields returning `type_name`, best first. Fewest required
-    /// arguments wins: `viewer` is a friendlier entry point than `node(id:)`,
-    /// which needs one you may not have yet.
-    fn roots_returning(&self, type_name: &str) -> Vec<&'a SchemaRecord> {
-        let mut hits: Vec<&SchemaRecord> = self
-            .roots
-            .iter()
-            .copied()
-            .filter(|r| {
-                r.base_type()
-                    .is_some_and(|t| t.eq_ignore_ascii_case(type_name))
-            })
-            .collect();
-        hits.sort_by_key(root_order);
-        hits
-    }
-
-    /// Root fields from which `type_name`'s own fields can be selected, best
-    /// first. A root returning the type itself is the direct answer; when none
-    /// does, a type is still reachable through anything whose runtime types
-    /// overlap it — `Query.pets: [Animal!]!` reaches `Pet.nickname` as
-    /// `pets { ... on Pet { nickname } }`, and calling a field you can query
-    /// unreachable is the worse answer.
-    fn roots_reaching(&self, type_name: &str) -> Vec<&'a SchemaRecord> {
-        let direct = self.roots_returning(type_name);
-        if !direct.is_empty() {
-            return direct;
+            }
+            next.sort_unstable();
+            frontier = next;
         }
-        let wanted = self.possible(type_name);
-        let mut hits: Vec<&SchemaRecord> = self
-            .roots
-            .iter()
+        // Friendliest hop first, so rebuilding a chain asks least of the caller
+        // at every level of it.
+        for into in edges.values_mut() {
+            into.sort_by_key(|(_, field)| root_order(field));
+        }
+        Reach { hops, edges }
+    }
+
+    /// The fields selectable one hop out from `type_name`: its own, plus what
+    /// an abstract type's members add, which an inline fragment reaches. A
+    /// member's redeclaration of a field the abstract type already has is
+    /// skipped — it's the same field, and reachable without the fragment.
+    fn outgoing(&self, type_name: &str) -> Vec<&'a SchemaRecord> {
+        let own: Vec<&'a SchemaRecord> = self
+            .fields
+            .get(type_name)
+            .into_iter()
+            .flatten()
             .copied()
-            .filter(|r| {
-                r.base_type()
-                    .is_some_and(|t| self.possible(t).iter().any(|m| wanted.contains(m)))
+            .filter(|f| {
+                matches!(
+                    f.kind,
+                    Kind::Field | Kind::Query | Kind::Mutation | Kind::Subscription
+                )
             })
             .collect();
-        hits.sort_by_key(root_order);
-        hits
+        let mut out = own.clone();
+        for member in self.possible(type_name) {
+            if member == type_name {
+                continue;
+            }
+            let added = self
+                .fields
+                .get(member)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|f| f.kind == Kind::Field && !own.iter().any(|o| o.name == f.name));
+            out.extend(added);
+        }
+        out
     }
 
     /// What a value of `type_name` can be at runtime, by name.
@@ -761,6 +884,37 @@ impl<'a> Schema<'a> {
     }
 }
 
+/// What the type graph looks like from the root operation fields: how far
+/// each type is, and every field that gets there on the last hop.
+struct Reach<'a> {
+    /// Hops from a root operation field. Zero for the root types themselves.
+    hops: HashMap<&'a str, usize>,
+    /// Per type, the fields reaching it in exactly `hops` hops, each paired
+    /// with the type it was selected on — the field's own parent, except where
+    /// the chain got there through an abstract type and the field belongs to
+    /// one of its members. Friendliest first.
+    edges: HashMap<&'a str, Vec<(&'a str, &'a SchemaRecord)>>,
+}
+
+impl<'a> Reach<'a> {
+    /// The chain of fields from a root to `type_name`, outermost first, taking
+    /// the friendliest edge at every hop. Empty for a root type. Terminates
+    /// because an edge into a type always comes from one hop nearer.
+    fn chain_to(&self, type_name: &str) -> Vec<&'a SchemaRecord> {
+        let mut chain = Vec::new();
+        let mut at = type_name;
+        while self.hops.get(at).is_some_and(|&h| h > 0) {
+            let Some(&(from, field)) = self.edges.get(at).and_then(|e| e.first()) else {
+                break;
+            };
+            chain.push(field);
+            at = from;
+        }
+        chain.reverse();
+        chain
+    }
+}
+
 /// The variables block, ready to render.
 struct Placeholders {
     values: Value,
@@ -804,12 +958,19 @@ impl Variables {
                     continue;
                 }
                 // Disambiguate a name already taken by an outer field's arg.
-                let taken = entries.iter().any(|(_, _, var, _)| var == name);
-                let var = if taken {
-                    format!("{}{}", field.name, pascal_case(name))
-                } else {
-                    name.to_string()
-                };
+                // A long chain can repeat the field name too — two `node(id:)`
+                // hops both want `nodeId` — so the qualified form is numbered
+                // until it's free rather than colliding in the signature.
+                let mut var = name.to_string();
+                if entries.iter().any(|(_, _, v, _)| *v == var) {
+                    let qualified = format!("{}{}", field.name, pascal_case(name));
+                    var = qualified.clone();
+                    let mut n = 2;
+                    while entries.iter().any(|(_, _, v, _)| *v == var) {
+                        var = format!("{qualified}{n}");
+                        n += 1;
+                    }
+                }
                 entries.push((depth, name.to_string(), var, type_ref.to_string()));
             }
         }
@@ -871,7 +1032,59 @@ impl Variables {
     }
 }
 
-/// How many of a field's arguments are non-null, and so must be supplied.
+/// How far from a root a draft will chase a target.
+///
+/// Namespaced roots (`Query.payroll: PayrollQueries`, with the real fields
+/// hanging off it) put ordinary targets three and four hops out, so a cap that
+/// clears only the direct case refuses most of a schema. Six is measured
+/// rather than picked: in both production schemas gqls is swept against, every
+/// type any chain reaches at all lands within six hops, so the cap never fires
+/// there. It guards a schema shaped worse than those, where a draft that deep
+/// would be more nesting than help — and the refusal names the distance, so
+/// "too deep" reads differently from "not there".
+const MAX_HOPS: usize = 6;
+
+/// A chain as one readable path: `Query.early_pay > EarlyPayQueryRoot.status`.
+/// One form in text and in `--json` both, since a path is several fields now
+/// and naming only its first says almost nothing.
+fn label(chain: &[&SchemaRecord]) -> String {
+    chain
+        .iter()
+        .map(|r| r.path.as_str())
+        .collect::<Vec<_>>()
+        .join(" > ")
+}
+
+/// Chains ordered so the friendliest path drafts first: shortest, then the
+/// fewest arguments to fill in, then stably by name. Past the length that is
+/// [`root_order`], which is what a single hop has always been sorted by.
+fn chain_order(chain: &[&SchemaRecord]) -> (usize, usize, usize, String) {
+    let path = label(chain);
+    (
+        chain.len(),
+        chain.iter().map(|f| required_args(f)).sum(),
+        path.len(),
+        path,
+    )
+}
+
+/// Why a target can't be drafted through: too deep to be worth it, or not
+/// there at all. Different news — one says trim the question, the other says
+/// ask a different one — so they don't share a sentence.
+fn out_of_reach(type_name: &str, hops: Option<usize>) -> String {
+    let close = format!("Try `gqls --returns {type_name}` to see what's close.");
+    match hops {
+        Some(hops) => format!(
+            "is {hops} hops from a root field, past the {MAX_HOPS}-hop cap — that much \
+             nesting is more query than help. {close}"
+        ),
+        None => format!(
+            "isn't reachable from a root field — nothing returns {type_name}, or \
+             anything it narrows from. {close}"
+        ),
+    }
+}
+
 /// A selection set: `header { … }`, with `body` indented one level inside.
 fn block(header: String, body: Vec<String>) -> Vec<String> {
     let mut lines = vec![format!("{header} {{")];
@@ -918,6 +1131,7 @@ fn root_order(r: &&SchemaRecord) -> (usize, usize, String) {
     (required_args(r), r.path.len(), r.path.clone())
 }
 
+/// How many of a field's arguments are non-null, and so must be supplied.
 fn required_args(r: &SchemaRecord) -> usize {
     r.args
         .iter()
@@ -1148,14 +1362,21 @@ mod tests {
     #[test]
     fn an_unreachable_field_is_an_error_not_a_guess() {
         let mut records = schema();
-        // nothing returns UserError, so UserError.message can't be reached
-        let target = records
-            .iter()
-            .position(|r| r.path == "UserError.message")
-            .unwrap();
-        let target = records.remove(target);
+        // Nothing returns an Orphan at any distance, which is what unreachable
+        // means now: `UserError` used to stand for this and no longer can, since
+        // `Mutation.save > Payload.errors` reaches it in two.
+        records.push(rec("Orphan", "Orphan", Kind::Object, None, None, &[]));
+        records.push(rec(
+            "Orphan.note",
+            "note",
+            Kind::Field,
+            Some("Orphan"),
+            Some("String"),
+            &[],
+        ));
+        let target = records.pop().expect("just pushed");
         let err = build(&target, &records, Some(1)).unwrap_err().to_string();
-        assert!(err.contains("no root field returns UserError"), "{err}");
+        assert!(err.contains("isn't reachable from a root field"), "{err}");
     }
 
     #[test]
