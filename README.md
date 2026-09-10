@@ -129,6 +129,8 @@ gqls employee --returns Employee        # combined with a name search
 
 A name search can't answer this: `Query.myEmployer: Company` doesn't contain the word "Company" anywhere in its name or path. With no QUERY at all, `--returns` lists everything it matches.
 
+When nothing returns the type outright, the filter widens to what does reach it rather than dead-ending on a precise "no": nothing returns the `Commentable` interface, yet every field returning a `Post` hands you one, so those are what you get, with a line on stderr saying so. A wildcard is left alone — it says what it means — and so is a type something already returns.
+
 ### Wildcards
 A wildcard in the query switches from fuzzy search to enumeration — every match is exact, ordered by kind then alphabetically. **Quote the pattern** so your shell doesn't expand it against local filenames:
 

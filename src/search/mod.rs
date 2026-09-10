@@ -158,6 +158,46 @@ fn near_exact(query: &str, name: &str) -> Option<NameMatch> {
     score::typo_distance(&q, &n).map(|_| NameMatch::Corrected)
 }
 
+/// A `--returns` filter widened to what actually reaches the type, as a brace
+/// pattern the matcher already understands — or `None` when it needs no
+/// widening.
+///
+/// `--returns Commentable` matches nothing when no field returns the interface
+/// itself, and yet every field returning a `Post` hands you one. Answering
+/// "nothing" there is precise and useless: the question behind the filter is
+/// how to get one. A wildcard is left alone — it says what it means — and so
+/// is a type something already returns.
+pub(crate) fn widened_returns(returns: &str, records: &[SchemaRecord]) -> Option<String> {
+    if glob::is_pattern(returns)
+        || records.iter().any(|r| {
+            r.base_type()
+                .is_some_and(|t| t.eq_ignore_ascii_case(returns))
+        })
+    {
+        return None;
+    }
+    let types: std::collections::HashMap<&str, &SchemaRecord> = records
+        .iter()
+        .filter(|r| !r.runtime_types().is_empty())
+        .map(|r| (r.name.as_str(), r))
+        .collect();
+    let wanted = types
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(returns))
+        .map(|(_, r)| r.runtime_types())?;
+    let mut names: Vec<&str> = types
+        .values()
+        .filter(|r| !r.name.eq_ignore_ascii_case(returns))
+        .filter(|r| r.runtime_types().iter().any(|m| wanted.contains(m)))
+        .map(|r| r.name.as_str())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort_unstable();
+    Some(format!("{{{}}}", names.join(",")))
+}
+
 /// Which records a search may consider, independent of the query itself: a
 /// kind, an enclosing type, a return type. Grouped so every search path takes
 /// one argument, and so adding a filter doesn't ripple through six signatures.
@@ -579,6 +619,38 @@ mod tests {
         .map(|h| h.record.path.as_str())
         .collect();
         assert_eq!(paths, ["Company.employees"]);
+    }
+
+    #[test]
+    fn a_returns_filter_nothing_satisfies_widens_to_what_narrows_to_it() {
+        let sdl = "type Query { pets: [Animal!]! }\n\
+                   union Animal = Cat | Dog\n\
+                   interface Pet { nickname: String! }\n\
+                   type Cat implements Pet { nickname: String! }\n\
+                   type Dog implements Pet { nickname: String! }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+
+        // nothing returns a Pet, and Query.pets hands you one anyway
+        let widened = widened_returns("Pet", &records).expect("should widen");
+        let paths: Vec<&str> = search(
+            "*",
+            &records,
+            Filters {
+                returns: Some(&widened),
+                ..Default::default()
+            },
+        )
+        .iter()
+        .map(|h| h.record.path.as_str())
+        .collect();
+        assert_eq!(paths, ["Query.pets"]);
+
+        // a type something returns outright is asked for exactly as written
+        assert!(widened_returns("Animal", &records).is_none());
+        // a wildcard says what it means, and a name the schema doesn't know
+        // has nothing to widen to
+        assert!(widened_returns("*et", &records).is_none());
+        assert!(widened_returns("Zork", &records).is_none());
     }
 
     #[test]

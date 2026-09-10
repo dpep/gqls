@@ -598,10 +598,22 @@ pub fn run() -> Result<()> {
             }
         }
 
+        // A `--returns` that nothing satisfies outright is widened to what
+        // narrows to the type, rather than dead-ending on a precise "no".
+        let widened = cli
+            .returns
+            .as_deref()
+            .and_then(|t| search::widened_returns(t, &records));
+        if widened.is_some() {
+            crate::status!(
+                "nothing returns {} outright — showing fields returning a type it narrows from",
+                cli.returns.as_deref().unwrap_or_default()
+            );
+        }
         let filters = search::Filters {
             kind,
             parent,
-            returns: cli.returns.as_deref(),
+            returns: widened.as_deref().or(cli.returns.as_deref()),
         };
 
         if cli.resolve {
@@ -721,7 +733,13 @@ pub fn run() -> Result<()> {
         let out_span = crate::profile::span("output");
 
         if matches.is_empty() {
-            crate::status!("no matches for {query:?}");
+            // `--returns` with no QUERY searches for `*`, which is gqls's own
+            // wildcard rather than anything the user typed — report the filter
+            // they actually gave.
+            match cli.returns.as_deref().filter(|_| query == "*") {
+                Some(ty) => crate::status!("nothing returns {ty}"),
+                None => crate::status!("no matches for {query:?}"),
+            }
         }
         // Counted before explain mode collapses the list, which reports its own
         // hidden matches — and reports them as a `--no-explain` away, not an

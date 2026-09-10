@@ -23,8 +23,17 @@ early entries are terser than what follows.
   that root returns something broader, so `gqls Cat -e` is
   `pets { ... on Cat { … } }`. An enum or a scalar still can't be selected, but
   says so pointing at `--returns`, which is the question with an answer.
+- **`--returns` widens rather than dead-ending.** Nothing returns the
+  `Commentable` interface, so the filter answered nothing — while every field
+  returning a `Post` hands you one, and `-e` drafts exactly that. When no field
+  returns the named type outright, the filter now matches what narrows to it,
+  and says so on stderr. A wildcard is left alone, and so is a type something
+  already returns.
 
 ### Fixed
+- **`--returns` with no QUERY reported `no matches for "*"`.** The wildcard is
+  gqls's own — nothing the caller typed — so the miss now names the filter:
+  `nothing returns Zork`.
 - **`-e` reaches a field through the fragment that narrows to it.** A field was
   only drafted when some root field returned its enclosing type outright, so
   `Pet.nickname` reported "isn't reachable in one hop" whenever the only path
