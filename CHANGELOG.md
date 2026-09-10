@@ -9,6 +9,15 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **`-e` reaches a field through the fragment that narrows to it.** A field was
+  only drafted when some root field returned its enclosing type outright, so
+  `Pet.nickname` reported "isn't reachable in one hop" whenever the only path
+  ran through a union or another abstract type — a query people write daily,
+  and one `gqls Query.pets -e` already drafted. A root whose runtime types
+  overlap the field's parent now counts, and the draft says how:
+  `pets { __typename ... on Pet { nickname } }`. A root returning a type that
+  *implements* the interface still selects the field directly, with no
+  redundant fragment.
 - **A piped batch now answers each query as it arrives.** `read_queries` drained
   stdin to EOF before searching anything, so `producer | gqls schema.graphql -J`
   stayed silent until the producer closed — and never printed at all for a

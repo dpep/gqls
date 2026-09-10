@@ -106,7 +106,7 @@ pub fn build(
                 .parent
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("{} has no enclosing type", target.path))?;
-            let mut roots = schema.roots_returning(parent);
+            let mut roots = schema.roots_reaching(parent);
             if roots.is_empty() {
                 bail!(
                     "{} isn't reachable in one hop — no root field returns {parent}. \
@@ -149,6 +149,11 @@ pub fn build(
             other.as_str()
         ),
     };
+
+    // A root broader than the field's own parent reaches it only through the
+    // fragment that narrows it: `Query.pets` returns `Animal`, so `Pet.nickname`
+    // is `pets { ... on Pet { nickname } }`.
+    let narrow = schema.narrowing(&chain);
 
     let operation_kind = match chain[0].kind {
         Kind::Mutation => "mutation",
@@ -194,11 +199,15 @@ pub fn build(
             // A leaf-returning field takes no selection set at all.
             vec![format!("{}{}", field.name, args)]
         } else {
-            let mut wrapped = vec![format!("{}{} {{", field.name, args)];
-            wrapped.extend(body.into_iter().map(|l| format!("  {l}")));
-            wrapped.push("}".to_string());
-            wrapped
+            block(format!("{}{}", field.name, args), body)
         };
+        // The fragment goes directly inside the field whose return it narrows,
+        // with the `__typename` that makes the response readable back.
+        if let Some(on) = narrow.as_deref().filter(|_| depth + 1 == chain.len()) {
+            let mut fragment = vec!["__typename".to_string()];
+            fragment.extend(block(format!("... on {on}"), body));
+            body = fragment;
+        }
     }
 
     let mut operation = String::new();
@@ -391,7 +400,7 @@ impl<'a> Schema<'a> {
                     Kind::Query | Kind::Mutation | Kind::Subscription => Some((label, vec![r])),
                     Kind::Field => {
                         let root = self
-                            .roots_returning(r.parent.as_deref()?)
+                            .roots_reaching(r.parent.as_deref()?)
                             .into_iter()
                             .next()?;
                         Some((label, vec![root, r]))
@@ -415,8 +424,58 @@ impl<'a> Schema<'a> {
                     .is_some_and(|t| t.eq_ignore_ascii_case(type_name))
             })
             .collect();
-        hits.sort_by_key(|r| (required_args(r), r.path.len(), r.path.clone()));
+        hits.sort_by_key(root_order);
         hits
+    }
+
+    /// Root fields from which `type_name`'s own fields can be selected, best
+    /// first. A root returning the type itself is the direct answer; when none
+    /// does, a type is still reachable through anything whose runtime types
+    /// overlap it — `Query.pets: [Animal!]!` reaches `Pet.nickname` as
+    /// `pets { ... on Pet { nickname } }`, and calling a field you can query
+    /// unreachable is the worse answer.
+    fn roots_reaching(&self, type_name: &str) -> Vec<&'a SchemaRecord> {
+        let direct = self.roots_returning(type_name);
+        if !direct.is_empty() {
+            return direct;
+        }
+        let wanted = self.possible(type_name);
+        let mut hits: Vec<&SchemaRecord> = self
+            .roots
+            .iter()
+            .copied()
+            .filter(|r| {
+                r.base_type()
+                    .is_some_and(|t| self.possible(t).iter().any(|m| wanted.contains(m)))
+            })
+            .collect();
+        hits.sort_by_key(root_order);
+        hits
+    }
+
+    /// The concrete types a value of `type_name` can be at runtime: an abstract
+    /// type's members, or an object type itself. Empty for anything else — a
+    /// scalar narrows to nothing.
+    fn possible(&self, type_name: &str) -> Vec<&'a str> {
+        match self.types.get(type_name).copied() {
+            Some(rec) if matches!(rec.kind, Kind::Union | Kind::Interface) => {
+                rec.possible_types.iter().map(String::as_str).collect()
+            }
+            Some(rec) if rec.kind == Kind::Object => vec![rec.name.as_str()],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The inline fragment the last hop of `chain` needs, if any. An object
+    /// implementing the interface needs none — the field is already on it.
+    fn narrowing(&self, chain: &[&SchemaRecord]) -> Option<String> {
+        let [.., outer, inner] = chain else {
+            return None;
+        };
+        let parent = inner.parent.as_deref()?;
+        let base = outer.base_type()?;
+        let selectable = base.eq_ignore_ascii_case(parent) || self.possible(parent).contains(&base);
+        (!selectable).then(|| parent.to_string())
     }
 
     /// Whether a type needs no selection set — a scalar, an enum, or a name
@@ -689,6 +748,19 @@ impl Variables {
 }
 
 /// How many of a field's arguments are non-null, and so must be supplied.
+/// A selection set: `header { … }`, with `body` indented one level inside.
+fn block(header: String, body: Vec<String>) -> Vec<String> {
+    let mut lines = vec![format!("{header} {{")];
+    lines.extend(body.into_iter().map(|l| format!("  {l}")));
+    lines.push("}".to_string());
+    lines
+}
+
+/// Roots ordered so the friendliest entry point drafts first.
+fn root_order(r: &&SchemaRecord) -> (usize, usize, String) {
+    (required_args(r), r.path.len(), r.path.clone())
+}
+
 fn required_args(r: &SchemaRecord) -> usize {
     r.args
         .iter()

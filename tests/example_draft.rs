@@ -357,3 +357,46 @@ fn an_input_nothing_takes_says_so_rather_than_inventing_a_path() {
     let err = example::build(target, &records, None).expect_err("nothing takes an Orphan");
     assert!(err.to_string().contains("Orphan"), "{err}");
 }
+
+#[test]
+fn a_field_reached_only_through_a_union_is_drafted_through_it() {
+    // Nothing returns a Pet, but every member of Animal is one, so
+    // `... on Pet` is how the field is selected — and it is a query people
+    // really write, not a consolation path.
+    let sdl = "\
+        type Query { pets: [Animal!]! }\n\
+        union Animal = Cat | Dog\n\
+        interface Pet { nickname: String! }\n\
+        type Cat implements Pet { nickname: String! livesLeft: Int! }\n\
+        type Dog implements Pet { nickname: String! breed: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Pet.nickname").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(ex.via.as_deref(), Some("Query.pets"));
+    assert_eq!(
+        ex.operation,
+        "query Nickname {\n  \
+           pets {\n    \
+             __typename\n    \
+             ... on Pet {\n      \
+               nickname\n    \
+             }\n  \
+           }\n\
+         }\n"
+    );
+}
+
+#[test]
+fn a_root_returning_an_implementor_selects_the_field_without_a_fragment() {
+    // Nothing returns a Commentable either, but Query.posts returns a Post,
+    // which implements it — the field is already on that type.
+    let ex = draft("Commentable.comments");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert_eq!(ex.via.as_deref(), Some("Query.posts"));
+    assert!(!ex.operation.contains("... on"), "{}", ex.operation);
+    assert!(ex.operation.contains("posts {"), "{}", ex.operation);
+    assert!(ex.operation.contains("comments {"), "{}", ex.operation);
+}
