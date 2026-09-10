@@ -18,6 +18,12 @@ early entries are terser than what follows.
   `pets { __typename ... on Pet { nickname } }`. A root returning a type that
   *implements* the interface still selects the field directly, with no
   redundant fragment.
+- **A truncated result list says so without `-v`.** The `N matches; showing top
+  M` count was a verbose-only diagnostic, so a list cut off at `-l` (20 by
+  default) read as the complete answer — naming a type with more fields than
+  that quietly lost the rest. It's normal stderr status now, and it no longer
+  fires when explain mode collapsed the list, which reports its own hidden
+  matches.
 - **A piped batch now answers each query as it arrives.** `read_queries` drained
   stdin to EOF before searching anything, so `producer | gqls schema.graphql -J`
   stayed silent until the producer closed — and never printed at all for a

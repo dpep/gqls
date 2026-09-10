@@ -48,7 +48,7 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 
 Several words are one query, so `gqls cancel a subscription` needs no quotes, and the schema is recognised wherever it sits among the arguments. A leading kind word filters like `-k` — `gqls query user`, `gqls type User` — and gqls says on stderr when it read a word that way.
 
-Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up. Weak long-tail matches are cut relative to the best hit; `-v` reports the total match count when it exceeds the limit.
+Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up. Weak long-tail matches are cut relative to the best hit; when the limit drops matches, the total is reported on stderr so a truncated list can't pass for the whole answer.
 
 ```sh
 gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)

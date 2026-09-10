@@ -723,6 +723,10 @@ pub fn run() -> Result<()> {
         if matches.is_empty() {
             crate::status!("no matches for {query:?}");
         }
+        // Counted before explain mode collapses the list, which reports its own
+        // hidden matches — and reports them as a `--no-explain` away, not an
+        // `-l` away.
+        let shown = matches.len();
         // Explain mode: the query named exactly one of the records it matched,
         // so the user has found the thing rather than narrowed toward it.
         //
@@ -749,11 +753,10 @@ pub fn run() -> Result<()> {
         let explained = explained.map(|(_, m)| m);
         output.write_matches(&matches, batch.then_some(query), explained, &records)?;
         drop(out_span);
-        if total > matches.len() {
-            crate::detail!(
-                "{total} matches; showing top {} (-l to adjust)",
-                matches.len()
-            );
+        // Status, not a -v diagnostic: matches were dropped, and a list that
+        // simply stops at -l reads as the whole answer.
+        if total > shown {
+            crate::status!("{total} matches; showing top {shown} (-l to adjust)");
         }
     }
 
