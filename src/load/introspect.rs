@@ -2,6 +2,8 @@
 //! introspection query) or a local introspection JSON dump. Both flatten the
 //! `__schema` payload into the same [`SchemaRecord`]s that SDL produces.
 
+use std::collections::BTreeMap;
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
@@ -257,6 +259,7 @@ fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
             parent: None,
             type_ref: None,
             args: args_of(d),
+            arg_descriptions: arg_docs_of(d),
             description: opt_str(d, "description"),
             deprecated: None,
             directives: Vec::new(),
@@ -293,6 +296,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
         parent: None,
         type_ref: None,
         args: Vec::new(),
+        arg_descriptions: Default::default(),
         description: opt_str(t, "description"),
         deprecated: None,
         directives: Vec::new(),
@@ -318,6 +322,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     parent: Some(name.clone()),
                     type_ref: f.get("type").map(render_type),
                     args: args_of(f),
+                    arg_descriptions: arg_docs_of(f),
                     description: opt_str(f, "description"),
                     deprecated: deprecation(f),
                     directives: Vec::new(),
@@ -336,6 +341,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     parent: Some(name.clone()),
                     type_ref: f.get("type").map(render_type),
                     args: Vec::new(),
+                    arg_descriptions: Default::default(),
                     description: opt_str(f, "description"),
                     deprecated: deprecation(f),
                     directives: Vec::new(),
@@ -356,6 +362,7 @@ fn emit_type(t: &Value, roots: &Roots, out: &mut Vec<SchemaRecord>) {
                     parent: Some(name.clone()),
                     type_ref: None,
                     args: Vec::new(),
+                    arg_descriptions: Default::default(),
                     description: opt_str(v, "description"),
                     deprecated: deprecation(v),
                     directives: Vec::new(),
@@ -392,6 +399,18 @@ fn args_of(f: &Value) -> Vec<String> {
                 Some(default) => format!("{n}: {ty} = {default}"),
                 None => format!("{n}: {ty}"),
             }
+        })
+        .collect()
+}
+
+/// What each documented argument is for. The introspection query has always
+/// asked for these — they were parsed and dropped.
+fn arg_docs_of(f: &Value) -> BTreeMap<String, String> {
+    array(f, "args")
+        .iter()
+        .filter_map(|a| {
+            let doc = a.get("description").and_then(Value::as_str)?;
+            Some((str_field(a, "name"), doc.to_string()))
         })
         .collect()
 }
@@ -458,6 +477,32 @@ fragment TypeRef on __Type {
 #[cfg(test)]
 mod tests {
     use super::{is_localhost, records_from};
+
+    #[test]
+    fn an_argument_description_survives_the_introspection_loader() {
+        // The introspection query has always asked for these; they were parsed
+        // and thrown away. The SDL loader keeps them, and two loaders that
+        // disagree about the same schema are the bug this guards.
+        let dump = br#"{"data":{"__schema":{"queryType":{"name":"Query"},
+            "types":[{"kind":"OBJECT","name":"Query","fields":[
+              {"name":"repository","description":null,
+               "args":[{"name":"owner","description":"The login of a user.",
+                        "defaultValue":null,"type":{"kind":"SCALAR","name":"String"}},
+                       {"name":"name","description":null,
+                        "defaultValue":null,"type":{"kind":"SCALAR","name":"String"}}],
+               "type":{"kind":"SCALAR","name":"String"},"isDeprecated":false}]}]}}}"#;
+        let records = records_from(dump, "http://x/graphql", true).expect("should load");
+        let field = records
+            .iter()
+            .find(|r| r.path == "Query.repository")
+            .expect("the field should load");
+        assert_eq!(
+            field.arg_descriptions.get("owner").map(String::as_str),
+            Some("The login of a user.")
+        );
+        // an argument the schema doesn't document simply isn't there
+        assert!(!field.arg_descriptions.contains_key("name"));
+    }
 
     #[test]
     fn a_response_that_is_not_a_schema_is_rejected_before_it_can_be_cached() {

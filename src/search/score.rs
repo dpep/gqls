@@ -329,6 +329,7 @@ mod tests {
             parent: path.rsplit_once('.').map(|(p, _)| p.to_string()),
             type_ref: None,
             args: vec![],
+            arg_descriptions: Default::default(),
             description: None,
             deprecated: None,
             directives: vec![],

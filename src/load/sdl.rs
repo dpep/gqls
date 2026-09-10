@@ -1,5 +1,7 @@
 //! Parse GraphQL SDL and flatten every definition into [`SchemaRecord`]s.
 
+use std::collections::BTreeMap;
+
 use anyhow::{anyhow, Result};
 use graphql_parser::schema::{
     parse_schema, Definition, Directive, EnumValue, Field, InputValue, Type, TypeDefinition,
@@ -250,6 +252,7 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
                 parent: None,
                 type_ref: None,
                 args: d.arguments.iter().map(fmt_input).collect(),
+                arg_descriptions: arg_docs(&d.arguments),
                 description: d.description.clone(),
                 deprecated: None,
                 directives: Vec::new(),
@@ -374,6 +377,7 @@ fn type_record(
         parent: None,
         type_ref: None,
         args: Vec::new(),
+        arg_descriptions: Default::default(),
         description: description.clone(),
         deprecated: None,
         directives: directive_names(directives),
@@ -391,6 +395,7 @@ fn field_record(type_name: &str, f: &Field<'_, String>, roots: &Roots) -> Schema
         parent: Some(type_name.to_string()),
         type_ref: Some(type_to_string(&f.field_type)),
         args: f.arguments.iter().map(fmt_input).collect(),
+        arg_descriptions: arg_docs(&f.arguments),
         description: f.description.clone(),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
@@ -438,6 +443,7 @@ fn input_field_record(type_name: &str, f: &InputValue<'_, String>) -> SchemaReco
         parent: Some(type_name.to_string()),
         type_ref: Some(type_to_string(&f.value_type)),
         args: Vec::new(),
+        arg_descriptions: Default::default(),
         description: f.description.clone(),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
@@ -454,6 +460,7 @@ fn enum_value_record(type_name: &str, v: &EnumValue<'_, String>) -> SchemaRecord
         parent: Some(type_name.to_string()),
         type_ref: None,
         args: Vec::new(),
+        arg_descriptions: Default::default(),
         description: v.description.clone(),
         deprecated: deprecated_reason(&v.directives),
         directives: directive_names(&v.directives),
@@ -471,6 +478,15 @@ fn fmt_input(iv: &InputValue<'_, String>) -> String {
         Some(default) => format!("{base} = {default}"),
         None => base,
     }
+}
+
+/// What each documented argument is for. Most arguments have no description,
+/// so this is usually empty — and the ones that do are exactly the ones you
+/// couldn't have guessed from the name.
+fn arg_docs(args: &[InputValue<'_, String>]) -> BTreeMap<String, String> {
+    args.iter()
+        .filter_map(|iv| Some((iv.name.clone(), iv.description.clone()?)))
+        .collect()
 }
 
 fn type_to_string(t: &Type<'_, String>) -> String {

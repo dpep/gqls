@@ -1079,6 +1079,9 @@ fn run_example(
         "operation": example.operation,
         "variables": example.variables,
         "optional_args": example.optional,
+        // `[[name, what it's for], …]` — ordered like the operation's own
+        // arguments, and only the ones the schema documents.
+        "arguments": example.arguments,
         "enums": example.enums,
         "variable_types": example.variable_types,
         "deprecated": example.deprecated,

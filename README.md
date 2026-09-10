@@ -128,7 +128,22 @@ gqls --returns '*Payload'               # wildcards work here too
 gqls employee --returns Employee        # combined with a name search
 ```
 
-Arguments are not searchable by name — they aren't records of their own, so `gqls followRenames` finds nothing. You reach one through the field that takes it: name the field and its signature is spelled out (`gqls Query.repository`), and `gqls Company` lists `Mutation.createUser(input:)` among what references the type, which is the other direction.
+Arguments are not searchable by name — they aren't records of their own, so `gqls followRenames` finds nothing. You reach one through the field that takes it: name the field and you get its signature *and* what the schema says each argument is for, which is the half a signature can't carry — `owner: String!` never says it wants a login:
+
+```sh
+$ gqls Query.repository
+Query.repository(owner: String!, name: String!, followRenames: Boolean = true)  -> Repository  [query]
+  Lookup a given repository by the owner and repository name.
+
+  arguments
+    owner          String!         The login field of a user or organization
+    name           String!         The name of the repository
+    followRenames  Boolean = true  Follow repository renames. If disabled, a
+                                   repository referenced by its old name will
+                                   return an error.
+```
+
+`gqls Company` lists `Mutation.createUser(input:)` among what references the type, which is the other direction.
 
 A name search can't answer this: `Query.myEmployer: Company` doesn't contain the word "Company" anywhere in its name or path. With no QUERY at all, `--returns` lists everything it matches.
 
@@ -203,6 +218,7 @@ mutation UpdateEmployee($companyId: ID!, $input: EmployeeInput!) {
 
 The rules are deliberately conservative, because a wrong guess costs more than a visible hole:
 
+- **Documented arguments say what they're for.** An `# arguments:` block under the operation carries the schema's own prose for each argument along the chain, since a signature says what to pass and not what passing it does. Only the documented ones — a block of names with nothing beside them says less than no block at all.
 - **Arguments you must supply become variables** — nothing is inlined into the query body, and each placeholder names its type (`"<ID!>"`), so it can't be mistaken for a usable value the way `""` or `0` can.
 - **Anything the server can supply is left out and listed underneath** — a nullable argument, or one with a schema default (even a non-null one, like `first: Int! = 10`). The operation runs as-is, and the knobs you skipped are still visible with their defaults.
 - **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# field: Type { … }` marker per object-valued field.

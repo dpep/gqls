@@ -373,6 +373,7 @@ mod tests {
             parent: parent.map(Into::into),
             type_ref: type_ref.map(Into::into),
             args: vec![],
+            arg_descriptions: Default::default(),
             description: None,
             deprecated: None,
             directives: vec![],

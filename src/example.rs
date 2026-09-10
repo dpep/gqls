@@ -41,6 +41,13 @@ use serde_json::{Map, Value};
 
 use crate::model::{base_of, split_arg, Arg, Kind, SchemaRecord};
 
+/// One documented argument of a drafted operation.
+#[derive(Debug, serde::Serialize)]
+pub struct ArgDoc {
+    pub name: String,
+    pub description: String,
+}
+
 /// A drafted operation and the variables it expects.
 #[derive(Debug)]
 pub struct Example {
@@ -55,6 +62,10 @@ pub struct Example {
     /// Arguments left out because the server can supply them — rendered as
     /// `field(name: Type = default)`, ready to paste back in.
     pub optional: Vec<String>,
+    /// The arguments the schema documents. A signature says what to pass; this
+    /// says what passing it does, which is the half a draft can't show by shape
+    /// alone — `owner: String!` never says it wants a login.
+    pub arguments: Vec<ArgDoc>,
     /// `filter: PostFilter` for each variable the skeleton expanded into an
     /// object — its JSON key alone no longer names its type.
     pub variable_types: Vec<String>,
@@ -287,6 +298,7 @@ pub fn build(
 
     let placeholders = vars.placeholders(&schema);
     Ok(Example {
+        arguments: described_args(&chain),
         operation,
         description: target.description.clone(),
         variables: placeholders.values,
@@ -868,6 +880,39 @@ fn block(header: String, body: Vec<String>) -> Vec<String> {
     lines
 }
 
+/// What each documented argument along `chain` is for, in the order the
+/// operation takes them. Undocumented arguments are left out entirely: a block
+/// of names with nothing beside them says less than no block at all.
+///
+/// A name two hops both use is qualified with its field, since one word can't
+/// stand for two different arguments in the same list.
+fn described_args(chain: &[&SchemaRecord]) -> Vec<ArgDoc> {
+    let mut times: HashMap<&str, usize> = HashMap::new();
+    for field in chain {
+        for arg in &field.args {
+            *times.entry(split_arg(arg).name).or_default() += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for field in chain {
+        for arg in &field.args {
+            let name = split_arg(arg).name;
+            let Some(doc) = field.arg_descriptions.get(name) else {
+                continue;
+            };
+            let label = match times.get(name) {
+                Some(&n) if n > 1 => format!("{}({name}:)", field.name),
+                _ => name.to_string(),
+            };
+            out.push(ArgDoc {
+                name: label,
+                description: doc.clone(),
+            });
+        }
+    }
+    out
+}
+
 /// Roots ordered so the friendliest entry point drafts first.
 fn root_order(r: &&SchemaRecord) -> (usize, usize, String) {
     (required_args(r), r.path.len(), r.path.clone())
@@ -918,6 +963,7 @@ mod tests {
             parent: parent.map(Into::into),
             type_ref: type_ref.map(Into::into),
             args: args.iter().map(|a| a.to_string()).collect(),
+            arg_descriptions: Default::default(),
             description: None,
             deprecated: None,
             directives: vec![],

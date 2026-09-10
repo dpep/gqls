@@ -9,6 +9,16 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **Arguments carry what they're for.** Both loaders dropped argument
+  descriptions — the introspection query had always asked for them — so the one
+  thing a signature can't tell you was the one thing gqls couldn't show:
+  `owner: String!` never says it wants a login. Naming a field now lists its
+  arguments with the schema's prose for each, `-e` prints an `# arguments:`
+  block for the ones along the chain, and `--json` carries them on both. Only
+  documented arguments appear; a block of bare names would restate the
+  signature. Arguments are still not searchable by name — they aren't records —
+  and the record cache re-reads once on upgrade, as it does whenever its format
+  gains a field.
 - **A piped query explains what it names.** The explanation tier — the
   annotations, and the `match`/`values`/`fields`/`referenced_by` keys — was
   switched off for stdin, so the same query answered differently depending on

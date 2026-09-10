@@ -569,3 +569,23 @@ fn fields_that_clash_across_members_are_aliased_apart() {
         ex.operation
     );
 }
+
+#[test]
+fn a_draft_says_what_its_documented_arguments_are_for() {
+    // The signature says what to pass. What passing it *does* is the half a
+    // draft can't show by shape — `at: DateTime` never says that omitting it
+    // means now.
+    let ex = draft("Mutation.publishPost");
+    let at = ex
+        .arguments
+        .iter()
+        .find(|a| a.name == "at")
+        .unwrap_or_else(|| panic!("{:?}", ex.arguments));
+    assert!(at.description.starts_with("When to publish"), "{at:?}");
+    // an argument the schema doesn't document isn't invented
+    assert!(
+        !ex.arguments.iter().any(|a| a.name == "id"),
+        "{:?}",
+        ex.arguments
+    );
+}

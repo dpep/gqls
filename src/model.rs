@@ -4,6 +4,8 @@
 
 use std::str::FromStr;
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 /// What a [`SchemaRecord`] describes. Root operation fields get their own
@@ -108,6 +110,17 @@ pub struct SchemaRecord {
     /// Argument signatures for a field, e.g. `["id: ID!", "first: Int"]`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// What each argument is *for*, by argument name — the schema's own prose,
+    /// as written. Only the documented ones are here, which on most schemas is
+    /// a minority of them.
+    ///
+    /// Beside [`args`] rather than inside it: a signature is what you type, and
+    /// this is what it means. Keeping them apart also keeps `args` the array of
+    /// strings that `--json` has always carried.
+    ///
+    /// [`args`]: SchemaRecord::args
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub arg_descriptions: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Deprecation reason, if the entity is `@deprecated`.

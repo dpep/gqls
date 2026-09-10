@@ -430,6 +430,7 @@ mod tests {
             default: None,
             possible_types: vec![],
             args: vec![],
+            arg_descriptions: Default::default(),
         };
         assert_eq!(
             record_text(&rec),

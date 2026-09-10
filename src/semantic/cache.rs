@@ -621,6 +621,7 @@ mod tests {
             default: None,
             possible_types: vec![],
             args: vec![],
+            arg_descriptions: Default::default(),
         };
         let before = vec![rec("email")];
         let after = vec![rec("email"), rec("phone")];

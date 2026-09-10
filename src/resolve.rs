@@ -378,6 +378,7 @@ mod tests {
             parent: parent.map(String::from),
             type_ref: None,
             args: vec![],
+            arg_descriptions: Default::default(),
             description: None,
             deprecated: None,
             directives: vec![],

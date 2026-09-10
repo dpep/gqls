@@ -73,7 +73,11 @@ type Mutation {
   archiveUser(id: ID!, reason: String): ArchiveUserPayload!
 
   """Publish a draft. Returns the post and any problems that blocked it."""
-  publishPost(id: ID!, at: DateTime): PublishPostPayload!
+  publishPost(
+    id: ID!
+    """When to publish. Omitted means now; a past time publishes immediately."""
+    at: DateTime
+  ): PublishPostPayload!
 }
 
 type Subscription {

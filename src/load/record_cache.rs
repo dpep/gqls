@@ -18,7 +18,7 @@ use crate::model::{Kind, SchemaRecord};
 /// Bump when the on-disk encoding changes — old files then fail this check and
 /// re-parse. Changes to what the loaders *put* in a record are covered by the
 /// crate version in the key (see `path`), so they need no bump here.
-const MAGIC: u32 = 0x4751_5233; // "GQR3"
+const MAGIC: u32 = 0x4751_5234; // "GQR4"
 
 /// Records per decode chunk. The file stores where each chunk starts so they
 /// can be decoded in parallel — records are self-delimiting, but only from a
@@ -164,6 +164,15 @@ fn encode(records: &[SchemaRecord]) -> Vec<u8> {
         put_opt(&mut buf, r.default.as_deref());
         put_vec(&mut buf, &r.directives);
         put_vec(&mut buf, &r.possible_types);
+        // Flattened to name, description, name, description — the format has a
+        // vector of strings and no map, and this is a map only for lookup.
+        put_vec(
+            &mut buf,
+            &r.arg_descriptions
+                .iter()
+                .flat_map(|(name, doc)| [name.clone(), doc.clone()])
+                .collect::<Vec<_>>(),
+        );
     }
     for (i, off) in offsets.iter().enumerate() {
         buf[table_at + i * 8..table_at + (i + 1) * 8].copy_from_slice(&off.to_le_bytes());
@@ -234,7 +243,19 @@ fn read_record(rd: &mut Reader) -> Option<SchemaRecord> {
         default: rd.opt()?,
         directives: rd.vec()?,
         possible_types: rd.vec()?,
+        // Last, and last in `encode` too: a struct literal reads its fields in
+        // the order they're written, so the two orders are the format.
+        arg_descriptions: pairs(rd.vec()?),
     })
+}
+
+/// The flattened name/description pairs of `arg_descriptions`, read back. A
+/// trailing half-pair can only come from a file we didn't write, and the caller
+/// treats a short read as a miss anyway.
+fn pairs(flat: Vec<String>) -> std::collections::BTreeMap<String, String> {
+    flat.chunks_exact(2)
+        .map(|p| (p[0].clone(), p[1].clone()))
+        .collect()
 }
 
 /// `Kind` as one byte. An exhaustive match, so adding a variant fails to
@@ -358,6 +379,9 @@ mod tests {
             parent: Some("User".into()),
             type_ref: Some("String!".into()),
             args: vec!["first: Int".into(), "after: String".into()],
+            arg_descriptions: [("first".to_string(), "How many.".to_string())]
+                .into_iter()
+                .collect(),
             description: None,
             deprecated: Some("use other".into()),
             directives: vec![],
@@ -377,6 +401,7 @@ mod tests {
         assert_eq!(a.parent, b.parent);
         assert_eq!(a.type_ref, b.type_ref);
         assert_eq!(a.args, b.args);
+        assert_eq!(a.arg_descriptions, b.arg_descriptions);
         assert_eq!(a.description, b.description);
         assert_eq!(a.deprecated, b.deprecated);
         assert_eq!(a.directives, b.directives);

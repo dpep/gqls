@@ -68,6 +68,10 @@ rather than a shortlist:
   even a non-null field optional (`direction: OrderDirection! = ASC` may be
   omitted). Never elided in JSON; the text form stops at a couple of dozen and
   prints the command that lists the rest
+- `arguments` — a field's arguments with what each is *for*, when the schema
+  documents any of them, each `{name, type, default?, description?}`. The
+  signature says what to pass; this is the half it can't carry, and it's the
+  first thing to check before guessing what a required argument wants
 - `referenced_by` — every path whose type is this one, which is the schema's
   answer to "how do I get one of these". Both directions: a field returning the
   type, and an argument taking it (`Mutation.createUser(input:)`). An input
@@ -188,7 +192,8 @@ gqls Query.user -e --depth 2             # expand one more level of fields
 Each argument you must supply becomes a variable, with a `"<ID!>"` placeholder
 that names its type. Anything the server can supply — nullable, or carrying a
 schema default — is left out of the operation and listed underneath, so what
-it prints runs as-is. It selects one level of leaf fields, expands an `errors`
+it prints runs as-is. An `# arguments:` block carries what the schema says each
+argument is for, when it says anything. It selects one level of leaf fields, expands an `errors`
 block only when the payload really has one, and wraps a nested field in a root
 that returns its type. Object-valued fields become `# field: Type { … }`
 markers — `--depth N` expands them when you want more. A union is written as

@@ -496,3 +496,31 @@ fn dropping_descriptions_does_not_reorder_the_annotations() {
         assert!(row(&out, "referenced by") < row(&out, "values"), "{out}");
     }
 }
+
+#[test]
+fn naming_a_field_says_what_its_arguments_are_for() {
+    let out = run(&["Mutation.publishPost"]);
+    assert!(out.contains("arguments"), "{out}");
+    let at = out
+        .lines()
+        .find(|l| l.trim_start().starts_with("at "))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(at.contains("When to publish"), "{out}");
+    // the type column is shared with the undocumented argument above it
+    let id = out
+        .lines()
+        .find(|l| l.trim_start().starts_with("id "))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(
+        column_of(id, "ID!"),
+        column_of(at, "DateTime"),
+        "type column not aligned:\n{out}"
+    );
+}
+
+#[test]
+fn a_field_with_nothing_documented_gets_no_arguments_block() {
+    // The block would only restate the signature already on the row above it.
+    let out = run(&["Query.users"]);
+    assert!(!out.contains("arguments"), "{out}");
+}

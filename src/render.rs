@@ -101,6 +101,13 @@ pub(crate) struct Extras<'a> {
     /// listing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     fields: Vec<Field<'a>>,
+    /// A field's arguments, when the schema says what any of them is *for*.
+    /// The signature already says what to pass; this says what passing it does,
+    /// which is the half you can't infer — `owner: String!` never says it wants
+    /// a login. Omitted entirely when nothing is documented, since it would
+    /// then just restate the signature.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    arguments: Vec<Field<'a>>,
     /// Every path whose type is this one — the schema's answer to "how do I get
     /// one of these". The one fact here a consumer can't cheaply recompute: it
     /// would have to pull every record and scan.
@@ -113,7 +120,7 @@ pub(crate) struct Extras<'a> {
     referenced_by: Vec<String>,
 }
 
-pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> {
+pub(crate) fn extras<'a>(record: &'a SchemaRecord, records: &'a [SchemaRecord]) -> Extras<'a> {
     let values = match record.kind {
         Kind::Enum => records
             .iter()
@@ -166,9 +173,28 @@ pub(crate) fn extras<'a>(record: &SchemaRecord, records: &'a [SchemaRecord]) -> 
             .collect(),
         false => Vec::new(),
     };
+    let arguments = match record.arg_descriptions.is_empty() {
+        true => Vec::new(),
+        false => record
+            .args
+            .iter()
+            .map(|a| {
+                let arg = crate::model::split_arg(a);
+                Field {
+                    name: arg.name,
+                    type_ref: arg.type_ref,
+                    args: Vec::new(),
+                    default: arg.default,
+                    description: record.arg_descriptions.get(arg.name).map(String::as_str),
+                    deprecated: None,
+                }
+            })
+            .collect(),
+    };
     Extras {
         values,
         fields,
+        arguments,
         referenced_by,
     }
 }
@@ -318,8 +344,8 @@ pub(crate) fn print_values(values: &[EnumValue]) {
 /// type sits next to the name rather than trailing the description. That's also
 /// why `-D` only empties the third column here instead of collapsing the block:
 /// the two that remain still want their alignment.
-pub(crate) fn print_fields(fields: &[Field], owner: &str, descriptions: bool) {
-    println!("  {}", style::muted("fields"));
+pub(crate) fn print_fields(fields: &[Field], label: &str, owner: &str, descriptions: bool) {
+    println!("  {}", style::muted(label));
     let total = fields.len();
     let fields = &fields[..total.min(MAX_FIELDS)];
     // `posts(…)`: enough to say the field takes arguments, which changes how
@@ -544,7 +570,7 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
                 let extras = extras(matches[0].record, all);
                 let notes = annotations(matches[0].record, &extras, descriptions);
                 let block = values_need_a_block(&extras.values, descriptions);
-                let fields = !extras.fields.is_empty();
+                let fields = !extras.fields.is_empty() || !extras.arguments.is_empty();
                 // One blank line, and only between two things worth separating:
                 // prose above, a fact table below, at the same indent. Without
                 // it a wrapped description's last line is indistinguishable from
@@ -558,8 +584,21 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
                 if block {
                     print_values(&extras.values);
                 }
-                if fields {
-                    print_fields(&extras.fields, &matches[0].record.name, descriptions);
+                if !extras.arguments.is_empty() {
+                    print_fields(
+                        &extras.arguments,
+                        "arguments",
+                        &matches[0].record.name,
+                        descriptions,
+                    );
+                }
+                if !extras.fields.is_empty() {
+                    print_fields(
+                        &extras.fields,
+                        "fields",
+                        &matches[0].record.name,
+                        descriptions,
+                    );
                 }
             }
             continue;
@@ -662,6 +701,30 @@ pub(crate) fn render_example(example: &crate::example::Example) -> Result<String
     }
     out.push_str(&example.operation);
 
+    // Under the operation, because it explains the operation you just read —
+    // and above `# optional arguments:`, which answers the different question
+    // of what else you could pass.
+    if !example.arguments.is_empty() {
+        out.push_str("\n# arguments:\n");
+        let width = example
+            .arguments
+            .iter()
+            .map(|a| a.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        for crate::example::ArgDoc { name, description } in &example.arguments {
+            let indent = 4 + width + 2;
+            let budget = style::width()
+                .saturating_sub(indent + 2)
+                .max(MIN_DESCRIPTION_WIDTH);
+            let mut lines = wrap(description, budget, usize::MAX).into_iter();
+            let first = lines.next().unwrap_or_default();
+            out.push_str(&format!("#   {name:width$}  {first}\n"));
+            for cont in lines {
+                out.push_str(&format!("#{}{cont}\n", " ".repeat(indent - 1)));
+            }
+        }
+    }
     if !example.optional.is_empty() {
         out.push_str("\n# optional arguments:\n");
         for arg in &example.optional {
@@ -718,6 +781,7 @@ mod tests {
             description: None,
             variables: serde_json::json!({}),
             optional: Vec::new(),
+            arguments: Vec::new(),
             variable_types: Vec::new(),
             enums: Vec::new(),
             deprecated: Vec::new(),
