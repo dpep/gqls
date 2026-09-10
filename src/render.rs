@@ -24,9 +24,21 @@ pub(crate) struct Match<'a> {
     pub score: f64,
 }
 
-/// Most cross-references to list before saying "and N more". A type used in
-/// forty places has told you what you needed by the fifth.
-const MAX_REFERENCES: usize = 6;
+/// Most names to list in one annotation row before saying "and N more". A type
+/// used in forty places has told you what you needed by the fifth, and the same
+/// goes for an interface with a hundred implementors — a row is a row, not a
+/// page. `--json` carries the whole list either way.
+const MAX_LISTED: usize = 6;
+
+/// One annotation's worth of names, elided past [`MAX_LISTED`].
+fn listed(items: &[String]) -> String {
+    let shown = items.len().min(MAX_LISTED);
+    let mut list = items[..shown].join(", ");
+    if items.len() > shown {
+        list.push_str(&format!(", and {} more", items.len() - shown));
+    }
+    list
+}
 
 /// Most fields to print before saying how many are left. Nearly every type has
 /// a handful and prints whole; the few that run to hundreds can't be read in
@@ -191,19 +203,15 @@ pub(crate) fn annotations(record: &SchemaRecord, extras: &Extras, descriptions: 
             Kind::Union => "members",
             _ => "implemented by",
         };
-        out.push(note(label, record.possible_types.join(", ")));
-    }
-    if !extras.values.is_empty() && !values_need_a_block(&extras.values, descriptions) {
-        out.push(note("values", collapsed_values(&extras.values)));
+        out.push(note(label, listed(&record.possible_types)));
     }
     if !extras.referenced_by.is_empty() {
-        let total = extras.referenced_by.len();
-        let shown = total.min(MAX_REFERENCES);
-        let mut list = extras.referenced_by[..shown].join(", ");
-        if total > shown {
-            list.push_str(&format!(", and {} more", total - shown));
-        }
-        out.push(note("referenced by", list));
+        out.push(note("referenced by", listed(&extras.referenced_by)));
+    }
+    // Last, where the block form of the same fact goes — otherwise `-D`, which
+    // only chooses between the two forms, also reorders the table.
+    if !extras.values.is_empty() && !values_need_a_block(&extras.values, descriptions) {
+        out.push(note("values", collapsed_values(&extras.values)));
     }
     out
 }

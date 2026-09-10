@@ -481,3 +481,18 @@ fn a_union_with_nothing_to_enumerate_answers_with_itself() {
     assert!(out.starts_with("SearchResult  [union]"), "{out}");
     assert!(out.contains("members"), "{out}");
 }
+
+#[test]
+fn dropping_descriptions_does_not_reorder_the_annotations() {
+    // `-D` chooses between an enum's block and collapsed forms; it shouldn't
+    // also move the row, which it did by pushing the collapsed form into a
+    // different slot from the block.
+    let row = |out: &str, label: &str| {
+        out.lines()
+            .position(|l| l.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("no {label} row in:\n{out}"))
+    };
+    for out in [run(&["Role"]), run(&["Role", "-D"])] {
+        assert!(row(&out, "referenced by") < row(&out, "values"), "{out}");
+    }
+}
