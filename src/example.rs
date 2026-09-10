@@ -34,7 +34,7 @@
 //!   `Company`. When several roots qualify, the caller is told, rather than the
 //!   pick being passed off as obvious.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};
@@ -524,6 +524,24 @@ impl<'a> Schema<'a> {
             .unwrap_or_default()
     }
 
+    /// Field names that mean different shapes in different members of `rec` —
+    /// `email: String` on one and `email: String!` on another. Selecting both
+    /// under one response name is invalid however the server feels about it,
+    /// so these are the names that have to be aliased apart.
+    fn clashing_names(&self, rec: &SchemaRecord, max: usize) -> HashSet<&'a str> {
+        let mut seen: HashMap<&str, &str> = HashMap::new();
+        let mut clashing = HashSet::new();
+        for member in rec.possible_types.iter().take(max) {
+            for f in self.fields.get(member.as_str()).into_iter().flatten() {
+                let ty = f.type_ref.as_deref().unwrap_or_default();
+                if f.kind == Kind::Field && seen.insert(&f.name, ty).is_some_and(|old| old != ty) {
+                    clashing.insert(f.name.as_str());
+                }
+            }
+        }
+        clashing
+    }
+
     /// The inline fragment needed to select `wanted`'s fields inside a field
     /// returning `base`. `None` when they're already selectable there — an
     /// object implementing the interface carries its fields itself.
@@ -658,6 +676,12 @@ impl<'a> Schema<'a> {
                 _ => Vec::new(),
             };
         }
+        // Two members selecting the same name with different types are a
+        // response shape the spec forbids (§5.3.2) — `email: String` beside
+        // `email: String!`. An alias per member keeps both fields and keeps the
+        // draft pasteable; without one a conformant server rejects the whole
+        // operation.
+        let clashing = self.clashing_names(rec, MAX_MEMBERS);
         let mut fragments = Vec::new();
         for member in rec.possible_types.iter().take(MAX_MEMBERS) {
             // Drop what the abstract type already selected — and drop it
@@ -695,6 +719,14 @@ impl<'a> Schema<'a> {
             // set, which no server parses.
             if inner.iter().all(|l| l.starts_with('#')) {
                 inner.insert(0, "__typename".to_string());
+            }
+            // Only this fragment's own level: a nested line is indented, and
+            // belongs to a response object of its own.
+            for line in inner.iter_mut() {
+                let name = line.split([' ', '{', ':']).next().unwrap_or(line);
+                if !line.starts_with(' ') && clashing.contains(name) {
+                    *line = format!("{}{}: {line}", uncapitalise(member), pascal_case(name));
+                }
             }
             fragments.push(format!("... on {member} {{"));
             fragments.extend(inner.into_iter().map(|l| format!("  {l}")));
@@ -847,6 +879,15 @@ fn required_args(r: &SchemaRecord) -> usize {
         .map(|a| split_arg(a))
         .filter(|a| a.type_ref.ends_with('!') && a.default.is_none())
         .count()
+}
+
+/// `Organization` → `organization`, for the head of an alias.
+fn uncapitalise(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// `updateEmployee` → `UpdateEmployee`, for the operation name.

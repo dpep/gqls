@@ -42,6 +42,13 @@ early entries are terser than what follows.
   unbalanced. It fired at the default depth, since the errors convention is
   always expanded: 8 of 130 root operations in one production schema were
   affected.
+- **`-e` drafted operations a conformant server rejects.** Two members of an
+  abstract type giving the same field name a different type — GitHub's
+  `Organization.email: String` beside `User.email: String!` — were selected
+  under one response name, which the spec forbids (§5.3.2); graphql-js rejects
+  it outright and graphql-ruby warns that it will. Each is aliased by its
+  member now (`userEmail: email`). Every root of two production schemas, at
+  three depths, validates strictly.
 - **`-e` orphaned a selection set it meant to drop.** A field an interface had
   already selected was dropped from its implementors' fragments one line at a
   time, so a field with a selection set left its body and closing brace behind

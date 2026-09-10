@@ -190,7 +190,8 @@ block only when the payload really has one, and wraps a nested field in a root
 that returns its type. Object-valued fields become `# field: Type { … }`
 markers — `--depth N` expands them when you want more. A union is written as
 inline fragments over its members (an interface adds one per implementor for
-the fields it adds), and deprecated fields stay in the selection
+the fields it adds, aliased by member where two of them type the same field
+differently), and deprecated fields stay in the selection
 marked `# deprecated: reason` with a stderr warning naming them (tell the user
 rather than pasting one silently). The `# variables` block is a fillable
 skeleton: an input-object argument is expanded into its fields in schema order,

@@ -540,3 +540,32 @@ fn a_field_the_interface_already_selected_is_dropped_whole() {
     assert!(ex.operation.contains("... on Widget {"), "{}", ex.operation);
     assert!(ex.operation.contains("size"), "{}", ex.operation);
 }
+
+#[test]
+fn fields_that_clash_across_members_are_aliased_apart() {
+    // `email: String` beside `email: String!` under one response name is a
+    // shape the spec forbids, whatever a given server currently tolerates.
+    let sdl = "\
+        type Query { owner: Owner }\n\
+        union Owner = Org | Person\n\
+        type Org { email: String name: String! }\n\
+        type Person { email: String! name: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.owner").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert!(ex.operation.contains("orgEmail: email"), "{}", ex.operation);
+    assert!(
+        ex.operation.contains("personEmail: email"),
+        "{}",
+        ex.operation
+    );
+    // the name that means the same thing in both is left alone
+    assert_eq!(
+        ex.operation.matches(": name").count(),
+        0,
+        "{}",
+        ex.operation
+    );
+}
