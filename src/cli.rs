@@ -617,7 +617,7 @@ pub fn run() -> Result<()> {
         };
 
         if cli.resolve {
-            return run_resolve(
+            let done = run_resolve(
                 query,
                 &source,
                 &records,
@@ -626,10 +626,14 @@ pub fn run() -> Result<()> {
                 cli.limit,
                 output,
             );
+            emit_profile(started, output);
+            return done;
         }
 
         if cli.example {
-            return run_example(query, &records, filters, cli.depth, cli.limit, output);
+            let done = run_example(query, &records, filters, cli.depth, cli.limit, output);
+            emit_profile(started, output);
+            return done;
         }
 
         // `total` is the fuzzy match count before the display limit, so the footer
@@ -796,22 +800,31 @@ pub fn run() -> Result<()> {
         );
     }
 
-    if crate::profile::enabled() {
-        // Always to stderr, so stdout stays exactly the results — and as JSON
-        // when the caller asked for JSON, so a baseline can be stored and
-        // diffed rather than eyeballed.
-        match output {
-            Output::Json | Output::Ndjson => {
-                eprintln!("{}", crate::profile::json(started.elapsed()));
-            }
-            Output::Text { .. } => {
-                for line in crate::profile::report(started.elapsed()) {
-                    eprintln!("{line}");
-                }
+    emit_profile(started, output);
+    Ok(())
+}
+
+/// The profile report, on every path that ends a run. `-e` and `-R` return
+/// early, and a `--profile` that silently covers one of the three modes is
+/// worse than one that isn't offered.
+///
+/// Always to stderr, so stdout stays exactly the results — and as JSON when the
+/// caller asked for JSON, so a baseline can be stored and diffed rather than
+/// eyeballed.
+fn emit_profile(started: std::time::Instant, output: Output) {
+    if !crate::profile::enabled() {
+        return;
+    }
+    match output {
+        Output::Json | Output::Ndjson => {
+            eprintln!("{}", crate::profile::json(started.elapsed()));
+        }
+        Output::Text { .. } => {
+            for line in crate::profile::report(started.elapsed()) {
+                eprintln!("{line}");
             }
         }
     }
-    Ok(())
 }
 
 /// Queries piped on stdin, one per line, yielded as they arrive. Blank lines
