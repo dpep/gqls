@@ -524,3 +524,13 @@ fn a_field_with_nothing_documented_gets_no_arguments_block() {
     let out = run(&["Query.users"]);
     assert!(!out.contains("arguments"), "{out}");
 }
+
+#[test]
+fn a_root_type_lists_its_operations_as_fields() {
+    // A root's fields carry their operation's kind rather than `Field`, so the
+    // one type whose fields are most worth listing listed none at all.
+    let out = run(&["Query"]);
+    assert!(out.contains("fields"), "{out}");
+    assert!(out.contains("user(…)"), "{out}");
+    assert!(out.contains("search(…)"), "{out}");
+}

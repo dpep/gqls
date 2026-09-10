@@ -8,6 +8,11 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Fixed
+- **Naming `Query` or `Mutation` listed no fields.** A root type's fields carry
+  their operation's kind rather than `Field`, so the fields block skipped them —
+  leaving the one type whose fields are most worth listing showing none at all.
+
 ### Added
 - **An argument's name finds the field that takes it.** `gqls followRenames`
   found nothing: arguments aren't records, so their names were unsearchable and

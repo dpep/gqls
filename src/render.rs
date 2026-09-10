@@ -136,14 +136,22 @@ pub(crate) fn extras<'a>(record: &'a SchemaRecord, records: &'a [SchemaRecord]) 
     // Schema order, not sorted: a schema puts `id` first for a reason, and a
     // field's neighbours are part of what it means.
     // A union has no fields of its own, and its members are already a note.
-    let member = match record.kind {
-        Kind::InputObject => Some(Kind::InputField),
-        Kind::Object | Kind::Interface => Some(Kind::Field),
-        _ => None,
+    // A root type's fields carry their operation's kind rather than `Field`,
+    // which is why naming `Query` used to list nothing at all — the one type
+    // whose fields are most worth listing.
+    let member = |k: Kind| match record.kind {
+        Kind::InputObject => k == Kind::InputField,
+        Kind::Object | Kind::Interface => {
+            matches!(
+                k,
+                Kind::Field | Kind::Query | Kind::Mutation | Kind::Subscription
+            )
+        }
+        _ => false,
     };
     let fields = records
         .iter()
-        .filter(|r| member == Some(r.kind) && r.parent.as_deref() == Some(&record.name))
+        .filter(|r| member(r.kind) && r.parent.as_deref() == Some(&record.name))
         .map(|r| Field {
             name: &r.name,
             type_ref: r.type_ref.as_deref().unwrap_or(""),
