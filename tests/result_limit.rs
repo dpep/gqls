@@ -50,3 +50,33 @@ fn explain_mode_reports_its_own_hidden_matches_and_not_the_limit() {
     assert!(stderr.contains("--no-explain"), "{stderr:?}");
     assert!(!stderr.contains("-l to adjust"), "{stderr:?}");
 }
+
+/// The path each row is about — column widths shift with the result set, so
+/// only the leading token is comparable across two runs.
+fn paths(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|l| !l.starts_with(' ') && !l.trim().is_empty())
+        .filter_map(|l| l.split_whitespace().next())
+        .collect()
+}
+
+#[test]
+fn the_limit_does_not_decide_whether_the_answer_is_a_list() {
+    // Reading "does this query name exactly one record" off the top `-l` rows
+    // let the display limit turn a list into an authoritative single answer —
+    // and, on a big schema, explain a different record at each limit.
+    let (small, _) = run(&["user", "-l", "2"]);
+    let (large, _) = run(&["user", "-l", "20"]);
+    assert_eq!(paths(&small).len(), 2, "{small}");
+    assert_eq!(paths(&small), paths(&large)[..2], "{small}\n---\n{large}");
+}
+
+#[test]
+fn naming_one_record_explains_it_at_any_limit() {
+    for limit in ["1", "20"] {
+        let (stdout, stderr) = run(&["Role", "-l", limit]);
+        assert!(stdout.starts_with("Role  [enum]"), "{stdout}");
+        // and the count it sets aside is out of everything that matched
+        assert!(stderr.contains("3 other matches"), "{stderr}");
+    }
+}

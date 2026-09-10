@@ -741,10 +741,6 @@ pub fn run() -> Result<()> {
                 None => crate::status!("no matches for {query:?}"),
             }
         }
-        // Counted before explain mode collapses the list, which reports its own
-        // hidden matches — and reports them as a `--no-explain` away, not an
-        // `-l` away.
-        let shown = matches.len();
         // Explain mode: the query named exactly one of the records it matched,
         // so the user has found the thing rather than narrowed toward it.
         //
@@ -753,28 +749,40 @@ pub fn run() -> Result<()> {
         // only the enum — casing is what separates them, and GraphQL convention
         // makes that reliable. `role` names all three and stays a list, which is
         // what an ambiguous query should get.
+        let predicate = filters.compile();
         let explained = (!batch && !cli.no_explain)
-            .then(|| explained_match(query, &matches))
+            .then(|| explained_match(query, records.iter().filter(|r| predicate.accepts(r))))
             .flatten();
-        if let Some((i, _)) = explained {
+        if let Some((record, _)) = explained {
             // Everything else matched the letters without being what was asked
-            // for. Say how many rather than dropping them silently.
-            if matches.len() > 1 {
-                let others = matches.len() - 1;
+            // for. Say how many rather than dropping them silently — out of
+            // everything that matched, not out of the page that was displayed.
+            if total > 1 {
+                let others = total - 1;
                 crate::status!(
                     "{others} other match{} for {query:?} (--no-explain to list them)",
                     if others == 1 { "" } else { "es" }
                 );
             }
-            matches = vec![matches[i]];
+            // The score is whatever ranking gave it, or nothing when ranking
+            // put it past `-l` — naming a record explains it either way.
+            let score = matches
+                .iter()
+                .find(|m| std::ptr::eq(m.record, record))
+                .map_or(0.0, |m| m.score);
+            matches = vec![Match { record, score }];
         }
         let explained = explained.map(|(_, m)| m);
         output.write_matches(&matches, batch.then_some(query), explained, &records)?;
         drop(out_span);
         // Status, not a -v diagnostic: matches were dropped, and a list that
-        // simply stops at -l reads as the whole answer.
-        if total > shown {
-            crate::status!("{total} matches; showing top {shown} (-l to adjust)");
+        // simply stops at -l reads as the whole answer. An explanation isn't a
+        // truncated list — it says how many it set aside, in its own terms.
+        if explained.is_none() && total > matches.len() {
+            crate::status!(
+                "{total} matches; showing top {} (-l to adjust)",
+                matches.len()
+            );
         }
     }
 
@@ -912,18 +920,25 @@ impl Output {
 /// exactly takes precedence over the case-insensitive way it also names
 /// `User.role`. With no exact-cased name, every named record counts, so a query
 /// that names several stays a search.
-fn explained_match(query: &str, matches: &[Match]) -> Option<(usize, search::NameMatch)> {
-    let named: Vec<usize> = (0..matches.len())
-        .filter(|&i| search::names_the_record(query, matches[i].record).is_some())
+/// Takes every record the filters admit, not the displayed page of them:
+/// whether a query names one thing is a fact about the schema, and reading it
+/// off the top `-l` rows let the display limit decide whether the answer was a
+/// list or an explanation — and which record got explained.
+fn explained_match<'a>(
+    query: &str,
+    records: impl Iterator<Item = &'a SchemaRecord>,
+) -> Option<(&'a SchemaRecord, search::NameMatch)> {
+    let named: Vec<&SchemaRecord> = records
+        .filter(|r| search::names_the_record(query, r).is_some())
         .collect();
-    let cased: Vec<usize> = named
+    let cased: Vec<&SchemaRecord> = named
         .iter()
         .copied()
-        .filter(|&i| search::names_the_record_exactly(query, matches[i].record))
+        .filter(|r| search::names_the_record_exactly(query, r))
         .collect();
     let candidates = if cased.is_empty() { named } else { cased };
     match candidates.as_slice() {
-        [only] => search::names_the_record(query, matches[*only].record).map(|m| (*only, m)),
+        [only] => search::names_the_record(query, only).map(|m| (*only, m)),
         _ => None,
     }
 }
