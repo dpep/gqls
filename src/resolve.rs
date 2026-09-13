@@ -357,13 +357,22 @@ fn to_snake(s: &str) -> String {
     out
 }
 
-/// GraphQL `createUser` → Ruby class stem `CreateUser`.
+/// GraphQL `createUser` *or* `create_user` → Ruby class stem `CreateUser`.
+///
+/// Schemas name fields either way, so a class stem has to survive both. Merely
+/// upcasing the first letter yields `Create_user`, which matches no Ruby class
+/// anywhere and silently sinks every convention built on it.
 fn to_pascal(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
+    s.split('_')
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -391,6 +400,10 @@ mod tests {
     fn casing() {
         assert_eq!(to_snake("nameWithOwner"), "name_with_owner");
         assert_eq!(to_pascal("createUser"), "CreateUser");
+        // a snake_case schema is just as common, and `Create_transfer` is not
+        // a class any Ruby app has
+        assert_eq!(to_pascal("create_transfer"), "CreateTransfer");
+        assert_eq!(to_pascal("create_account_v2"), "CreateAccountV2");
     }
 
     /// The queries a record produces, in order.
@@ -410,6 +423,9 @@ mod tests {
     #[test]
     fn mutation_prefers_mutation_class() {
         let c = queries(&rec("createUser", Some("Mutation"), Kind::Mutation));
+        assert_eq!(c[0], "Mutations::CreateUser");
+        // the same field in a snake_case schema names the same class
+        let c = queries(&rec("create_user", Some("Mutation"), Kind::Mutation));
         assert_eq!(c[0], "Mutations::CreateUser");
     }
 
