@@ -27,6 +27,15 @@ const DEFAULT_TTL: Duration = Duration::from_secs(60 * 60);
 /// endpoint queried once leaves a file (often megabytes) behind forever.
 const STALE_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// Cached responses to keep, least-recently-used evicted first. Room for a
+/// handful of endpoints, each under a few credentials, without letting a
+/// rotating token accumulate a file per run for a week.
+const MAX_FILES: usize = 16;
+
+/// Total bytes of cached responses to retain. A file count can't bound disk on
+/// its own: one introspection body here measured 5.7MB, and schemas only grow.
+const MAX_BYTES: u64 = 100 * 1024 * 1024;
+
 /// POST the introspection query to `url` and flatten the result. Honors
 /// `opts.headers` (e.g. an `Authorization` token) and a TTL response cache
 /// (1h for remote endpoints, never for localhost) so repeated queries against a
@@ -172,15 +181,40 @@ fn store_response(path: &Path, bytes: &[u8]) {
     if std::fs::write(&tmp, bytes).is_err() || std::fs::rename(&tmp, path).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let expired = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .map(|t| t.elapsed().is_ok_and(|d| d > STALE_AFTER));
-            if e.path() != path && expired.unwrap_or(false) {
-                let _ = std::fs::remove_file(e.path());
-            }
+    prune(dir, MAX_FILES, MAX_BYTES);
+}
+
+/// Drop expired responses, then the least-recently-used ones past either
+/// budget. Age alone stopped bounding this when credentials entered the key: an
+/// endpoint queried with a rotating token — CI with short-lived credentials —
+/// now leaves one megabytes-sized file per token until they age out a week
+/// later. Same two-limit shape as the vector cache: a count can't bound disk
+/// when file size follows schema size. The newest always survives, since
+/// evicting what was just written guarantees an immediate refetch.
+fn prune(dir: &Path, keep: usize, max_bytes: u64) {
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                let modified = m.modified().ok()?;
+                // Expired is expired, whatever the budgets say.
+                if modified.elapsed().is_ok_and(|d| d > STALE_AFTER) {
+                    let _ = std::fs::remove_file(e.path());
+                    return None;
+                }
+                Some((modified, m.len(), e.path()))
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    files.sort_by_key(|f| std::cmp::Reverse(f.0)); // newest first
+    let mut total = 0u64;
+    for (i, (_, size, p)) in files.iter().enumerate() {
+        total = total.saturating_add(*size);
+        if i > 0 && (i >= keep || total > max_bytes) {
+            let _ = std::fs::remove_file(p);
         }
     }
 }
@@ -594,6 +628,52 @@ mod tests {
         assert_eq!(a, recased);
         // Values are not case-folded: tokens are case-sensitive.
         assert_ne!(a, cache_key(URL, &headers(&[("X-Token", "SECRET")])));
+    }
+
+    #[test]
+    fn pruning_keeps_the_newest_within_both_budgets() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = std::env::temp_dir().join(format!("gqls-prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        // Five files, newest first by name: 0 is the most recent.
+        for i in 0..5u64 {
+            let p = dir.join(format!("{i:016x}.json"));
+            std::fs::write(&p, vec![b'x'; 100]).expect("writing a cache file");
+            let age = Duration::from_secs(60 * (i + 1));
+            std::fs::File::open(&p)
+                .expect("reopening")
+                .set_modified(SystemTime::now() - age)
+                .expect("backdating");
+        }
+
+        super::prune(&dir, 3, u64::MAX);
+        let left = |d: &std::path::Path| {
+            let mut names: Vec<String> = std::fs::read_dir(d)
+                .expect("listing")
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            left(&dir),
+            vec![
+                "0000000000000000.json",
+                "0000000000000001.json",
+                "0000000000000002.json"
+            ],
+            "the three most recent should survive"
+        );
+
+        // A byte budget below one file's size still keeps that one file: the
+        // alternative is evicting what was just written and refetching it.
+        super::prune(&dir, 3, 10);
+        assert_eq!(left(&dir), vec!["0000000000000000.json"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
