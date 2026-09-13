@@ -17,6 +17,28 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **`-e` and `--resolve` ignored capitalisation where search respects it.**
+  `gqls Card` explains the type; `gqls Card -e` drafted against the *field*
+  `Mutation.card` — a container whose fields all need arguments, so the body was
+  nothing but comment markers. Ranking is case-blind, and only the explain tier
+  applied the rule that GraphQL capitalises types and not fields. A hit the query
+  spells exactly now wins in all three modes; where several records share a name
+  ranking still picks, and a lowercase or misspelt query is unaffected.
+- **A miss blamed the query for what the filters did.** `--returns Issue -k query`
+  said `nothing returns Issue` while 43 fields returned one, so the type read as
+  unreachable. A miss now names the flags in play and what dropping them would
+  find — `nothing returns Issue with -k query — 43 match without it` — and names
+  the schema when gqls discovered one, since "not in this schema" and "you're
+  searching the wrong schema" are otherwise the same sentence.
+- **`score` reported `0.0` for a record ranking never scored.** Naming a record
+  explains it even when `-l` sorted it off the ranked page, and the row then
+  carried a zero — a legal score, so nothing distinguished "ranked lowest" from
+  "never computed", and one query at two limits reported 1040.0 and 0.0. It is
+  `null` now; the key is always present, so the document shape is unchanged.
+- **`-j` emitted unparseable JSON for piped queries.** `-j` is one complete array
+  per query and a batch answers many, so the output was concatenated top-level
+  values no parser reads. A batch refuses `-j` and points at `-J`, the streaming
+  form.
 - **`@deprecated` with no reason now reads "No longer supported"** — the spec's
   default for the argument, and what a conforming server reports for the same
   schema — where gqls said "deprecated", rendering as the stutter
