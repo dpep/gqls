@@ -22,6 +22,16 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **A query that names a record exactly no longer reports weaker matches
+  alongside it.** `gqls Query.me` claimed two other matches on a fully qualified,
+  unique path: the weak-tail cut compared the *ranking* score, which carries the
+  boost every member of a named type is handed alike, so a more precise query cut
+  its tail *less*. The cut compares match quality now, and an exact name cuts
+  everything weaker outright rather than by ratio — a ratio can't express it,
+  since a long prefix scores below the subsequence ceiling and the tiers overlap
+  as numbers. Unqualified queries narrow the same way: `gqls me` returns the
+  records actually named `me` instead of 184 fuzzy matches. Phrase queries and
+  argument-name matches are unaffected.
 - **`--resolve` built an unusable class name from a snake_case field.**
   `create_transfer` became `Mutations::Create_transfer` rather than
   `Mutations::CreateTransfer`, so the convention the README calls the strong case
