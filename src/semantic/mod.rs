@@ -16,6 +16,8 @@ mod cache;
 mod embed;
 mod mrl;
 
+use std::time::Duration;
+
 use crate::model::SchemaRecord;
 use embed::{default_embedder, Embedder};
 use mrl::{compress_matryoshka_vector, cosine_similarity, MRL_DIMS};
@@ -52,6 +54,33 @@ const TAIL_CUTOFF: f64 = 0.7;
 /// hardcoded constant, so `GQLS_SEMANTIC_FLOOR` overrides it — set it to `0`
 /// to switch the floor off entirely.
 const RELEVANCE_FLOOR: f64 = 0.40;
+
+/// Record count above which an embed pass reports progress. Below it the pass
+/// is over before a reader could read the line.
+const PROGRESS_FROM: usize = 500;
+
+/// How often progress goes to a non-terminal stderr. Frequent enough to show
+/// the process is alive, rare enough that a CI log stays readable.
+const LOG_EVERY: Duration = Duration::from_secs(15);
+
+/// What's left, from the rate this run is actually achieving — a debug build,
+/// a loaded machine and a big schema each move it by multiples, so a constant
+/// baked into the announcement could only ever be right by luck.
+///
+/// Empty until the estimate has evidence behind it, and rounded to the
+/// precision a rate this rough supports: seconds, then whole minutes.
+fn eta(done: usize, total: usize, elapsed: Duration) -> String {
+    let rate = done as f64 / elapsed.as_secs_f64();
+    if done < 50 || done >= total || elapsed < Duration::from_secs(1) || rate <= 0.0 {
+        return String::new();
+    }
+    let left = (total - done) as f64 / rate;
+    if left < 90.0 {
+        format!(" (~{}s left)", left.round() as u64)
+    } else {
+        format!(" (~{}m left)", (left / 60.0).round() as u64)
+    }
+}
 
 fn relevance_floor() -> f64 {
     std::env::var("GQLS_SEMANTIC_FLOOR")
@@ -173,10 +202,15 @@ impl Session {
                     if reused > 0 {
                         crate::status!("embedding {total} new/changed records ({reused} reused)…");
                     } else {
-                        crate::status!("embedding {total} records (one-time; may take a minute)…");
+                        // No duration promised here: it depends on the schema, the
+                        // machine and the build, and the estimate this line used to
+                        // carry was out by 4x on the largest schema gqls has been
+                        // pointed at. The progress line below measures instead.
+                        crate::status!("embedding {total} records (one-time)…");
                     }
                 }
                 let done = AtomicUsize::new(0);
+                let started = std::time::Instant::now();
 
                 // One embedder per worker thread, built on first use and reused for
                 // every record that thread handles. rayon's `map_init` rebuilt it per
@@ -190,18 +224,39 @@ impl Session {
                 thread_local! {
                     static EMBEDDER: RefCell<Option<Box<dyn Embedder>>> = const { RefCell::new(None) };
                 }
+                // Outside the scope below: the progress thread borrows it, so it
+                // has to outlive the scope.
+                let tty = std::io::stderr().is_terminal();
                 let fresh: Vec<Vec<f32>> = std::thread::scope(|scope| {
-                    let show_progress = std::io::stderr().is_terminal()
-                        && total > 500
-                        && !crate::logging::is_quiet();
-                    if show_progress {
-                        scope.spawn(|| loop {
-                            std::thread::sleep(std::time::Duration::from_millis(300));
-                            let d = done.load(Ordering::Relaxed);
-                            eprint!("\rgqls: embedded {d}/{total}…    ");
-                            if d >= total {
-                                eprintln!();
-                                break;
+                    if total > PROGRESS_FROM && !crate::logging::is_quiet() {
+                        scope.spawn(|| {
+                            // A terminal gets one line, rewritten. A pipe — CI, or an
+                            // agent capturing stderr — gets a line every LOG_EVERY:
+                            // it was silent there, and a minutes-long silent process
+                            // is indistinguishable from a hung one.
+                            let mut next_line = LOG_EVERY;
+                            loop {
+                                std::thread::sleep(std::time::Duration::from_millis(300));
+                                let d = done.load(Ordering::Relaxed);
+                                let elapsed = started.elapsed();
+                                if tty {
+                                    eprint!(
+                                        "\rgqls: embedded {d}/{total}{}    ",
+                                        eta(d, total, elapsed)
+                                    );
+                                } else if elapsed >= next_line {
+                                    eprintln!(
+                                        "gqls: embedded {d}/{total}{}",
+                                        eta(d, total, elapsed)
+                                    );
+                                    next_line = elapsed + LOG_EVERY;
+                                }
+                                if d >= total {
+                                    if tty {
+                                        eprintln!();
+                                    }
+                                    break;
+                                }
                             }
                         });
                     }
@@ -279,6 +334,13 @@ impl Session {
         });
         drop(vec_span);
         Session { embedder, vectors }
+    }
+
+    /// Whether this session ranks with the hash fallback rather than the model.
+    /// Stderr says so for a human; structured output has to carry it too, or a
+    /// caller that doesn't read stderr can't tell weaker results from good ones.
+    pub(crate) fn degraded(&self) -> bool {
+        self.embedder.kind() != "onnx"
     }
 
     /// Rank `records` against `query`. `records` must be the slice the session
@@ -403,8 +465,26 @@ pub(crate) fn warm(records: &[SchemaRecord], model: Option<&str>, refresh: bool)
 
 #[cfg(test)]
 mod tests {
-    use super::{bound_tail, humanize, record_text};
+    use super::{bound_tail, eta, humanize, record_text, Duration};
     use crate::model::{Kind, SchemaRecord};
+
+    #[test]
+    fn the_estimate_is_derived_from_the_rate_this_run_achieves() {
+        // 1000 of 26000 in 10s is 100/s, so 25000 records are ~250s away.
+        assert_eq!(eta(1000, 26000, Duration::from_secs(10)), " (~4m left)");
+        // Same progress over twice the time is half the rate and twice the wait,
+        // which is the whole point of measuring instead of guessing.
+        assert_eq!(eta(1000, 26000, Duration::from_secs(20)), " (~8m left)");
+        // Under a minute and a half it reads in seconds.
+        assert_eq!(eta(500, 1000, Duration::from_secs(10)), " (~10s left)");
+    }
+
+    #[test]
+    fn no_estimate_until_there_is_evidence_for_one() {
+        assert_eq!(eta(10, 26000, Duration::from_secs(10)), ""); // too few done
+        assert_eq!(eta(600, 26000, Duration::from_millis(200)), ""); // too early
+        assert_eq!(eta(26000, 26000, Duration::from_secs(200)), ""); // finished
+    }
 
     #[test]
     fn humanize_splits_identifiers_into_words() {
