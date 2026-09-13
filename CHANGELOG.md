@@ -8,7 +8,35 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Added
+- **`-v` says when introspection can't report applied directives.** The protocol
+  exposes directive *definitions* but not their applications, so `directives` is
+  always empty from an endpoint or a dump however many `@auth`s the SDL applies —
+  a limit of the protocol, not of the schema. Said only when the schema defines
+  directives of its own, so it stays quiet on the five every server defines.
+  `@deprecated` is the exception and is reconstructed.
+
 ### Fixed
+- **`@deprecated` with no reason now reads "No longer supported"** — the spec's
+  default for the argument, and what a conforming server reports for the same
+  schema — where gqls said "deprecated", rendering as the stutter
+  `deprecated  deprecated`. The same schema gave two different answers depending
+  on whether it was read as SDL or by introspection.
+- **An empty description is no longer presented as documentation.** A schema
+  writing `""` reached `--json` as `"description": ""`, and on an argument it
+  promoted an entire `arguments` block claiming the schema said what the argument
+  was for. Both loaders drop it now, as introspection already did for a record's
+  own description.
+- **A saved introspection *failure* reports what it recorded.**
+  `{"data": null, "errors": […]}` — what `curl … > schema.json` writes with an
+  expired token — said "is not a GraphQL introspection dump". A dump is a saved
+  response, so the file and URL loaders read it through one path now.
+- **An interface list written the pre-2018 way** (`type X implements A, B {`),
+  still emitted by graphql-ruby, now loads. graphql-parser rejected the whole
+  file and blamed "end of input" at the second interface name.
+- **Discovery reports a tie between two schemas in the same directory** under
+  `-v`. It counted only candidates in *other* directories, so the closest
+  ambiguity was the silent one.
 - **The return-type column is capped**, the way the path column has always been
   capped at 48. One generated 70-character payload type set the column for a
   whole page and pushed every `[kind]` tag past 130 columns; it now overflows its
