@@ -9,6 +9,19 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **The return-type column is capped**, the way the path column has always been
+  capped at 48. One generated 70-character payload type set the column for a
+  whole page and pushed every `[kind]` tag past 130 columns; it now overflows its
+  own line and leaves its neighbours alone. Both caps are calibrated at about the
+  90th percentile of real schemas.
+- **Column widths are measured in terminal columns, not Unicode scalars**, so a
+  description written in Japanese wraps where it looks like it wraps — lines that
+  claimed to fit 80 columns were drawing 93. CJK prose written *without* spaces
+  still doesn't wrap at all, since wrapping breaks on whitespace; that needs line
+  segmentation and hasn't been done.
+- **An elided `arguments` block no longer prints a pointer back at itself.** It
+  said `gqls '<field>.' -l N` "lists them all", and running that re-printed the
+  same elided block. It now just says how many are left.
 - **An argument name buried the records actually named that.** 0.23.3 scored an
   exact argument match a flat 200, which beats the typo tier (190 at distance
   one) and much of the weak subsequence tier — so `gqls input` returned the
