@@ -22,6 +22,23 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Changed
+- **Ranking scores mean one thing on one scale**: the fraction of a perfect
+  match, where perfect means the query *is* the name. A clean word inside a
+  longer name used to score an order of magnitude below a prefix match of the
+  same quality, so the weak-tail cut dropped it — `gqls <schema> disput` never
+  reached `Mutation.in_app_disputes`. **Scores are smaller and differently
+  shaped**: a perfect match is 1000 (plus up to 300 for a `Type.` qualifier),
+  where the old top was 1060. Anything sorting or thresholding on the `score`
+  field of `-j`/`-J` output should re-check its numbers.
+- **A name that repeats the query, or ends with it, outranks a shorter name that
+  merely starts with it.** On a schema where every name shares a prefix —
+  anything Hasura-generated — `gqls <schema> pokemon` returned four unrelated
+  tables ahead of `pokemon_v2_pokemon`, which sat at rank 21 with the object type
+  at 899. Measured over 2309 queries on four schemas, 292 changed top hits are
+  better and 17 worse by an independent referee; the table-lookup case went from
+  17 unfindable to 7.
+- **Kind — root field, type, leaf field — no longer adds to the score**; it
+  breaks ties between matches of equal quality instead.
 - **The one-time embedding pass no longer guesses "may take a minute".** It
   reports an estimate measured from the run's own rate, and now prints to
   non-terminal stderr every 15s — a piped or CI run could not tell slow from
