@@ -15,6 +15,12 @@ pub mod introspect;
 pub mod record_cache;
 pub mod sdl;
 
+/// What `@deprecated` means with no `reason` given — the spec's own default for
+/// the argument, which is why a server echoes this exact string back for a bare
+/// `@deprecated` in its SDL. Both loaders fall back to it, so one schema doesn't
+/// say two different things depending on how it was read.
+pub(crate) const DEFAULT_DEPRECATION_REASON: &str = "No longer supported";
+
 /// Options that shape loading. `headers` applies to URL introspection alone;
 /// `refresh` applies to every source, since all of them are cached.
 #[derive(Default)]

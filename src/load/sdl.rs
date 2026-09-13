@@ -536,7 +536,7 @@ fn deprecated_reason(ds: &[Directive<'_, String>]) -> Option<String> {
             }
         }
     }
-    Some("deprecated".to_string())
+    Some(crate::load::DEFAULT_DEPRECATION_REASON.to_string())
 }
 
 #[cfg(test)]

@@ -34,6 +34,8 @@ type User implements Node @auth(requires: MEMBER) {
 type Post implements Node {
   id: ID!
   body: String
+  "A bare @deprecated: the reason is the spec's default, not nothing."
+  legacy: String @deprecated
 }
 
 union SearchResult = User | Post

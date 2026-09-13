@@ -460,8 +460,10 @@ fn arg_docs_of(f: &Value) -> BTreeMap<String, String> {
 }
 
 fn deprecation(v: &Value) -> Option<String> {
-    (v.get("isDeprecated").and_then(Value::as_bool) == Some(true))
-        .then(|| opt_str(v, "deprecationReason").unwrap_or_else(|| "deprecated".into()))
+    (v.get("isDeprecated").and_then(Value::as_bool) == Some(true)).then(|| {
+        opt_str(v, "deprecationReason")
+            .unwrap_or_else(|| super::DEFAULT_DEPRECATION_REASON.to_string())
+    })
 }
 
 fn str_field(v: &Value, key: &str) -> String {

@@ -107,6 +107,18 @@
               },
               "isDeprecated": false,
               "deprecationReason": null
+            },
+            {
+              "name": "legacy",
+              "description": "A bare @deprecated: the reason is the spec's default, not nothing.",
+              "args": [],
+              "type": {
+                "kind": "SCALAR",
+                "name": "String",
+                "ofType": null
+              },
+              "isDeprecated": true,
+              "deprecationReason": "No longer supported"
             }
           ],
           "inputFields": null,
