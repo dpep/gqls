@@ -139,6 +139,34 @@ fn case_picks_the_target_the_way_it_picks_the_explanation() {
 }
 
 #[test]
+fn a_tie_among_equally_named_records_says_it_was_a_choice() {
+    // `Node.id`, `User.id`, `Post.id` and `Comment.id` are all spelled `id`.
+    // Ranking breaks the tie, which is fine — but it read as the answer, and
+    // plain search lists the same four rather than picking one.
+    let out = run("-e", "id");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("using Node.id"), "{}", stderr(&out));
+
+    let json = |query: &str| -> serde_json::Value {
+        let out = run_with("-e", query, &["-j"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        serde_json::from_str(&stdout(&out)).expect("a draft should be JSON")
+    };
+    // …and the runners-up reach a `-j` consumer, which never sees stderr.
+    assert_eq!(
+        json("id")["also_named"],
+        serde_json::json!(["User.id", "Post.id", "Comment.id"])
+    );
+    // A query that names one record has nothing to disclose, and says nothing.
+    let one = run("-e", "Mutation.createUser");
+    assert_eq!(stderr(&one), "");
+    assert_eq!(
+        json("Mutation.createUser")["also_named"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
 fn listing_a_types_fields_is_a_list_not_a_draft() {
     // `User.` enumerates — there's no single field to draft for.
     let out = run("-e", "User.");

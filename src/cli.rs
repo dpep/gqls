@@ -1087,13 +1087,20 @@ fn no_matches(
 /// ranking itself is case-blind and GraphQL capitalises types and not fields.
 /// Without it `gqls Card` explained the type while `gqls Card -e` silently
 /// drafted against the field `Mutation.card`.
+///
+/// Returns the pick and the records that named the query just as exactly.
+/// Ranking breaks that tie and always did, but its pick there is arbitrary —
+/// `id` names `Character.id`, `Location.id` and `Episode.id` alike — so the
+/// runners-up come back to be disclosed rather than dropped. Plain search
+/// answers the same ambiguity by listing; erroring out instead would cost a
+/// query that works today, and the draft is still the one the user asked for.
 fn one_named_record<'a>(
     query: &str,
     hits: &[search::Hit<'a>],
     action: &str,
     limit: usize,
     output: Output,
-) -> Result<&'a SchemaRecord> {
+) -> Result<(&'a SchemaRecord, Vec<&'a str>)> {
     // Best-first, so `find` takes the strongest exact-cased hit where several
     // records share a name (`User.id`, `Post.id`, …) — ranking still breaks
     // those ties, as it always did.
@@ -1104,10 +1111,24 @@ fn one_named_record<'a>(
     let Some(top) = top else {
         anyhow::bail!("no schema entity matches {query:?} to {action}");
     };
+    let mut also = Vec::new();
     // Both messages are part of the answer rather than commentary on it, so
     // they print unprefixed, above what they introduce.
     match search::names_the_record(query, top.record) {
-        Some(search::NameMatch::Exact) => {}
+        Some(search::NameMatch::Exact) => {
+            also = named_peers(query, hits, top.record);
+            // A caveat on an answer still being given, so it goes where the
+            // deprecation warning goes rather than joining the two questions
+            // above. The names themselves are a list, and plain search already
+            // renders one better than a status line can.
+            if !also.is_empty() {
+                crate::status!(
+                    "{query} names {} records; using {}",
+                    also.len() + 1,
+                    top.record.path
+                );
+            }
+        }
         // The user typed something else; say which field this is before
         // answering as if they'd asked for it.
         Some(search::NameMatch::Corrected) => {
@@ -1131,7 +1152,29 @@ fn one_named_record<'a>(
             return Err(Handled.into());
         }
     }
-    Ok(top.record)
+    Ok((top.record, also))
+}
+
+/// The records that name `query` exactly as `pick` does — the tie ranking broke
+/// to arrive at `pick`.
+///
+/// Case is part of the spelling wherever it tells two records apart, so an
+/// exact-cased pick ties only with other exact-cased names: `id` ties with
+/// `Character.id` and `Location.id`, and not with the `ID` scalar.
+fn named_peers<'a>(query: &str, hits: &[search::Hit<'a>], pick: &SchemaRecord) -> Vec<&'a str> {
+    let cased = search::names_the_record_exactly(query, pick);
+    hits.iter()
+        .map(|h| h.record)
+        .filter(|r| r.path != pick.path)
+        .filter(|r| match cased {
+            true => search::names_the_record_exactly(query, r),
+            false => matches!(
+                search::names_the_record(query, r),
+                Some(search::NameMatch::Exact)
+            ),
+        })
+        .map(|r| r.path.as_str())
+        .collect()
 }
 
 /// Put a question to the reader, above the output that answers it. Unprefixed,
@@ -1171,7 +1214,7 @@ fn run_example(
     output: Output,
 ) -> Result<()> {
     let hits = search::search(query, records, filters);
-    let target = one_named_record(query, &hits, "draft", limit, output)?;
+    let (target, also_named) = one_named_record(query, &hits, "draft", limit, output)?;
     crate::detail!("drafting an operation for {}", target.path);
     let example = crate::example::build(target, records, depth)?;
     if !example.deprecated.is_empty() {
@@ -1208,6 +1251,11 @@ fn run_example(
         "variable_types": example.variable_types,
         "deprecated": example.deprecated,
         "paths": example.paths(),
+        // The records the query named just as exactly, which ranking chose
+        // `path` out of. Empty when it named only one — but always present,
+        // because a consumer reading a draft as settled is the whole reason
+        // this is here, and an absent key says nothing.
+        "also_named": also_named,
     });
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&payload)?),
@@ -1234,7 +1282,9 @@ fn run_resolve(
         crate::status!("searching code in the current directory (--code to search elsewhere)");
     }
     let hits = search::search(query, records, filters);
-    let target = one_named_record(query, &hits, "resolve", limit, output)?;
+    // `-R`'s JSON is the resolver hits themselves, with no envelope to carry
+    // the runners-up — the status line above is the whole disclosure here.
+    let (target, _) = one_named_record(query, &hits, "resolve", limit, output)?;
     crate::status!("resolving {} …", target.path);
     // a local file schema (not a URL) enables package-proximity ranking
     let schema_path = (!source.starts_with("http://") && !source.starts_with("https://"))
