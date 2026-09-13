@@ -99,6 +99,11 @@ pub struct Example {
     /// Other root fields that could have reached a nested target. Non-empty
     /// only when the choice was ambiguous.
     pub alternatives: Vec<String>,
+    /// Whether the selection drew no leaf at all — markers and a `__typename`,
+    /// which runs and fetches nothing. True on every wrapper type, so the
+    /// caller can point at `--depth` before the reader concludes there was
+    /// nothing to select.
+    pub no_leaves: bool,
 }
 
 impl Example {
@@ -271,6 +276,18 @@ pub fn build(
         // the one field that is always valid rather than emitting a parse error.
         body.push("__typename".to_string());
     }
+    // A selection of markers and a `__typename` is runnable and fetches
+    // nothing — every field at this level returns an object. Common enough to
+    // be the first thing anyone sees: a Relay connection's fields are `info`
+    // and `results`, or `edges` and `pageInfo`, and none of them is a leaf.
+    // Reported rather than fixed by drafting deeper, because how deep someone
+    // wants to go is exactly what this module refuses to guess.
+    //
+    // Only where a level was actually asked for: an input target draws depth 0
+    // deliberately, and its payload's leaves are hidden rather than absent.
+    let no_leaves = depth > 0
+        && !body.is_empty()
+        && body.iter().all(|l| l == "__typename" || l.starts_with('#'));
 
     for (depth, field) in chain.iter().enumerate().rev() {
         // Innermost first, so the fragment is wrapped before the field that
@@ -327,6 +344,7 @@ pub fn build(
         deprecated,
         via,
         alternatives,
+        no_leaves,
     })
 }
 

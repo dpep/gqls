@@ -860,6 +860,7 @@ mod tests {
             deprecated: Vec::new(),
             via: None,
             alternatives: Vec::new(),
+            no_leaves: false,
         }
     }
 

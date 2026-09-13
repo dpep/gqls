@@ -1225,6 +1225,11 @@ fn run_example(
             example.deprecated.join(", ")
         );
     }
+    if example.no_leaves {
+        // The markers name the holes, but nothing says the flag that fills
+        // them — and a wrapper type is where most people meet `-e` first.
+        crate::status!("every field here returns an object (--depth selects inside them)");
+    }
     if let Some(through) = &example.through {
         // The draft passes something larger than what was asked about, and the
         // signature names only that larger thing — so the connection between

@@ -532,6 +532,31 @@ fn a_multi_line_deprecation_reason_stays_inside_its_comment() {
 }
 
 #[test]
+fn a_selection_with_no_leaf_in_it_says_so() {
+    // A Relay connection has nothing but object-valued fields, so one level
+    // draws markers and a `__typename` — a query that runs and fetches
+    // nothing, with no hint that `--depth` is what fills it in.
+    let sdl = "\
+        type Query { characters: Characters }\n\
+        type Characters { info: Info results: [Character] }\n\
+        type Info { count: Int }\n\
+        type Character { name: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records
+        .iter()
+        .find(|r| r.path == "Query.characters")
+        .unwrap();
+
+    assert!(example::build(target, &records, None).unwrap().no_leaves);
+    // One level further reaches real fields, and there's nothing left to say.
+    let deeper = example::build(target, &records, Some(2)).unwrap();
+    assert!(!deeper.no_leaves, "{}", deeper.operation);
+    // Depth zero hides leaves rather than finding none, so it isn't the same
+    // claim — an input target draws it deliberately.
+    assert!(!example::build(target, &records, Some(0)).unwrap().no_leaves);
+}
+
+#[test]
 fn an_implementor_that_only_adds_object_fields_still_appears() {
     // Its additions are all object-valued, so it has nothing but markers —
     // and dropping every marker inside an interface's fragments dropped the
