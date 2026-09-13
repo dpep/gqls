@@ -17,6 +17,18 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **`-e` on a multiply-held input offered only one holder.** An input nothing
+  takes is drafted through one that *holds* it, and `gqls CheckImage -e` reported
+  only `UploadFrontImageInput` while `UploadRearImageInput` was an equally valid
+  and semantically different answer. Every holder appears under `# paths` now,
+  each naming the input its argument carries (`Mutation.ship(input: Shipping)`),
+  so choosing another path visibly means passing a different outer input. This is
+  common: 48 of the 92 such inputs across two production schemas have more than
+  one holder. The operation drafted may differ from before — it's now picked by
+  the same chain ranking as every other `-e` path.
+- **`-e` refuses an input held deeper than the variables block expands**, naming
+  the distance, rather than drafting an operation whose variables never mention
+  the input you asked about.
 - **`-e` and `--resolve` ignored capitalisation where search respects it.**
   `gqls Card` explains the type; `gqls Card -e` drafted against the *field*
   `Mutation.card` — a container whose fields all need arguments, so the body was
