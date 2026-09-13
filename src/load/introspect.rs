@@ -408,10 +408,9 @@ fn args_of(f: &Value) -> Vec<String> {
 fn arg_docs_of(f: &Value) -> BTreeMap<String, String> {
     array(f, "args")
         .iter()
-        .filter_map(|a| {
-            let doc = a.get("description").and_then(Value::as_str)?;
-            Some((str_field(a, "name"), doc.to_string()))
-        })
+        // `opt_str`, so an empty description is absent here exactly as it is on
+        // the record itself — servers send `""` for an undocumented argument.
+        .filter_map(|a| Some((str_field(a, "name"), opt_str(a, "description")?)))
         .collect()
 }
 
@@ -489,6 +488,8 @@ mod tests {
                "args":[{"name":"owner","description":"The login of a user.",
                         "defaultValue":null,"type":{"kind":"SCALAR","name":"String"}},
                        {"name":"name","description":null,
+                        "defaultValue":null,"type":{"kind":"SCALAR","name":"String"}},
+                       {"name":"ref","description":"",
                         "defaultValue":null,"type":{"kind":"SCALAR","name":"String"}}],
                "type":{"kind":"SCALAR","name":"String"},"isDeprecated":false}]}]}}}"#;
         let records = records_from(dump, "http://x/graphql", true).expect("should load");
@@ -500,8 +501,10 @@ mod tests {
             field.arg_descriptions.get("owner").map(String::as_str),
             Some("The login of a user.")
         );
-        // an argument the schema doesn't document simply isn't there
+        // an argument the schema doesn't document simply isn't there — `null`
+        // and `""` are both "undocumented", and servers send both
         assert!(!field.arg_descriptions.contains_key("name"));
+        assert!(!field.arg_descriptions.contains_key("ref"));
     }
 
     #[test]

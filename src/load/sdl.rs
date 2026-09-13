@@ -253,7 +253,7 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
                 type_ref: None,
                 args: d.arguments.iter().map(fmt_input).collect(),
                 arg_descriptions: arg_docs(&d.arguments),
-                description: d.description.clone(),
+                description: doc_text(&d.description),
                 deprecated: None,
                 directives: Vec::new(),
                 default: None,
@@ -378,7 +378,7 @@ fn type_record(
         type_ref: None,
         args: Vec::new(),
         arg_descriptions: Default::default(),
-        description: description.clone(),
+        description: doc_text(description),
         deprecated: None,
         directives: directive_names(directives),
         default: None,
@@ -396,7 +396,7 @@ fn field_record(type_name: &str, f: &Field<'_, String>, roots: &Roots) -> Schema
         type_ref: Some(type_to_string(&f.field_type)),
         args: f.arguments.iter().map(fmt_input).collect(),
         arg_descriptions: arg_docs(&f.arguments),
-        description: f.description.clone(),
+        description: doc_text(&f.description),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
         default: None,
@@ -444,7 +444,7 @@ fn input_field_record(type_name: &str, f: &InputValue<'_, String>) -> SchemaReco
         type_ref: Some(type_to_string(&f.value_type)),
         args: Vec::new(),
         arg_descriptions: Default::default(),
-        description: f.description.clone(),
+        description: doc_text(&f.description),
         deprecated: deprecated_reason(&f.directives),
         directives: directive_names(&f.directives),
         default: f.default_value.as_ref().map(|d| d.to_string()),
@@ -461,7 +461,7 @@ fn enum_value_record(type_name: &str, v: &EnumValue<'_, String>) -> SchemaRecord
         type_ref: None,
         args: Vec::new(),
         arg_descriptions: Default::default(),
-        description: v.description.clone(),
+        description: doc_text(&v.description),
         deprecated: deprecated_reason(&v.directives),
         directives: directive_names(&v.directives),
         default: None,
@@ -485,8 +485,16 @@ fn fmt_input(iv: &InputValue<'_, String>) -> String {
 /// couldn't have guessed from the name.
 fn arg_docs(args: &[InputValue<'_, String>]) -> BTreeMap<String, String> {
     args.iter()
-        .filter_map(|iv| Some((iv.name.clone(), iv.description.clone()?)))
+        .filter_map(|iv| Some((iv.name.clone(), doc_text(&iv.description)?)))
         .collect()
+}
+
+/// A description the schema actually wrote. An empty one is absent, not
+/// documentation: `"description": ""` in `--json` reads as documented to
+/// anything testing for presence. The introspection loader has always dropped
+/// these (`opt_str`), so this is also what keeps the two loaders agreeing.
+fn doc_text(description: &Option<String>) -> Option<String> {
+    description.clone().filter(|s| !s.is_empty())
 }
 
 fn type_to_string(t: &Type<'_, String>) -> String {
@@ -609,6 +617,24 @@ mod tests {
             .find(|r| r.name == "User" && r.kind == Kind::Object)
             .unwrap();
         assert!(user.possible_types.is_empty());
+    }
+
+    #[test]
+    fn an_empty_description_is_not_documentation() {
+        // `""` is what a generator writes where there was nothing to say. Kept,
+        // it reaches --json as `"description": ""` and reads as documented to
+        // anything testing for presence — and the introspection loader drops
+        // these, so keeping them also splits the two loaders on one schema.
+        let sdl = "\"\"\ntype Character {\n  \"\"\n  id: ID!\n}\n\
+            type Query { character(\"\" id: ID!): Character }\n";
+        let recs = from_sdl(sdl).expect("should parse");
+
+        let ty = recs.iter().find(|r| r.path == "Character").unwrap();
+        assert_eq!(ty.description, None);
+        let id = recs.iter().find(|r| r.path == "Character.id").unwrap();
+        assert_eq!(id.description, None);
+        let field = recs.iter().find(|r| r.path == "Query.character").unwrap();
+        assert!(field.arg_descriptions.is_empty());
     }
 
     #[test]
