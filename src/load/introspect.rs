@@ -70,9 +70,12 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
     Ok(records)
 }
 
-/// Records from a raw introspection response, or an error if it isn't one.
+/// Records from a raw introspection payload, or an error if it isn't one.
 /// This is the validation gate: nothing reaches the cache without passing it.
-fn records_from(raw: &[u8], url: &str, refresh: bool) -> Result<Vec<SchemaRecord>> {
+///
+/// `source` is the URL or the file path — a saved response is the same bytes a
+/// server sent, so both go through here and get the same answer.
+fn records_from(raw: &[u8], source: &str, refresh: bool) -> Result<Vec<SchemaRecord>> {
     // The parsed records depend only on the response bytes, so the record
     // cache short-circuits the (large) JSON parse on repeat queries.
     if !refresh {
@@ -81,8 +84,16 @@ fn records_from(raw: &[u8], url: &str, refresh: bool) -> Result<Vec<SchemaRecord
         }
     }
     let body: Value = serde_json::from_slice(raw)
-        .with_context(|| format!("parsing introspection response from {url}"))?;
+        .with_context(|| format!("parsing introspection response from {source}"))?;
+    let records = from_introspection(schema_of(&body, source)?)?;
+    super::record_cache::store(raw, &records);
+    Ok(records)
+}
 
+/// The `__schema` object inside an introspection payload — under `data` as a
+/// server answers, or hoisted to the top level (or unwrapped entirely) as the
+/// tools that save dumps write it.
+fn schema_of<'a>(body: &'a Value, source: &str) -> Result<&'a Value> {
     // Only a non-empty errors array is a real failure — many servers send
     // `"errors": null` or `[]` alongside a valid `data`.
     if let Some(errors) = body
@@ -93,10 +104,12 @@ fn records_from(raw: &[u8], url: &str, refresh: bool) -> Result<Vec<SchemaRecord
     }
     let schema = body
         .pointer("/data/__schema")
-        .ok_or_else(|| anyhow!("no data.__schema in response from {url}"))?;
-    let records = from_introspection(schema)?;
-    super::record_cache::store(raw, &records);
-    Ok(records)
+        .or_else(|| body.get("__schema"))
+        .unwrap_or(body);
+    if schema.get("types").is_none() {
+        bail!("{source} is not a GraphQL introspection dump (no __schema.types)");
+    }
+    Ok(schema)
 }
 
 /// Cache a validated response, and drop long-expired ones while we're here —
@@ -216,24 +229,13 @@ pub(crate) fn clear_cache() -> usize {
 /// Load a local introspection JSON dump — accepts `{data:{__schema}}`,
 /// `{__schema}`, or the bare schema object. Parsed records are cached keyed
 /// by the file's bytes (see `record_cache`); `opts.refresh` bypasses.
+///
+/// A dump is a saved response, so it goes through the same gate a live one
+/// does: a file that recorded a failed introspection is told what it recorded,
+/// rather than that its format is wrong.
 pub(crate) fn from_json_file(path: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    if !opts.refresh {
-        if let Some(records) = super::record_cache::load(text.as_bytes()) {
-            return Ok(records);
-        }
-    }
-    let v: Value = serde_json::from_str(&text).with_context(|| format!("parsing {path}"))?;
-    let schema = v
-        .pointer("/data/__schema")
-        .or_else(|| v.get("__schema"))
-        .unwrap_or(&v);
-    if schema.get("types").is_none() {
-        bail!("{path} is not a GraphQL introspection dump (no __schema.types)");
-    }
-    let records = from_introspection(schema)?;
-    super::record_cache::store(text.as_bytes(), &records);
-    Ok(records)
+    let raw = std::fs::read(path).with_context(|| format!("reading {path}"))?;
+    records_from(&raw, path, opts.refresh)
 }
 
 fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
@@ -475,7 +477,7 @@ fragment TypeRef on __Type {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_localhost, records_from};
+    use super::{from_json_file, is_localhost, records_from, LoadOptions};
 
     #[test]
     fn an_argument_description_survives_the_introspection_loader() {
@@ -523,6 +525,43 @@ mod tests {
         // an empty errors array alongside real data is not a failure
         let ok = br#"{"errors":[],"data":{"__schema":{"types":[]}}}"#;
         assert!(records_from(ok, "http://x/graphql", true).is_ok());
+    }
+
+    #[test]
+    fn a_saved_response_is_read_the_same_way_a_live_one_is() {
+        // `curl … > schema.json` with an expired token saves a well-formed
+        // record of a failed introspection. Telling the user the file format is
+        // wrong sends them to fix the wrong thing.
+        let dir = std::env::temp_dir().join("gqls-dump-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            let opts = LoadOptions {
+                refresh: true,
+                ..Default::default()
+            };
+            from_json_file(p.to_str().unwrap(), &opts)
+        };
+
+        let err = load(
+            "failed.json",
+            r#"{"data": null, "errors": [{"message": "introspection is disabled"}]}"#,
+        )
+        .expect_err("a recorded failure is not a schema")
+        .to_string();
+        assert!(err.contains("introspection is disabled"), "{err}");
+
+        // the shorthand shapes a dump is written in still load
+        assert!(load("hoisted.json", r#"{"__schema":{"types":[]}}"#).is_ok());
+        assert!(load("bare.json", r#"{"types":[]}"#).is_ok());
+
+        // and a .json that is simply not a dump still says so, naming the file
+        let err = load("package.json", r#"{"name":"x"}"#)
+            .expect_err("not a dump")
+            .to_string();
+        assert!(err.contains("package.json"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
