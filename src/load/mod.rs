@@ -33,22 +33,42 @@ pub struct LoadOptions {
 }
 
 /// Load a schema from a file path or an http(s) URL and flatten it to records.
+///
+/// What a file holds picks the loader, not what it's called — `curl … >
+/// schema.graphql` saves a dump under an SDL name, and it is still a dump.
 pub fn load(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     if source.starts_with("http://") || source.starts_with("https://") {
-        introspect::from_url(source, opts)
-    } else if source.ends_with(".json") {
-        introspect::from_json_file(source, opts)
-    } else {
-        let text = std::fs::read_to_string(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
-        if !opts.refresh {
-            if let Some(records) = record_cache::load(text.as_bytes()) {
-                return Ok(records);
-            }
-        }
-        let records = sdl::from_sdl(&text)?;
-        record_cache::store(text.as_bytes(), &records);
-        Ok(records)
+        return introspect::from_url(source, opts);
     }
+    let bytes = std::fs::read(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
+    if is_json(&bytes) {
+        // A dump is a saved response, so it goes through the same gate a live
+        // one does — including a JSON document that is no dump at all, which
+        // that gate names better than the SDL parser ever could.
+        return introspect::records_from(&bytes, source, opts.refresh);
+    }
+    let text = String::from_utf8(bytes).map_err(|e| anyhow!("reading {source}: {e}"))?;
+    if !opts.refresh {
+        if let Some(records) = record_cache::load(text.as_bytes()) {
+            return Ok(records);
+        }
+    }
+    let records = sdl::from_sdl(&text)?;
+    record_cache::store(text.as_bytes(), &records);
+    Ok(records)
+}
+
+/// Whether a source file holds JSON rather than SDL: the first thing in it is
+/// a brace or a bracket.
+///
+/// Deliberately not [`sniff_is_introspection`], which asks a stricter question
+/// — *is this a dump* — because discovery has to reject a `package.json` it
+/// stumbles across. Here rejecting it is the loader's job, and it says so.
+fn is_json(bytes: &[u8]) -> bool {
+    matches!(
+        bytes.iter().copied().find(|b| !b.is_ascii_whitespace()),
+        Some(b'{') | Some(b'[')
+    )
 }
 
 /// Directories holding someone else's code, never searched. A schema in here
@@ -487,6 +507,43 @@ mod tests {
         match classify(name.as_bytes())? {
             Verdict::Schema(t) | Verdict::Sniff(t) => Some(t),
         }
+    }
+
+    #[test]
+    fn what_a_file_holds_picks_the_loader_not_what_it_is_called() {
+        // `curl … > schema.graphql` saves a dump under an SDL name, and the SDL
+        // parser's answer — a syntax error at line 1, column 1 — sends the user
+        // looking for a typo in a file that hasn't got one.
+        let dir = scratch("dispatch");
+        let load_file = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            let opts = LoadOptions {
+                refresh: true,
+                ..Default::default()
+            };
+            load(p.to_str().unwrap(), &opts)
+        };
+        let dump = r#"{"data":{"__schema":{"queryType":{"name":"Query"},
+            "types":[{"kind":"OBJECT","name":"Query","fields":[
+              {"name":"me","type":{"kind":"SCALAR","name":"ID"},"isDeprecated":false}]}]}}}"#;
+        for name in ["dump.json", "dump.graphql", "dump"] {
+            let records = load_file(name, dump).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(records.iter().any(|r| r.path == "Query.me"), "{name}");
+        }
+
+        // …and SDL under a .json name is read as SDL, the same rule the other
+        // way round
+        let records = load_file("schema.json", "type Query { me: ID }").expect("SDL should load");
+        assert!(records.iter().any(|r| r.path == "Query.me"));
+
+        // A JSON document that is no dump is still the introspection loader's
+        // to reject: it names the file and says what's missing.
+        let err = load_file("package.json", r#"{"name":"x"}"#)
+            .expect_err("not a dump")
+            .to_string();
+        assert!(err.contains("not a GraphQL introspection dump"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

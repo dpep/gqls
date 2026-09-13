@@ -72,10 +72,12 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
 
 /// Records from a raw introspection payload, or an error if it isn't one.
 /// This is the validation gate: nothing reaches the cache without passing it.
+/// Accepts the shapes a dump is written in — `{data:{__schema}}`, `{__schema}`,
+/// or the bare schema object.
 ///
 /// `source` is the URL or the file path — a saved response is the same bytes a
 /// server sent, so both go through here and get the same answer.
-fn records_from(raw: &[u8], source: &str, refresh: bool) -> Result<Vec<SchemaRecord>> {
+pub(super) fn records_from(raw: &[u8], source: &str, refresh: bool) -> Result<Vec<SchemaRecord>> {
     // The parsed records depend only on the response bytes, so the record
     // cache short-circuits the (large) JSON parse on repeat queries. One exit,
     // so the disclosure below is not something a cache hit skips.
@@ -267,18 +269,6 @@ pub(crate) fn clear_cache() -> usize {
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter(|e| std::fs::remove_file(e.path()).is_ok())
         .count()
-}
-
-/// Load a local introspection JSON dump — accepts `{data:{__schema}}`,
-/// `{__schema}`, or the bare schema object. Parsed records are cached keyed
-/// by the file's bytes (see `record_cache`); `opts.refresh` bypasses.
-///
-/// A dump is a saved response, so it goes through the same gate a live one
-/// does: a file that recorded a failed introspection is told what it recorded,
-/// rather than that its format is wrong.
-pub(crate) fn from_json_file(path: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
-    let raw = std::fs::read(path).with_context(|| format!("reading {path}"))?;
-    records_from(&raw, path, opts.refresh)
 }
 
 fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
@@ -522,7 +512,7 @@ fragment TypeRef on __Type {
 
 #[cfg(test)]
 mod tests {
-    use super::{from_json_file, is_localhost, records_from, LoadOptions};
+    use super::{is_localhost, records_from};
 
     #[test]
     fn an_argument_description_survives_the_introspection_loader() {
@@ -577,36 +567,21 @@ mod tests {
         // `curl … > schema.json` with an expired token saves a well-formed
         // record of a failed introspection. Telling the user the file format is
         // wrong sends them to fix the wrong thing.
-        let dir = std::env::temp_dir().join("gqls-dump-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let load = |name: &str, body: &str| {
-            let p = dir.join(name);
-            std::fs::write(&p, body).unwrap();
-            let opts = LoadOptions {
-                refresh: true,
-                ..Default::default()
-            };
-            from_json_file(p.to_str().unwrap(), &opts)
-        };
-
-        let err = load(
-            "failed.json",
-            r#"{"data": null, "errors": [{"message": "introspection is disabled"}]}"#,
-        )
-        .expect_err("a recorded failure is not a schema")
-        .to_string();
+        let failed = br#"{"data": null, "errors": [{"message": "introspection is disabled"}]}"#;
+        let err = records_from(failed, "schema.json", true)
+            .expect_err("a recorded failure is not a schema")
+            .to_string();
         assert!(err.contains("introspection is disabled"), "{err}");
 
         // the shorthand shapes a dump is written in still load
-        assert!(load("hoisted.json", r#"{"__schema":{"types":[]}}"#).is_ok());
-        assert!(load("bare.json", r#"{"types":[]}"#).is_ok());
+        assert!(records_from(br#"{"__schema":{"types":[]}}"#, "hoisted.json", true).is_ok());
+        assert!(records_from(br#"{"types":[]}"#, "bare.json", true).is_ok());
 
-        // and a .json that is simply not a dump still says so, naming the file
-        let err = load("package.json", r#"{"name":"x"}"#)
+        // and JSON that is simply not a dump says so, naming the file
+        let err = records_from(br#"{"name":"x"}"#, "package.json", true)
             .expect_err("not a dump")
             .to_string();
         assert!(err.contains("package.json"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
