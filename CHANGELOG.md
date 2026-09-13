@@ -9,6 +9,11 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **`--resolve` follows a namespaced root.** A field on `CardMutationRoot` looks
+  for `Mutations::Card::ActivateCard`, and `Queries::`/`Subscriptions::` are
+  tried beside `Resolvers::` for root fields. Across six field shapes on a real
+  server repo the tally went from 1 clean hit, 1 near miss, 3 misses and 1
+  confidently wrong answer, to 5 clean hits, 1 honest miss and none wrong.
 - **`-v` says when introspection can't report applied directives.** The protocol
   exposes directive *definitions* but not their applications, so `directives` is
   always empty from an endpoint or a dump however many `@auth`s the SDL applies —
@@ -17,6 +22,20 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **`--resolve` built an unusable class name from a snake_case field.**
+  `create_transfer` became `Mutations::Create_transfer` rather than
+  `Mutations::CreateTransfer`, so the convention the README calls the strong case
+  silently failed on every snake_case mutation — 36 of 56 on one production
+  schema — and fell through to the field *declaration*, one hop short of the
+  code. One helper feeds every convention, so all of them were affected.
+- **`--resolve` presented a resembling hit as a verified match.** It checked the
+  namespace half of a candidate and not the name half, so an unqualified
+  candidate like `MeResolver` accepted every `*Resolver` in the repo — ten
+  unmarked results for `Query.me`, none of which implemented it. A symbol that
+  isn't named what the convention named is a `(guess)` now.
+- **`--resolve` guesses are ordered by whether they carry the name searched
+  for**, rather than in an order that only looked like confidence. On one case
+  the correct file moved from guess #9 to #1.
 - **`-e` on a multiply-held input offered only one holder.** An input nothing
   takes is drafted through one that *holds* it, and `gqls CheckImage -e` reported
   only `UploadFrontImageInput` while `UploadRearImageInput` was an equally valid
