@@ -59,10 +59,14 @@ pub(crate) fn width() -> usize {
 /// The one answer to that question in the whole crate, because every column
 /// this output aligns is measured against it and a second measurement would
 /// only differ. Pad with it or not at all: `str::len` is bytes and
-/// `chars().count()` is Unicode scalars, and both are the width only by
-/// coincidence of the text being ASCII.
+/// `chars().count()` is Unicode scalars, and neither is the width once a
+/// description is written in Japanese.
+///
+/// `width` rather than `width_cjk`: the ambiguous-width characters this output
+/// actually uses are `…` and `—`, which render one column wide on the
+/// terminals it runs on, and the layout tests pin that.
 pub(crate) fn columns(text: &str) -> usize {
-    text.chars().count()
+    unicode_width::UnicodeWidthStr::width(text)
 }
 
 /// Wrap `text` in `code`, or return it unchanged when colour is off.
@@ -193,6 +197,19 @@ mod tests {
         line.push("(…)", muted);
         assert_eq!(line.width(), 13);
         assert!(line.width() < line.finish().len() || !enabled());
+    }
+
+    #[test]
+    fn a_column_is_what_the_terminal_draws_not_what_rust_counts() {
+        // The three units disagree the moment a description isn't English, and
+        // only the last one aligns anything.
+        assert_eq!("ユーザー".len(), 12);
+        assert_eq!("ユーザー".chars().count(), 4);
+        assert_eq!(columns("ユーザー"), 8);
+        // An emoji ZWJ sequence runs the other way: many scalars, one glyph.
+        assert_eq!(columns("\u{1f9d1}\u{200d}\u{1f680}"), 2);
+        // And `…`, which this output uses constantly, stays one.
+        assert_eq!(columns("…"), 1);
     }
 
     #[test]

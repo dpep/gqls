@@ -52,6 +52,12 @@ log = { version = "0.4", optional = true }
 # Parallel fuzzy scoring scan (and the cold embed pass under `semantic`).
 rayon = "1"
 terminal_size = "0.4"
+# Column widths. `.chars().count()` is Unicode scalars, which is the terminal's
+# column count only for ASCII — CJK is two columns per scalar and an emoji ZWJ
+# sequence is many scalars and one glyph. Zero transitive dependencies, so the
+# lean `--no-default-features` build stays lean; the default build already had
+# it via hf-hub's progress bars.
+unicode-width = "0.2"
 
 [dev-dependencies]
 # Integration tests parse drafted operations back, so `--example` output is

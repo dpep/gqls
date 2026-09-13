@@ -655,6 +655,7 @@ dependencies = [
  "serde_json",
  "terminal_size",
  "tokenizers",
+ "unicode-width",
  "ureq 2.12.1",
 ]
 

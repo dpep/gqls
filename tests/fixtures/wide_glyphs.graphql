@@ -1,0 +1,8 @@
+# Descriptions whose glyphs are wider than one column each: CJK is two columns
+# per scalar, and an emoji ZWJ sequence is several scalars and one glyph. Words
+# are space-separated throughout, because wrap() breaks on whitespace and CJK
+# written without spaces is one unbreakable word whatever the widths say.
+type Query {
+  "Returns 取得します a page of ユーザー records 🧑‍🚀 for the 指定された tenant, capped at the 上限 you supply — over that you get 最大値 back instead of an error, see ドキュメント for details."
+  users: String
+}

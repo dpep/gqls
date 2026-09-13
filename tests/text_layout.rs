@@ -12,6 +12,8 @@ mod common;
 
 use std::process::Command;
 
+use unicode_width::UnicodeWidthStr;
+
 const SCHEMA: &str = "examples/schema.graphql";
 
 fn run(args: &[&str]) -> String {
@@ -249,6 +251,24 @@ fn a_long_description_wraps_within_the_fallback_width() {
             line.chars().count() <= 80,
             "line over the fallback width ({}): {line}",
             line.chars().count()
+        );
+    }
+}
+
+#[test]
+fn a_description_wraps_by_display_width_not_by_scalar_count() {
+    // `.chars().count()` is Unicode scalars, which equals the terminal's column
+    // count only for ASCII. A description mixing CJK and emoji measured 78 by
+    // that model and rendered at 94, so its first lines visibly overran the
+    // ASCII-wrapped ones under them. Measured with the same crate the renderer
+    // uses: the contract is that gqls's idea of a column is the standard one.
+    let out = run_against("tests/fixtures/wide_glyphs.graphql", &["Query.users"]);
+    assert!(out.lines().count() > 2, "expected a wrap:\n{out}");
+    for line in out.lines() {
+        assert!(
+            UnicodeWidthStr::width(line) <= 80,
+            "line renders {} columns wide, over the fallback width: {line}",
+            UnicodeWidthStr::width(line)
         );
     }
 }
