@@ -1,6 +1,6 @@
 ---
 name: gqls
-description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or finding a record by meaning rather than name ("cancel a subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and handles camelCase/snake_case/typos. Not for raw text search.
+description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or finding a record by meaning rather than name ("cancel a subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and sees through camelCase/snake_case and typos (spelling, not vocabulary: a synonym or a dropped word needs a phrase). Not for raw text search.
 ---
 
 # gqls — search a GraphQL schema
@@ -10,6 +10,10 @@ language phrase and it returns the ranked match — a type, field, argument, enu
 value, or directive — not every textual hit. Reach for it whenever the question
 is "where is this in the schema?" Use `grep`/`rg` for raw text; gqls for the
 schema.
+
+This file is the agent-facing guide: what to run, what comes back, and where
+the tool will mislead you if you take it at its word. The repo's README covers
+the same tool for a human reader. You don't need both.
 
 ## Use it like this
 
@@ -31,7 +35,10 @@ schema in the current directory tree (`-v` shows which one it picked), falling
 back to the enclosing git repo when the directory you're in has none — so you
 don't need to `cd` to the repo root first. Apollo Federation v2 subgraph SDL
 parses directly, and auto-discovery prefers a composed `supergraph*` schema
-when several exist.
+when several exist — but parsing is all it does. `@join__*` comes back as raw
+text; gqls doesn't interpret federation semantics (ownership, `@key`,
+`@requires`, `@external`), so read those yourself and don't answer "which
+subgraph owns this" from a gqls result alone.
 
 Each result is an object:
 
@@ -44,11 +51,20 @@ Each result is an object:
 `path` is the qualified location (`Type.field`), `type_ref` the return/field
 type, `args` the argument signatures, `description` the schema doc when the
 schema has one — usually enough to confirm a match without opening the schema.
+`score` orders results *within one query* and nothing else: the scale isn't
+stable across queries, schemas or versions, so never threshold on it, and it is
+`null` when a record was explained without ranking having scored it (the key is
+always present).
+
 Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson` pipe cleanly
-into `jq`. A miss prints `gqls: no matches for <q>` to stderr, and means it: semantic
-results below a relevance floor are dropped, so a question the schema can't
-answer returns nothing rather than its closest noise. Treat an empty result as
-"not in this schema", not as "try a different phrasing".
+into `jq`. A miss means it: semantic results below a relevance floor are
+dropped, so a question the schema can't answer returns nothing rather than its
+closest noise. The message says what made it a miss — the filters in play and
+what dropping them would find (`nothing returns Issue with -k query — 43 match
+without it`), and the schema when gqls discovered one rather than being handed
+it (`no matches for "country" in examples/schema.graphql`). Read that last part
+before retrying: a miss against a schema you didn't choose is often the wrong
+schema, not an absent field.
 
 When the query *names* exactly one of its matches — the leaf is that record's
 name, not merely its best fuzzy match — gqls stops listing and explains it
@@ -57,7 +73,7 @@ decides when it's the only thing separating candidates, so `Role` explains the
 enum while `role` lists it alongside `User.role`. `--no-explain` forces the list
 back.
 
-That record carries four more keys — the signal that you found the thing
+That record carries five more keys — the signal that you found the thing
 rather than a shortlist:
 
 - `match` — `"exact"`, or `"corrected"` when the name was a small misspelling
@@ -81,6 +97,21 @@ rather than a shortlist:
 appear whenever the schema has them. The array shape never changes, so a reader
 that ignores the extra keys still works.
 
+`directives` carries one caveat: introspection exposes directive *definitions*
+but not their applications, so it is always empty from a live endpoint or a JSON
+dump however many the SDL applies. `@deprecated` is the exception — it arrives
+by its own channel and is reconstructed. If a user asks what's applied to a
+field, you need the SDL.
+
+**Explaining is triggered by the letters, not by what you meant.** A coincidental
+exact match wins and is then reported in full, which reads as authority: against
+one real schema `gqls 'update address'` explains the enum value
+`SupportTicketDispositionLink.UPDATE_ADDRESS` while
+`UserMutation.update_user_address` sits in the matches it didn't show. The
+`N other matches` line above the answer is the tell — when the record you got
+isn't the one the user asked about, re-run with `--no-explain` and read the list
+before reporting anything.
+
 Text output shows the description too — elided to one line in a list, in full
 for a record you named. `-D` drops descriptions, collapses an enum's values to
 their names, and empties the description column of a type's fields.
@@ -91,13 +122,32 @@ without the answer looking incomplete; naming the type lists them in schema
 order with types, descriptions and deprecations. Keep `User.` for when you want
 to *search* within a type (`gqls 'User.*email*'`).
 
+On a toy schema the two look identical, which is how the habit goes wrong. The
+difference bites on a real one: `gqls 'Repository.'` returns 20 of GitHub's 145
+fields, alphabetical, descriptions clipped — and 20 fields is a perfectly
+plausible-looking type. Never answer "what fields does X have" from the wildcard
+form.
+
 ## Scope when you know more
 
 - Fuzzy / abbreviation / typo: `gqls usr`, `gqls usre`, `gqls createuser`.
+  This bridges **spelling, not vocabulary** — it matches names built from your
+  query's characters in order. A synonym or a dropped domain word is a different
+  name, not a mangled one: `currentUser` finds nothing when the field is `me`,
+  and `updateAddress` misses `updateUserAddress` once an unrelated
+  `UPDATE_ADDRESS` outranks it. When you're guessing at a name rather than
+  quoting one the user gave you, search the word you're sure of (`address`) or
+  write a phrase, which is what turns semantic ranking on.
 - Qualified: `gqls User.email` — when `User` names a schema type (any case,
   misspellings snap to the unique closest type), results are hard-filtered to
   that type's members; otherwise it falls back to fuzzy-matching the whole
-  query.
+  query. Members includes enum values, so `gqls join__Graph.PRODUCTS` is how you
+  look up one value and its directives.
+- Two bare words become that qualified form when the first names a type, and
+  the rewrite has **no fallback**: `gqls Post role` answers
+  `no matches for "Post.role"` and stops, though `gqls role` alone finds four
+  records. The miss message shows the rewrite — that's your cue to drop the type
+  word, not to report the field as absent. Quoting doesn't help.
 - Wildcard: `gqls User.` lists every field on User — a trailing dot is
   shorthand for `.*` and needs no quoting, so prefer it. The general forms
   are `gqls '*.email'` (that field on every type), `gqls 'get*'` (names
@@ -108,8 +158,8 @@ to *search* within a type (`gqls 'User.*email*'`).
   search.
 - Argument name: `gqls followRenames` finds the field that *takes* that
   argument — an argument is not a record of its own, so the field is the
-  answer, and naming it then shows what the argument is for. Ranked below
-  every name and path match, so it only surfaces when nothing else matched.
+  answer, and naming it then shows what the argument is for. It's a second
+  pass, run only when names and paths matched nothing at all.
 - Return type: `gqls --returns Company` finds fields returning Company even
   when the name doesn't say so (`Query.myEmployer: Company`), ignoring
   `[]`/`!` wrappers; wildcards allowed (`--returns '*Payload'`). Add
@@ -142,6 +192,9 @@ surface alongside name matches, so "what does X" phrases just work, no flag
 needed. A strong name match — exact, or the word whole at a boundary (`name`
 → `lastName`) — skips the semantic combine (fuzzy found what you typed;
 lookalike fields would just pad the list) — `--semantic` forces it back on.
+So a query that names a real field or type never touches the semantic path.
+That's the right answer, but it means semantic ranking only shows up when you
+write a phrase, and `-v` is what tells you it was skipped.
 The space form `'User name'` is the loose variant of `User.name`: same type
 filter, but semantic stays on so nearby fields (`lastName`) surface too.
 Fuzzy matches a phrase word by word (noise words dropped, best coverage
@@ -154,10 +207,18 @@ gqls 'delete a repository' --semantic      # force semantic-only
 gqls user --fuzzy                          # force fuzzy-only (skip semantic)
 ```
 
+**Write the phrase as search terms, not as a question.** Noise words are dropped
+before scoring, but everything else you type is a word some record can cover, so
+a full sentence pulls the ranking toward whatever echoes its incidentals:
+`user credit score` finds the field that `where do we expose a users credit
+score` buries. Trim a user's question to its content words before passing it on.
+
 Semantic ranking uses a local model (all-MiniLM-L6-v2, ONNX). The first time
 gqls sees a schema it returns fuzzy results immediately and embeds the vectors
 in the background, so the next run is combined and instant; `gqls --warm
-<source>` pre-embeds up front. Editing the schema re-embeds only the records
+<source>` pre-embeds up front, which on a schema the size of GitHub's is about
+40 seconds of one status line and no further output. Editing the schema
+re-embeds only the records
 that changed, so a schema under active development stays cheap. It ships in the default `cargo install` and the
 Homebrew build (a `--no-default-features` build is fuzzy-only).
 
@@ -173,14 +234,16 @@ printf 'cancel a subscription\ndispute a transaction\n' | gqls schema.graphql -J
 gqls schema.graphql -J < questions.txt
 ```
 
+**A batch takes `-J`, never `-j`.** `-j` is one complete array per query, which
+concatenated is nothing a parser reads, so a batch refuses it and says so.
+
 Each row carries the `query` that produced it, so one stream stays
 attributable, and a query that matched nothing still reports
 `{"query": …, "status": "no_matches"}` rather than dropping out. A single
 query's output is unchanged, so existing parsing is unaffected. A piped query
 that names one record explains it, the same as one typed as an argument —
 so a batch is a way to ask for several explanations at once, not a weaker
-mode. An explicit
-query beats a pipe; `-R` and `-e` take one query only.
+mode. An explicit query beats a pipe; `-R` and `-e` take one query only.
 
 ## Draft a query to paste (`-e`)
 
@@ -188,7 +251,7 @@ When the goal isn't "where is this field" but "give me something I can put in
 the code", let gqls build it rather than assembling one by hand:
 
 ```sh
-gqls Mutation.updateEmployee -e          # operation + variables, as text
+gqls Mutation.createUser -e              # operation + variables, as text
 gqls Company.employee -e --json          # {path, operation, variables, ...}
 gqls Query.user -e --depth 2             # expand one more level of fields
 ```
@@ -205,7 +268,9 @@ returns its type, and as many as it takes where a schema namespaces its roots
 six. The chain is reported as `Query.payroll > PayrollQueries.company`; past six
 hops, and for a type nothing reaches, `-e` says so and names the distance rather
 than guessing. Object-valued fields become `# field: Type { … }`
-markers — `--depth N` expands them when you want more. A union is written as
+markers — `--depth N` expands them when you want more, but it's global: depth 2
+expands every marker at every level, so on a wide payload expect to trim by
+hand. A union is written as
 inline fragments over its members (an interface adds one per implementor for
 the fields it adds, aliased by member where two of them type the same field
 differently), and deprecated fields stay in the selection
@@ -231,7 +296,13 @@ you `Query.posts(filter: $filter)`, with any other field taking one listed under
 several hops out. An input *field* (`CreateUserInput.email`) drafts through its
 enclosing input, and an input nothing takes drafts through the input that
 holds it — you get the outer one's operation with yours expanded inside the
-variables block, and a stderr line naming the carrier. The argument carrying it is supplied even where the schema
+variables block, and a stderr line naming the carrier. Every holder is offered,
+not just the drafted one, and each `# paths` entry names the input its argument
+carries (`Mutation.ship(input: Shipping)`): with two holders, taking the other
+path means passing a *different outer input*, so surface the choice rather than
+accepting the pick. An input held deeper than the variables block expands is
+refused, naming the distance — that's a real "no path", not something to work
+around. The argument carrying it is supplied even where the schema
 calls it optional, since a draft that omits it answers nothing. Such a draft
 stays about the input: the reply gets the barest selection a server accepts and
 only that input's own types are expanded, with `--depth 1` asking the payload
@@ -243,7 +314,10 @@ answer.
 slightly — `Did you mean X?` on stderr says which, and is worth passing on).
 A looser query — `crtusr`, `User.`, a wildcard — answers `Did you mean:`
 with the matches and exits nonzero instead; re-run with the path you meant, or
-show the user the list if it isn't obvious which one they want.
+show the user the list if it isn't obvious which one they want. Both respect
+capitalisation the way explaining does: a record the query spells exactly, case
+included, wins over one that merely ranked higher, so `gqls Card -e` drafts
+against the type `Card` and `gqls card -e` against the field `Mutation.card`.
 
 Two things still need your judgment:
 
