@@ -356,7 +356,12 @@ pub(crate) fn print_values(values: &[EnumValue]) {
 /// type sits next to the name rather than trailing the description. That's also
 /// why `-D` only empties the third column here instead of collapsing the block:
 /// the two that remain still want their alignment.
-pub(crate) fn print_fields(fields: &[Field], label: &str, owner: &str, descriptions: bool) {
+///
+/// `owner` is the type whose `.` query enumerates these, when one exists. A
+/// field's *arguments* have no such query — the owner is the field, and
+/// `gqls 'field.'` returns this same elided block — so the elision there says
+/// only how many are left.
+pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, descriptions: bool) {
     println!("  {}", style::muted(label));
     let total = fields.len();
     let fields = &fields[..total.min(MAX_FIELDS)];
@@ -432,13 +437,14 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: &str, descripti
     // The way out of the elision is spelled with the count it takes, so it's
     // one paste rather than a guess at `-l`.
     if total > fields.len() {
-        println!(
-            "    {}",
-            style::muted(&format!(
-                "… and {} more — `gqls '{owner}.' -l {total}` lists them all",
-                total - fields.len()
-            ))
-        );
+        let more = total - fields.len();
+        let note = match owner {
+            Some(owner) => {
+                format!("… and {more} more — `gqls '{owner}.' -l {total}` lists them all")
+            }
+            None => format!("… and {more} more"),
+        };
+        println!("    {}", style::muted(&note));
     }
 }
 
@@ -618,18 +624,13 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
                     print_values(&extras.values);
                 }
                 if !extras.arguments.is_empty() {
-                    print_fields(
-                        &extras.arguments,
-                        "arguments",
-                        &matches[0].record.name,
-                        descriptions,
-                    );
+                    print_fields(&extras.arguments, "arguments", None, descriptions);
                 }
                 if !extras.fields.is_empty() {
                     print_fields(
                         &extras.fields,
                         "fields",
-                        &matches[0].record.name,
+                        Some(&matches[0].record.name),
                         descriptions,
                     );
                 }

@@ -1,0 +1,38 @@
+# A field with more arguments than the explanation prints, so the elision on
+# the arguments block is exercised. One documented argument is enough to make
+# the block appear; the rest ride along.
+type Query {
+  bigField(
+    "What the first one is for."
+    arg01: String
+    arg02: String
+    arg03: String
+    arg04: String
+    arg05: String
+    arg06: String
+    arg07: String
+    arg08: String
+    arg09: String
+    arg10: String
+    arg11: String
+    arg12: String
+    arg13: String
+    arg14: String
+    arg15: String
+    arg16: String
+    arg17: String
+    arg18: String
+    arg19: String
+    arg20: String
+    arg21: String
+    arg22: String
+    arg23: String
+    arg24: String
+    arg25: String
+    arg26: String
+    arg27: String
+    arg28: String
+    arg29: String
+    arg30: String
+  ): String
+}

@@ -523,6 +523,22 @@ fn too_many_fields_are_elided_with_the_command_that_lists_them() {
 }
 
 #[test]
+fn an_elided_argument_list_does_not_point_at_itself() {
+    // The escape hatch is spelled `gqls '<owner>.'`, which enumerates a type's
+    // members. An argument list's owner is a *field*, so the pointer sent you
+    // back to the same elided block — and `-l` never raised the cap anyway.
+    let out = run_against("tests/fixtures/wide_arguments.graphql", &["bigField"]);
+    let elision = out
+        .lines()
+        .find(|l| l.contains("and 6 more"))
+        .unwrap_or_else(|| panic!("expected an elided arguments block:\n{out}"));
+    assert!(
+        !elision.contains("gqls"),
+        "an arguments block has no query that lists them all: {elision}"
+    );
+}
+
+#[test]
 fn a_wildcard_enumerates_rather_than_explaining_its_type() {
     // `Query.` asks for the fields, not for the type — and a trailing dot is
     // one character from the type's own name, so the naming check will happily
