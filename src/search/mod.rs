@@ -295,10 +295,29 @@ fn glob_search<'a>(
     hits
 }
 
+/// Fuzzy-match `query`, by name or path first and by argument names only if
+/// that found nothing. Two passes rather than one ranking, because "arguments
+/// answer only when nothing is *named* like the query" is a property of the
+/// whole result set: no per-record score can see whether something else
+/// matched.
 fn fuzzy_search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     predicate: &Predicate<'_>,
+) -> Vec<Hit<'a>> {
+    let hits = rank(query, records, predicate, score::score);
+    if hits.is_empty() {
+        return rank(query, records, predicate, score::score_arg);
+    }
+    hits
+}
+
+/// Score every record `scorer` matches, best first, with the weak tail cut.
+fn rank<'a>(
+    query: &str,
+    records: &'a [SchemaRecord],
+    predicate: &Predicate<'_>,
+    scorer: score::Scorer,
 ) -> Vec<Hit<'a>> {
     use rayon::prelude::*;
     // A multi-word query is matched word by word: no single name contains
@@ -313,9 +332,9 @@ fn fuzzy_search<'a>(
         .filter(|r| predicate.accepts(r))
         .filter_map(|r| {
             let (matched, score) = if tokens.is_empty() {
-                (1, score::score(query, r)?)
+                (1, scorer(query, r)?)
             } else {
-                score::score_phrase(&tokens, r)?
+                score::score_phrase(&tokens, r, scorer)?
             };
             Some((matched, Hit { record: r, score }))
         })
@@ -670,8 +689,7 @@ mod tests {
     #[test]
     fn an_argument_match_never_outranks_a_name_match() {
         // What keeps a Relay schema's 348 `first` arguments from burying a
-        // search that meant a field: the weak-tail cut drops an argument match
-        // the moment any name matches.
+        // search that meant a field.
         let sdl = "type Query { firstDay: String\n things(first: Int): String }\n";
         let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
         let paths: Vec<&str> = search("first", &records, Default::default())
@@ -679,6 +697,37 @@ mod tests {
             .map(|h| h.record.path.as_str())
             .collect();
         assert_eq!(paths, ["Query.firstDay"]);
+
+        // The hard case, and the one a score comparison got wrong: the name
+        // match is a weak subsequence (`input` inside `AddStarInput`), which a
+        // flat score for an exact argument outranks.
+        let sdl = "type Mutation { addStar(input: AddStarInput!): String }\n\
+                   input AddStarInput { clientMutationId: String }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        let paths: Vec<&str> = search("input", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths.first(), Some(&"AddStarInput"));
+        assert!(!paths.contains(&"Mutation.addStar"), "{paths:?}");
+    }
+
+    #[test]
+    fn an_argument_never_counts_as_a_word_of_a_phrase() {
+        // The phrase filter keeps only the records matching the most words, so
+        // a word satisfied by an argument alone doesn't merely outrank the name
+        // matches — it deletes them. `orderId` must not make `refundPayment`
+        // the only record covering both words of "refund order".
+        let sdl = "type Query { order(id: ID!): Order  refundAmount: Int }\n\
+                   type Mutation { refundPayment(orderId: ID!): Payment }\n\
+                   type Order { id: ID! }\ntype Payment { id: ID! }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        let paths: Vec<&str> = search("refund order", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert!(paths.contains(&"Query.order"), "{paths:?}");
+        assert!(paths.contains(&"Query.refundAmount"), "{paths:?}");
     }
 
     #[test]

@@ -9,8 +9,13 @@
 
 use crate::model::SchemaRecord;
 
-/// Score `query` against a record, best-is-higher, or `None` if it doesn't
-/// match at all (not even as a subsequence).
+/// How a query is matched against a record. Names and paths are the ordinary
+/// pass; arguments are the fallback the caller runs only when that one came
+/// back empty.
+pub(crate) type Scorer = fn(&str, &SchemaRecord) -> Option<i64>;
+
+/// Score `query` against a record's name or qualified path, best-is-higher, or
+/// `None` if neither matches (not even as a subsequence).
 pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     // A qualified query (`Type.field`) names an enclosing type: match the leaf
     // against the name and reward a matching parent below.
@@ -18,62 +23,60 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
     let q = leaf.to_ascii_lowercase();
     let name_lower = rec.name.to_ascii_lowercase();
 
-    let mut total = 0.0f64;
-
     // Match quality on the leaf name — the dominant term.
-    let name_matched = if name_lower == q {
-        total += 1000.0;
-        true
+    let quality = if name_lower == q {
+        1000.0
     } else if name_lower.starts_with(&q) {
         let tail = rec.name.chars().count().saturating_sub(q.chars().count());
-        total += 700.0 - (tail as f64).min(100.0);
-        true
+        700.0 - (tail as f64).min(100.0)
     } else if let Some(s) = subsequence_score(&q, &rec.name) {
-        total += s.min(600.0);
-        true
+        s.min(600.0)
     } else if let Some(d) = typo_distance(&q, &name_lower) {
         // a transposition / single typo (`usre` -> `User`) isn't a clean
         // subsequence; match it, but rank below a real match, penalized by
         // edit distance.
-        total += (260.0 - 70.0 * d as f64).max(80.0);
-        true
+        (260.0 - 70.0 * d as f64).max(80.0)
     } else {
-        false
+        // No name match: fall back to the qualified path (`user.email` vs
+        // `User.email`), a weaker signal and the last one this pass has.
+        let s = subsequence_score(&query.to_ascii_lowercase(), &rec.path)?;
+        (s * 0.5).min(300.0)
     };
 
-    // No name match: fall back to the qualified path (`user.email` vs
-    // `User.email`), then to the record's argument names — a weaker signal
-    // each time, and one of them is required to match at all.
-    if !name_matched {
-        match subsequence_score(&query.to_ascii_lowercase(), &rec.path) {
-            Some(s) => total += (s * 0.5).min(300.0),
-            None => total += best_arg_match(&q, rec)?,
-        }
-    }
-
-    // Qualifier boost — the user named the enclosing type (`Repository.name`);
-    // reward the field whose parent is that type.
-    if let Some(qual) = qualifier {
-        if let Some(b) = parent_boost(qual, rec.parent.as_deref()) {
-            total += b;
-        }
-    }
-
-    // Kind weight — roots and named types outrank leaf args (a tiebreaker).
-    total += rec.kind.weight() as f64;
-
-    Some(total.round() as i64)
+    Some(total(quality, qualifier, rec))
 }
 
-/// How well `query` matches any of `rec`'s argument names, or `None` for none.
+/// Score `query` against the record's *argument* names, or `None` if none of
+/// them match — the fallback pass, so `followRenames` finds `Query.repository`.
 ///
 /// An argument isn't a record of its own, so the field that *takes* it is the
 /// answer — which is what you'd call anyway, and naming it then says what the
-/// argument is for. Scored below every real match on purpose: these only
-/// surface when nothing matched a name or a path, because the weak-tail cut
-/// drops them the moment something did. That is what keeps `first` on a Relay
-/// schema — where 348 fields take one — from burying a search that meant a
-/// field.
+/// argument is for. It's a separate pass rather than a lower tier of [`score`]
+/// because "only when nothing else matched" is a property of the whole result
+/// set, not of any one record: a weak name subsequence scores in the tens, so
+/// no constant sits below every name match, and a single pass could only
+/// approximate the rule. Scoring an exact argument 200 displaced the input
+/// objects actually named `input` on a Relay schema, where hundreds of
+/// mutations take one.
+pub(crate) fn score_arg(query: &str, rec: &SchemaRecord) -> Option<i64> {
+    let (leaf, qualifier) = parse_qualified(query);
+    let quality = best_arg_match(&leaf.to_ascii_lowercase(), rec)?;
+    Some(total(quality, qualifier, rec))
+}
+
+/// Finish a match: the boost a `Type.` qualifier earns the field whose parent
+/// it names (`Repository.name`), plus the kind weight that floats roots and
+/// named types above leaf args (a tiebreaker).
+fn total(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> i64 {
+    let boost = qualifier
+        .and_then(|q| parent_boost(q, rec.parent.as_deref()))
+        .unwrap_or(0.0);
+    (quality + boost + rec.kind.weight() as f64).round() as i64
+}
+
+/// How well `query` matches any of `rec`'s argument names, or `None` for none.
+/// An exact argument name outranks a subsequence of one; these scores only
+/// ever rank against each other, within the fallback pass.
 fn best_arg_match(query: &str, rec: &SchemaRecord) -> Option<f64> {
     rec.arg_types()
         .filter_map(|(name, _)| match name.to_ascii_lowercase() == query {
@@ -116,16 +119,20 @@ pub(crate) fn phrase_tokens(query: &str) -> Vec<&str> {
 /// Score a phrase against a record word by word: how many words matched, and
 /// their summed quality. `None` when no word matches. Callers rank on the count
 /// first — a name covering the whole phrase beats one echoing a single word.
-pub(crate) fn score_phrase(tokens: &[&str], rec: &SchemaRecord) -> Option<(usize, i64)> {
+pub(crate) fn score_phrase(
+    tokens: &[&str],
+    rec: &SchemaRecord,
+    scorer: Scorer,
+) -> Option<(usize, i64)> {
     let mut matched = 0;
-    let mut total = 0;
+    let mut sum = 0;
     for token in tokens {
-        if let Some(s) = score(token, rec) {
+        if let Some(s) = scorer(token, rec) {
             matched += 1;
-            total += s;
+            sum += s;
         }
     }
-    (matched > 0).then_some((matched, total))
+    (matched > 0).then_some((matched, sum))
 }
 
 /// Split a query into its leaf name and the optional enclosing type typed
@@ -423,23 +430,36 @@ mod tests {
 
     #[test]
     fn phrase_scoring_counts_the_words_a_record_matches() {
+        let phrase = ["cancel", "subscription"];
         let both = score_phrase(
-            &["cancel", "subscription"],
+            &phrase,
             &rec(
                 "cancelSubscription",
                 "Mutation.cancelSubscription",
                 Kind::Mutation,
             ),
+            score,
         );
         let one = score_phrase(
-            &["cancel", "subscription"],
+            &phrase,
             &rec("subscriptionPlan", "T.subscriptionPlan", Kind::Field),
+            score,
         );
         assert_eq!(both.unwrap().0, 2);
         assert_eq!(one.unwrap().0, 1);
-        assert!(
-            score_phrase(&["cancel", "subscription"], &rec("id", "T.id", Kind::Field)).is_none()
-        );
+        assert!(score_phrase(&phrase, &rec("id", "T.id", Kind::Field), score).is_none());
+    }
+
+    #[test]
+    fn an_argument_is_matched_only_by_the_arg_scorer() {
+        let mut field = rec("repository", "Query.repository", Kind::Query);
+        field.args = vec!["followRenames: Boolean".into()];
+        // the name pass doesn't see arguments at all — that's what lets the
+        // caller run them as a fallback
+        assert!(score("followRenames", &field).is_none());
+        assert!(score_arg("followRenames", &field).is_some());
+        // and the arg pass sees nothing else
+        assert!(score_arg("repository", &field).is_none());
     }
 
     #[test]
