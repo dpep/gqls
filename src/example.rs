@@ -157,13 +157,9 @@ pub fn build(
                     .ok_or_else(|| anyhow::anyhow!("{} has no enclosing input", target.path))?,
                 _ => target.name.as_str(),
             };
-            let mut chains = schema.chains_passing(input);
+            let (levels, mut chains) = schema.chains_passing(input);
             if chains.is_empty() {
-                bail!(
-                    "nothing takes an argument of type {input}, and no input that \
-                     holds one is taken either, so there's no operation to draft. \
-                     Try `gqls {input}` to see what references it."
-                );
+                bail!("{}", unpassable(input, levels));
             }
             let (passed, via, chain) = chains.remove(0);
             through = (passed != input).then(|| passed.to_string());
@@ -396,10 +392,6 @@ impl<'a> Schema<'a> {
         ancestors: &mut Vec<String>,
         enums: &mut Vec<String>,
     ) -> Value {
-        /// Deep enough for any input anyone hand-writes; a guard, not a policy.
-        /// Past it the placeholder stands, and `gqls <Type>` lists the fields.
-        const MAX_NESTING: usize = 6;
-
         let bare = type_ref.trim();
         let bare = bare.strip_suffix('!').unwrap_or(bare).trim();
         if let Some(inner) = bare.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
@@ -472,9 +464,19 @@ impl<'a> Schema<'a> {
     /// picking one silently passes it off as the only one. A path through a
     /// holder names the holder, since the argument no longer carries the type
     /// that was asked about and the chain alone can't say which one it does.
-    fn chains_passing(&self, input: &'a str) -> Vec<(&'a str, String, Vec<&'a SchemaRecord>)> {
+    ///
+    /// How many levels up those holders sit comes back even when the chains
+    /// don't, because "buried too deep to show" and "nothing takes it anywhere"
+    /// are different news for the caller — the same reason
+    /// [`chains_reaching`](Self::chains_reaching) reports its hops.
+    #[allow(clippy::type_complexity)]
+    fn chains_passing(
+        &self,
+        input: &'a str,
+    ) -> (Option<usize>, Vec<(&'a str, String, Vec<&'a SchemaRecord>)>) {
         let mut seen: HashSet<&str> = [input].into_iter().collect();
         let mut frontier = vec![input];
+        let mut levels = 0;
         while !frontier.is_empty() {
             let mut chains: Vec<(&'a str, String, Vec<&'a SchemaRecord>)> = frontier
                 .iter()
@@ -491,10 +493,13 @@ impl<'a> Schema<'a> {
                 })
                 .collect();
             if !chains.is_empty() {
+                if levels > MAX_NESTING {
+                    return (Some(levels), Vec::new());
+                }
                 chains.sort_by(|(_, a, x), (_, b, y)| {
                     chain_order(x).cmp(&chain_order(y)).then(a.cmp(b))
                 });
-                return chains;
+                return (Some(levels), chains);
             }
             frontier = frontier
                 .iter()
@@ -502,8 +507,9 @@ impl<'a> Schema<'a> {
                 .filter(|holder| seen.insert(holder))
                 .collect();
             frontier.sort_unstable();
+            levels += 1;
         }
-        Vec::new()
+        (None, Vec::new())
     }
 
     /// The input objects with a field of type `input` — the way *in* to it.
@@ -1119,6 +1125,16 @@ impl Variables {
 /// "too deep" reads differently from "not there".
 const MAX_HOPS: usize = 6;
 
+/// How deep the variable skeleton expands an input object. Deep enough for any
+/// input anyone hand-writes; a guard, not a policy. Past it the placeholder
+/// stands, and `gqls <Type>` lists the fields.
+///
+/// It doubles as the cap on the holder walk, because the two distances are the
+/// same one: an input held this many levels inside the one being passed is the
+/// deepest the skeleton will still name. Any deeper and a draft announcing
+/// "X is passed inside Y" would print variables that never mention X.
+const MAX_NESTING: usize = 6;
+
 /// A chain as one readable path: `Query.early_pay > EarlyPayQueryRoot.status`.
 /// One form in text and in `--json` both, since a path is several fields now
 /// and naming only its first says almost nothing.
@@ -1156,6 +1172,26 @@ fn out_of_reach(type_name: &str, hops: Option<usize>) -> String {
         None => format!(
             "isn't reachable from a root field — nothing returns {type_name}, or \
              anything it narrows from. {close}"
+        ),
+    }
+}
+
+/// Why an input can't be drafted: nothing on the way out of it is ever taken,
+/// or the nearest thing that is holds it deeper than the variables block
+/// reaches. Different news — one says nothing passes this, the other says a
+/// draft naming it would print variables that never mention it — so they don't
+/// share a sentence.
+fn unpassable(input: &str, levels: Option<usize>) -> String {
+    let refer = format!("Try `gqls {input}` to see what references it.");
+    match levels {
+        Some(levels) => format!(
+            "{input} sits {levels} levels inside the nearest input anything takes, past \
+             the {MAX_NESTING}-level cap — the variables block wouldn't reach it, so a \
+             draft would show where it goes without ever showing it. {refer}"
+        ),
+        None => format!(
+            "nothing takes an argument of type {input}, and no input that holds one is \
+             taken either, so there's no operation to draft. {refer}"
         ),
     }
 }

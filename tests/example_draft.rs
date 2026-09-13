@@ -828,3 +828,35 @@ fn every_input_that_holds_the_target_is_offered() {
     );
     assert_eq!(ex.through.as_deref(), Some("Billing"));
 }
+
+#[test]
+fn an_input_held_deeper_than_the_skeleton_reaches_is_refused() {
+    // The holder walk used to be uncapped while the skeleton stops at six
+    // levels, so a draft announced "L9 is passed inside L1" over variables
+    // whose deepest mention was L7. Refusing names the distance instead.
+    let mut sdl = String::from(
+        "type Query { ping: String }\n\
+         type Mutation { outer(input: L1!): Boolean! }\n",
+    );
+    for level in 1..9 {
+        sdl.push_str(&format!("input L{level} {{ next: L{}! }}\n", level + 1));
+    }
+    sdl.push_str("input L9 { city: String! }\n");
+    let records = gqls::load::sdl::from_sdl(&sdl).expect("should parse");
+
+    let target = records.iter().find(|r| r.path == "L9").unwrap();
+    let err = example::build(target, &records, None)
+        .expect_err("eight levels deep is past the cap")
+        .to_string();
+    assert!(err.contains("8 levels inside"), "{err}");
+
+    // The last level the skeleton still names is still drafted — the cap is
+    // the skeleton's own, not a fresh number.
+    let target = records.iter().find(|r| r.path == "L7").unwrap();
+    let ex = example::build(target, &records, None).expect("six levels still drafts");
+    assert!(
+        ex.variables.to_string().contains("<L7!>"),
+        "{}",
+        ex.variables
+    );
+}
