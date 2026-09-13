@@ -254,6 +254,15 @@ const MAX_NONBOUNDARY_GAP: usize = 2;
 /// Penalty per skipped char between two matched chars.
 const GAP_PENALTY: f64 = 3.0;
 
+/// What one matched query char is worth on its own.
+const MATCH: f64 = 10.0;
+/// Extra for landing on a word boundary — a camelCase hump or after a `_`.
+const BOUNDARY: f64 = 15.0;
+/// Extra for landing on the name's first char.
+const START: f64 = 20.0;
+/// Extra for following the previously matched char with no gap.
+const CONTIGUOUS: f64 = 10.0;
+
 struct Alignment {
     score: f64,
 }
@@ -296,12 +305,12 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
 
     for (i, &c) in lower.iter().enumerate() {
         if c == q[0] {
-            let mut s = 10.0;
+            let mut s = MATCH;
             if boundary[i] {
-                s += 15.0;
+                s += BOUNDARY;
             }
             if i == 0 {
-                s += 20.0;
+                s += START;
             }
             table[0][i] = Some((s, i));
         }
@@ -312,7 +321,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
             if lower[i] != q[qi] {
                 continue;
             }
-            let base = 10.0 + if boundary[i] { 15.0 } else { 0.0 };
+            let base = MATCH + if boundary[i] { BOUNDARY } else { 0.0 };
             let j_start = if boundary[i] {
                 qi - 1
             } else {
@@ -325,7 +334,7 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
                     continue;
                 };
                 let trans = if j + 1 == i {
-                    10.0
+                    CONTIGUOUS
                 } else {
                     let gap = i - j - 1;
                     let crossed_word = bnd_prefix[i] - bnd_prefix[j + 1] > 0;
