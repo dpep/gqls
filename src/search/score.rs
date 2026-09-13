@@ -12,11 +12,32 @@ use crate::model::SchemaRecord;
 /// How a query is matched against a record. Names and paths are the ordinary
 /// pass; arguments are the fallback the caller runs only when that one came
 /// back empty.
-pub(crate) type Scorer = fn(&str, &SchemaRecord) -> Option<i64>;
+pub(crate) type Scorer = fn(&str, &SchemaRecord) -> Option<Match>;
+
+/// What a scorer found. Ranking and cutting ask different questions, so the
+/// answer carries both.
+#[derive(Clone, Copy)]
+pub(crate) struct Match {
+    /// The query *is* the record's name: the top tier, and the one no ratio can
+    /// express — `700 - tail` puts a long prefix beneath the subsequence
+    /// ceiling, so the tiers under it overlap as numbers.
+    pub(crate) exact: bool,
+    /// What the tail cut compares: everything in `score` that can tell two
+    /// candidates apart. The qualifier boost can't — every member of the named
+    /// type is handed the same one — so leaving it in would make a more precise
+    /// query cut its tail *less*.
+    pub(crate) merit: i64,
+    /// Ranking order: `merit` plus that boost, which is what floats the right
+    /// type's fields when the qualifier named no type to filter by.
+    pub(crate) score: i64,
+}
+
+/// The exact tier's quality. Every other tier scores below it.
+const EXACT: f64 = 1000.0;
 
 /// Score `query` against a record's name or qualified path, best-is-higher, or
 /// `None` if neither matches (not even as a subsequence).
-pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
+pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
     // A qualified query (`Type.field`) names an enclosing type: match the leaf
     // against the name and reward a matching parent below.
     let (leaf, qualifier) = parse_qualified(query);
@@ -25,7 +46,7 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
 
     // Match quality on the leaf name — the dominant term.
     let quality = if name_lower == q {
-        1000.0
+        EXACT
     } else if name_lower.starts_with(&q) {
         let tail = rec.name.chars().count().saturating_sub(q.chars().count());
         700.0 - (tail as f64).min(100.0)
@@ -43,7 +64,7 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
         (s * 0.5).min(300.0)
     };
 
-    Some(total(quality, qualifier, rec))
+    Some(finish(quality, qualifier, rec))
 }
 
 /// Score `query` against the record's *argument* names, or `None` if none of
@@ -58,20 +79,25 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<i64> {
 /// approximate the rule. Scoring an exact argument 200 displaced the input
 /// objects actually named `input` on a Relay schema, where hundreds of
 /// mutations take one.
-pub(crate) fn score_arg(query: &str, rec: &SchemaRecord) -> Option<i64> {
+pub(crate) fn score_arg(query: &str, rec: &SchemaRecord) -> Option<Match> {
     let (leaf, qualifier) = parse_qualified(query);
     let quality = best_arg_match(&leaf.to_ascii_lowercase(), rec)?;
-    Some(total(quality, qualifier, rec))
+    Some(finish(quality, qualifier, rec))
 }
 
-/// Finish a match: the boost a `Type.` qualifier earns the field whose parent
-/// it names (`Repository.name`), plus the kind weight that floats roots and
-/// named types above leaf args (a tiebreaker).
-fn total(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> i64 {
+/// Finish a match: add the kind weight that floats roots and named types above
+/// leaf args, then the boost a `Type.` qualifier earns the field whose parent
+/// it names (`Repository.name`).
+fn finish(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
     let boost = qualifier
         .and_then(|q| parent_boost(q, rec.parent.as_deref()))
         .unwrap_or(0.0);
-    (quality + boost + rec.kind.weight() as f64).round() as i64
+    let merit = quality + rec.kind.weight() as f64;
+    Match {
+        exact: quality == EXACT,
+        merit: merit.round() as i64,
+        score: (merit + boost).round() as i64,
+    }
 }
 
 /// How well `query` matches any of `rec`'s argument names, or `None` for none.
@@ -123,13 +149,19 @@ pub(crate) fn score_phrase(
     tokens: &[&str],
     rec: &SchemaRecord,
     scorer: Scorer,
-) -> Option<(usize, i64)> {
+) -> Option<(usize, Match)> {
     let mut matched = 0;
-    let mut sum = 0;
+    let mut sum = Match {
+        exact: true,
+        merit: 0,
+        score: 0,
+    };
     for token in tokens {
-        if let Some(s) = scorer(token, rec) {
+        if let Some(m) = scorer(token, rec) {
             matched += 1;
-            sum += s;
+            sum.exact &= m.exact;
+            sum.merit += m.merit;
+            sum.score += m.score;
         }
     }
     (matched > 0).then_some((matched, sum))
@@ -373,7 +405,10 @@ mod tests {
         let exact = score("user", &rec("user", "Query.user", Kind::Query)).unwrap();
         let prefix = score("use", &rec("user", "Query.user", Kind::Query)).unwrap();
         let fuzzy = score("usr", &rec("user", "Query.user", Kind::Query)).unwrap();
-        assert!(exact > prefix && prefix > fuzzy);
+        assert!(exact.score > prefix.score && prefix.score > fuzzy.score);
+        // only the first is the top tier the tail cut recognises
+        assert!(exact.exact);
+        assert!(!prefix.exact && !fuzzy.exact);
     }
 
     #[test]
@@ -402,7 +437,15 @@ mod tests {
         // the `User` qualifier must float the User field above the Account one.
         let user = score("user.email", &rec("email", "User.email", Kind::Field)).unwrap();
         let account = score("user.email", &rec("email", "Account.email", Kind::Field)).unwrap();
-        assert!(user > account, "user {user} > account {account}");
+        assert!(
+            user.score > account.score,
+            "user {} > account {}",
+            user.score,
+            account.score
+        );
+        // the qualifier boost is the whole of the difference, and it stays out
+        // of the merit the tail cut compares
+        assert_eq!(user.merit, account.merit);
     }
 
     #[test]
@@ -411,7 +454,12 @@ mod tests {
         // adjacent transposition should still match — ranked below a clean match.
         let clean = score("user", &rec("User", "Query.user", Kind::Object)).unwrap();
         let typo = score("usre", &rec("User", "Query.user", Kind::Object)).unwrap();
-        assert!(clean > typo, "clean {clean} > typo {typo}");
+        assert!(
+            clean.score > typo.score,
+            "clean {} > typo {}",
+            clean.score,
+            typo.score
+        );
         // nonsense still doesn't match
         assert!(score("xqzw", &rec("User", "Query.user", Kind::Object)).is_none());
     }

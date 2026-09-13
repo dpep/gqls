@@ -10,10 +10,10 @@ pub struct Hit<'a> {
     pub score: i64,
 }
 
-/// Drop hits scoring below this fraction of the top hit. The scorer's tiers
-/// (exact ≈1000, prefix ≈700, subsequence ≤600, typo ≤260) make the ratio
-/// meaningful: a strong match present means the long subsequence tail is
-/// noise; with only weak matches, everything in the same tier survives.
+/// Drop hits whose merit is below this fraction of the best — the long fuzzy
+/// tail beneath a strong prefix or subsequence match. The tier above that, an
+/// exact name, is cut for by name in [`rank`] instead: the tiers overlap as
+/// numbers, so no ratio can separate them.
 const TAIL_CUTOFF: f64 = 0.4;
 
 /// Resolve a `Type.field` query's qualifier to a schema type: an exact
@@ -327,16 +327,16 @@ fn rank<'a>(
     // Records score independently, so scan them in parallel — the win shows
     // on large schemas (tens of thousands of records), and rayon's overhead
     // is microseconds on small ones.
-    let scored: Vec<(usize, Hit)> = records
+    let scored: Vec<(usize, score::Match, &SchemaRecord)> = records
         .par_iter()
         .filter(|r| predicate.accepts(r))
         .filter_map(|r| {
-            let (matched, score) = if tokens.is_empty() {
+            let (matched, m) = if tokens.is_empty() {
                 (1, scorer(query, r)?)
             } else {
                 score::score_phrase(&tokens, r, scorer)?
             };
-            Some((matched, Hit { record: r, score }))
+            Some((matched, m, r))
         })
         .collect();
 
@@ -346,25 +346,48 @@ fn rank<'a>(
     // that merely echo one of them; when nothing covers both, the single-word
     // matches are all there is and they all stand. (Single-word queries are one
     // uniform group, so this is a no-op for them.)
-    let best = scored.iter().map(|(m, _)| *m).max().unwrap_or(0);
-    let mut hits: Vec<Hit> = scored
+    let words = scored.iter().map(|(m, ..)| *m).max().unwrap_or(0);
+    let mut hits: Vec<(score::Match, &SchemaRecord)> = scored
         .into_iter()
-        .filter(|(m, _)| *m == best)
-        .map(|(_, hit)| hit)
+        .filter(|(m, ..)| *m == words)
+        .map(|(_, m, r)| (m, r))
         .collect();
 
     // highest score first; break ties toward the shorter path (the more
     // "central" definition — `User` before `AdminUserAuditLogEntry`).
-    hits.sort_by(|a, b| {
+    hits.sort_by(|(a, ar), (b, br)| {
         b.score
             .cmp(&a.score)
-            .then_with(|| a.record.path.len().cmp(&b.record.path.len()))
+            .then_with(|| ar.path.len().cmp(&br.path.len()))
     });
-    if let Some(top) = hits.first().map(|h| h.score) {
-        let floor = (top as f64 * TAIL_CUTOFF) as i64;
-        hits.retain(|h| h.score >= floor);
+
+    // Cut the weak tail — on merit, never on the ranking score, which carries a
+    // qualifier boost every candidate of the named type was handed alike. A
+    // ratio of a number nobody earned over anyone else cuts *less* the more
+    // precisely the user typed.
+    //
+    // Above the ratio sits a tier it can't reach: an exact name. `700 - tail`
+    // puts a long prefix under the subsequence ceiling, so the tiers overlap as
+    // numbers and no fraction means "nothing weaker than an exact match
+    // survives" — which is what the cut is for. Only a one-word query can
+    // *name* a record; a phrase describes one, and the word-coverage filter
+    // above is its equivalent.
+    let names = tokens.is_empty();
+    if let Some(top) = hits.first().map(|(m, _)| *m) {
+        match names && top.exact {
+            true => hits.retain(|(m, _)| m.exact),
+            false => {
+                let floor = (top.merit as f64 * TAIL_CUTOFF) as i64;
+                hits.retain(|(m, _)| m.merit >= floor);
+            }
+        }
     }
-    hits
+    hits.into_iter()
+        .map(|(m, record)| Hit {
+            record,
+            score: m.score,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -687,6 +710,36 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_name_leaves_nothing_weaker_standing() {
+        // `me` names one field and `memberships` merely starts with it, but at
+        // 0.69 of the top score the ratio kept it — and a `Query.` qualifier,
+        // which hands every member of the type the same boost, pushed that
+        // ratio *up*. Both forms of the query name a record outright, so
+        // neither should report other matches.
+        let sdl = "type Query { me: Me  memberships: Int  members: Int }\n\
+                   type Me { id: ID! }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        // a qualifier resolves to a hard filter before the search, as in the CLI
+        let paths = |q: &str| {
+            let filters = Filters {
+                parent: parent_filter(q, &records),
+                ..Default::default()
+            };
+            search(q, &records, filters)
+                .iter()
+                .map(|h| h.record.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths("Query.me"), ["Query.me"]);
+        // the tier is a predicate, not a floor: the `Me` type is named just as
+        // exactly as the field, and outranking it by kind weight isn't cause
+        // to drop it
+        assert_eq!(paths("me"), ["Query.me", "Me"]);
+        // with nothing exact, the weaker tiers still rank against each other
+        assert!(paths("mem").len() > 1, "{:?}", paths("mem"));
+    }
+
+    #[test]
     fn an_argument_match_never_outranks_a_name_match() {
         // What keeps a Relay schema's 348 `first` arguments from burying a
         // search that meant a field.
@@ -818,11 +871,16 @@ mod tests {
             // matches `user` only as a scattered subsequence
             rec("uzszezr", Some("Query"), Kind::Query),
         ];
-        let paths: Vec<&str> = search("user", &records, Default::default())
-            .iter()
-            .map(|h| h.record.path.as_str())
-            .collect();
-        assert_eq!(paths, ["Query.user", "Query.userProfile"]);
+        let paths = |q| {
+            search(q, &records, Default::default())
+                .iter()
+                .map(|h| h.record.path.clone())
+                .collect::<Vec<_>>()
+        };
+        // `user` names the first outright — the tier above every other match
+        assert_eq!(paths("user"), ["Query.user"]);
+        // `use` names none of them, so the two prefixes stand and the scatter goes
+        assert_eq!(paths("use"), ["Query.user", "Query.userProfile"]);
     }
 
     #[test]
