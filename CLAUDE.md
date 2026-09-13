@@ -60,6 +60,26 @@ is why it's in the base case and not behind a flag.
   error code, and a truncated result list have each hidden the evidence that
   would have disproved the hypothesis. Re-run unfiltered before concluding, and
   check which code path produced a number before interpreting it.
+- **A differential measured under load exaggerates whichever side is bigger.**
+  Two builds compared on a loaded machine put the semantic binary's startup tax
+  at ~20ms; measured quietly it is ~2.1ms. The 22.5MB binary pays page-in and
+  scheduling costs the 3.2MB one doesn't, inflating the *difference* about
+  eightfold. Also: `wall − profile.total_ms` is not a clean measure of
+  pre-`main()` cost — it absorbs fork/exec, teardown and harness overhead, all
+  of which grow under load. Take the slope across an increasing query count
+  instead; it cancels every fixed cost by construction.
+
+## Settled, don't re-propose
+
+- **The CoreML linkage in the default build stays.** It costs ~2.1ms of fixed
+  startup and is dormant — nothing calls `with_execution_providers`, so ORT runs
+  on CPU and the linkage buys nothing at runtime. Removing it is worse both
+  ways: switching the default to `semantic-dynamic` costs **+33ms on every
+  semantic query** (dlopening Homebrew's ~90-dylib ORT chain) and doesn't even
+  drop CoreML, since that build links it too; building ORT from source to
+  disable the EP trades a prebuilt download for a C++ toolchain in CI on every
+  platform. Batch mode (`-J` with queries on stdin) already reduces the 2.1ms to
+  roughly zero per query — and is 3x faster overall, which dwarfs it.
 
 ## Changelog
 
