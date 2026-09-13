@@ -161,10 +161,10 @@ pub fn build(
             if chains.is_empty() {
                 bail!("{}", unpassable(input, levels));
             }
-            let (passed, via, chain) = chains.remove(0);
-            through = (passed != input).then(|| passed.to_string());
-            let alternatives = chains.into_iter().map(|(_, path, _)| path).collect();
-            (chain, Some(via), alternatives, Some(passed))
+            let best = chains.remove(0);
+            through = (best.held != input).then(|| best.held.to_string());
+            let alternatives = chains.into_iter().map(|p| p.path).collect();
+            (best.chain, Some(best.path), alternatives, Some(best.held))
         }
         // A type is not callable either, but asking for one is asking how to
         // fetch one — so it drafts the root that reaches it, narrowed to it
@@ -469,16 +469,12 @@ impl<'a> Schema<'a> {
     /// don't, because "buried too deep to show" and "nothing takes it anywhere"
     /// are different news for the caller — the same reason
     /// [`chains_reaching`](Self::chains_reaching) reports its hops.
-    #[allow(clippy::type_complexity)]
-    fn chains_passing(
-        &self,
-        input: &'a str,
-    ) -> (Option<usize>, Vec<(&'a str, String, Vec<&'a SchemaRecord>)>) {
+    fn chains_passing(&self, input: &'a str) -> (Option<usize>, Vec<Passing<'a>>) {
         let mut seen: HashSet<&str> = [input].into_iter().collect();
         let mut frontier = vec![input];
         let mut levels = 0;
         while !frontier.is_empty() {
-            let mut chains: Vec<(&'a str, String, Vec<&'a SchemaRecord>)> = frontier
+            let mut chains: Vec<Passing<'a>> = frontier
                 .iter()
                 .flat_map(|&held| {
                     self.chains_taking(held)
@@ -488,7 +484,7 @@ impl<'a> Schema<'a> {
                                 true => format!("{}({arg}:)", label(&chain)),
                                 false => format!("{}({arg}: {held})", label(&chain)),
                             };
-                            (held, path, chain)
+                            Passing { held, path, chain }
                         })
                 })
                 .collect();
@@ -496,8 +492,10 @@ impl<'a> Schema<'a> {
                 if levels > MAX_NESTING {
                     return (Some(levels), Vec::new());
                 }
-                chains.sort_by(|(_, a, x), (_, b, y)| {
-                    chain_order(x).cmp(&chain_order(y)).then(a.cmp(b))
+                chains.sort_by(|a, b| {
+                    chain_order(&a.chain)
+                        .cmp(&chain_order(&b.chain))
+                        .then(a.path.cmp(&b.path))
                 });
                 return (Some(levels), chains);
             }
@@ -538,7 +536,7 @@ impl<'a> Schema<'a> {
     fn chains_taking(&self, input: &str) -> Vec<(&'a str, Vec<&'a SchemaRecord>)> {
         let mut chains: Vec<(&'a str, Vec<&'a SchemaRecord>)> = Vec::new();
         // Every record with arguments hangs off some parent, so this covers the
-        // roots and the object fields both. Unordered, hence the sort below.
+        // roots and the object fields both.
         for r in self.fields.values().flatten().copied() {
             for (arg, ty) in r.arg_types() {
                 if ty != input {
@@ -963,6 +961,16 @@ impl<'a> Schema<'a> {
         }
         lines
     }
+}
+
+/// One way to pass an input: which input the argument actually carries, the
+/// path that names it, and the chain of fields an operation nests to get there.
+struct Passing<'a> {
+    /// The input the argument takes — the one asked about, or the holder it
+    /// rides inside.
+    held: &'a str,
+    path: String,
+    chain: Vec<&'a SchemaRecord>,
 }
 
 /// What the type graph looks like from the root operation fields: how far
