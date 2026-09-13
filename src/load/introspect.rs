@@ -35,7 +35,9 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
     let ttl = ttl(url);
     // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
     // neither read nor write, so a schema you're actively editing is never stale.
-    let path = (!ttl.is_zero()).then(|| cache_path(url)).flatten();
+    let path = (!ttl.is_zero())
+        .then(|| cache_path(url, &opts.headers))
+        .flatten();
 
     if !opts.refresh {
         if let Some(p) = path.as_deref() {
@@ -201,11 +203,42 @@ fn fetch(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// Cache file for a URL's introspection response (keyed by the URL).
-fn cache_path(url: &str) -> Option<PathBuf> {
+/// Cache file for a URL's introspection response, keyed by the URL *and* the
+/// request headers. The same endpoint answers differently per credential —
+/// multi-tenant, or prod and staging behind one hostname — so a key that saw
+/// only the URL served the first caller's schema to every later one, whatever
+/// token it presented (or didn't).
+fn cache_path(url: &str, headers: &[(String, String)]) -> Option<PathBuf> {
+    Some(cache_dir()?.join(cache_file_name(cache_key(url, headers))))
+}
+
+/// Bump when the recipe below changes: entries written under the old rule then
+/// become unreachable instead of being served under the new one. Bumped to 2
+/// when headers entered the key — a pre-2 entry may hold a credentialed schema
+/// that an unauthenticated run would otherwise still be handed.
+const KEY_VERSION: u32 = 2;
+
+fn cache_key(url: &str, headers: &[(String, String)]) -> u64 {
     let mut h = DefaultHasher::new();
+    KEY_VERSION.hash(&mut h);
     url.hash(&mut h);
-    Some(cache_dir()?.join(format!("{:016x}.json", h.finish())))
+    // Sorted, so `-H a -H b` and `-H b -H a` share an entry; lowercased, because
+    // HTTP header names are case-insensitive. Duplicates are kept rather than
+    // collapsed: ureq's own last-wins rule has exceptions, and an extra fetch is
+    // the safe direction to be wrong in — a wrong *hit* is the bug being fixed.
+    let mut canonical: Vec<(String, &str)> = headers
+        .iter()
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.as_str()))
+        .collect();
+    canonical.sort();
+    canonical.hash(&mut h);
+    h.finish()
+}
+
+/// The key as a filename. Hashed, never spelled out: a header value is often a
+/// token, and a cache path is readable by anything that can list the directory.
+fn cache_file_name(key: u64) -> String {
+    format!("{key:016x}.json")
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -512,7 +545,67 @@ fragment TypeRef on __Type {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_localhost, records_from};
+    use super::{cache_file_name, cache_key, is_localhost, records_from};
+
+    const URL: &str = "https://api.example.com/graphql";
+
+    fn headers(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn credentials_key_the_introspection_cache() {
+        // The bug: keyed on the URL alone, the first response was replayed for
+        // every later run whatever token it passed — a revoked token kept
+        // working, and two tenants behind one URL saw each other's schema.
+        let good = cache_key(URL, &headers(&[("X-Token", "secret")]));
+        let wrong = cache_key(URL, &headers(&[("X-Token", "WRONG")]));
+        let none = cache_key(URL, &[]);
+        assert_ne!(good, wrong);
+        assert_ne!(good, none);
+        assert_ne!(wrong, none);
+
+        // An unauthenticated endpoint is the common path and still caches.
+        assert_eq!(none, cache_key(URL, &[]));
+        // ...and the URL still matters when the headers match.
+        assert_ne!(none, cache_key("https://api.example.com/other", &[]));
+    }
+
+    #[test]
+    fn the_same_credentials_hit_the_same_entry_however_they_are_written() {
+        // `-H` is repeatable, and HTTP header names are case-insensitive, so
+        // neither the order nor the spelling should cost a refetch.
+        let a = cache_key(
+            URL,
+            &headers(&[("X-Token", "secret"), ("Authorization", "Bearer t")]),
+        );
+        let reordered = cache_key(
+            URL,
+            &headers(&[("Authorization", "Bearer t"), ("X-Token", "secret")]),
+        );
+        let recased = cache_key(
+            URL,
+            &headers(&[("AUTHORIZATION", "Bearer t"), ("x-token", "secret")]),
+        );
+        assert_eq!(a, reordered);
+        assert_eq!(a, recased);
+        // Values are not case-folded: tokens are case-sensitive.
+        assert_ne!(a, cache_key(URL, &headers(&[("X-Token", "SECRET")])));
+    }
+
+    #[test]
+    fn a_token_is_not_readable_from_the_cache_path() {
+        let name = cache_file_name(cache_key(URL, &headers(&[("X-Token", "secret")])));
+        assert!(!name.contains("secret"), "{name}");
+        let stem = name.strip_suffix(".json").expect("a .json file");
+        assert!(
+            stem.len() == 16 && stem.chars().all(|c| c.is_ascii_hexdigit()),
+            "the file name should be nothing but the hash: {name}"
+        );
+    }
 
     #[test]
     fn an_argument_description_survives_the_introspection_loader() {
