@@ -265,7 +265,11 @@ pub(crate) struct Note {
 /// Print the annotation table — every label sharing one column, values wrapped
 /// with a hanging indent under their own start.
 pub(crate) fn print_notes(notes: &[Note]) {
-    let label_w = notes.iter().map(|n| n.label.len()).max().unwrap_or(0);
+    let label_w = notes
+        .iter()
+        .map(|n| style::columns(n.label))
+        .max()
+        .unwrap_or(0);
     for note in notes {
         let indent = 2 + label_w + 2;
         let budget = style::width()
@@ -296,7 +300,7 @@ pub(crate) fn print_values(values: &[EnumValue]) {
     println!("  {}", style::muted("values"));
     let name_w = values
         .iter()
-        .map(|v| v.name.chars().count())
+        .map(|v| style::columns(v.name))
         .max()
         .unwrap_or(0);
     for value in values {
@@ -364,7 +368,7 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: &str, descripti
     };
     let name_w = fields
         .iter()
-        .map(|f| name(f).chars().count())
+        .map(|f| style::columns(&name(f)))
         .max()
         .unwrap_or(0);
     // The default rides in the type cell, `Role = MEMBER`, the way the schema
@@ -376,7 +380,7 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: &str, descripti
     };
     let type_w = fields
         .iter()
-        .map(|f| signature(f).chars().count())
+        .map(|f| style::columns(&signature(f)))
         .max()
         .unwrap_or(0);
     for field in fields {
@@ -503,7 +507,7 @@ impl Row {
     /// column. Counted in chars: GraphQL names are ASCII by spec, but the
     /// collapsed argument marker is an ellipsis, three bytes to one column.
     fn path_width(&self) -> usize {
-        self.path.chars().count() + self.args.chars().count()
+        style::columns(&self.path) + style::columns(&self.args)
     }
 }
 
@@ -554,13 +558,13 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
         .min(PATH_WIDTH);
     let ret_w = rows
         .iter()
-        .map(|r| r.ret.chars().count())
+        .map(|r| style::columns(&r.ret))
         .max()
         .unwrap_or(0)
         .min(RETURN_WIDTH);
     let kind_w = rows
         .iter()
-        .map(|r| r.kind.chars().count())
+        .map(|r| style::columns(&r.kind))
         .max()
         .unwrap_or(0);
 
@@ -678,17 +682,17 @@ pub(crate) fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
     for word in text.split_whitespace() {
         let extra = if current.is_empty() {
-            word.chars().count()
+            style::columns(word)
         } else {
-            word.chars().count() + 1
+            style::columns(word) + 1
         };
-        if !current.is_empty() && current.chars().count() + extra > width {
+        if !current.is_empty() && style::columns(&current) + extra > width {
             if lines.len() + 1 == max_lines {
                 // No room for another line: elide. Making space for the marker
                 // drops whole words, never part of one — `rather…` reads as
                 // elided text, `rather tha…` reads as a bug.
                 let mut kept = current;
-                while kept.chars().count() + 1 > width {
+                while style::columns(&kept) + 1 > width {
                     match kept.rfind(' ') {
                         Some(i) => kept.truncate(i),
                         // A single word wider than the budget: there's no

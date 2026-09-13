@@ -54,6 +54,17 @@ pub(crate) fn width() -> usize {
     })
 }
 
+/// How many terminal columns `text` occupies.
+///
+/// The one answer to that question in the whole crate, because every column
+/// this output aligns is measured against it and a second measurement would
+/// only differ. Pad with it or not at all: `str::len` is bytes and
+/// `chars().count()` is Unicode scalars, and both are the width only by
+/// coincidence of the text being ASCII.
+pub(crate) fn columns(text: &str) -> usize {
+    text.chars().count()
+}
+
 /// Wrap `text` in `code`, or return it unchanged when colour is off.
 ///
 /// Always resets fully (`\x1b[0m`) rather than turning off the one attribute:
@@ -128,7 +139,7 @@ impl Line {
     /// Append `text`, styled by `paint`, counting its visible columns.
     pub(crate) fn push(&mut self, text: &str, paint: fn(&str) -> String) {
         self.styled.push_str(&paint(text));
-        self.cols += text.chars().count();
+        self.cols += columns(text);
     }
 
     /// Two spaces, and start a new cell here.
