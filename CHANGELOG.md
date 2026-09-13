@@ -6,6 +6,25 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **An argument name buried the records actually named that.** 0.23.3 scored an
+  exact argument match a flat 200, which beats the typo tier (190 at distance
+  one) and much of the weak subsequence tier — so `gqls input` returned the
+  mutations *taking* an `input:` argument instead of the input objects *named*
+  `…Input`, and raised the weak-tail floor enough to cut the name matches
+  entirely. `names`, `period`, `targets` and a dozen others went the same way on
+  a Relay-style schema. Arguments are a second *pass* now rather than a lower
+  tier: names and paths are matched first, and argument names only if that found
+  nothing — which is what the feature always claimed, and what no single
+  constant could deliver, since "below every name match" is a property of the
+  result set and a score sees one record. The same change fixes a phrase query
+  losing its name matches outright (`refund order` answered only
+  `Mutation.refundPayment`, because `orderId` covered `order` and the phrase
+  filter keeps just the records matching the most words). Finding a field by an
+  argument it takes is unaffected: every query the feature rescued still answers.
+
 ## 0.23.3 — 2026-09-10
 
 ### Fixed
