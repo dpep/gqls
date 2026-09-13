@@ -37,7 +37,10 @@
 //!   The shortest chain wins, then the fewest arguments to fill in; when
 //!   several tie, the caller is told, rather than the pick being passed off as
 //!   obvious. The same walk answers the other edge — an input object is
-//!   reached by the chain leading to the field that *takes* it.
+//!   reached by the chain leading to the field that *takes* it, or, where
+//!   nothing takes it, to the fields taking the nearest inputs that *hold* it.
+//!   Every such holder is offered, not just the drafted one: two inputs holding
+//!   the same thing are two different things to pass, so the path names which.
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
@@ -154,17 +157,17 @@ pub fn build(
                     .ok_or_else(|| anyhow::anyhow!("{} has no enclosing input", target.path))?,
                 _ => target.name.as_str(),
             };
-            let Some(passed) = schema.passable_input(input) else {
+            let mut chains = schema.chains_passing(input);
+            if chains.is_empty() {
                 bail!(
                     "nothing takes an argument of type {input}, and no input that \
                      holds one is taken either, so there's no operation to draft. \
                      Try `gqls {input}` to see what references it."
                 );
-            };
+            }
+            let (passed, via, chain) = chains.remove(0);
             through = (passed != input).then(|| passed.to_string());
-            let mut chains = schema.chains_taking(passed);
-            let (via, chain) = chains.remove(0);
-            let alternatives = chains.into_iter().map(|(path, _)| path).collect();
+            let alternatives = chains.into_iter().map(|(_, path, _)| path).collect();
             (chain, Some(via), alternatives, Some(passed))
         }
         // A type is not callable either, but asking for one is asking how to
@@ -455,31 +458,52 @@ impl<'a> Schema<'a> {
         }
     }
 
-    /// The input a draft can actually reach, starting from the one asked about.
+    /// Every way to pass a value of `input`, best first: the input the
+    /// argument actually carries, the path naming it, and the chain of fields
+    /// an operation nests to get there.
     ///
     /// An input object is passable through the field that takes it — but one
     /// nothing takes may still be *held* by one that something takes
     /// (`AddressValidationInput { address: AddressInput! }`), and then the
-    /// operation that shows where it goes is the outer one's. Nearest holder
-    /// first, so what you paste is the smallest thing that contains what you
-    /// asked about. `None` when nothing along that path is taken at all.
-    fn passable_input(&self, input: &'a str) -> Option<&'a str> {
+    /// operations that show where it goes are the outer ones'. Nearest holders
+    /// first, so what you paste is the smallest thing containing what you asked
+    /// about — and *all* of them at that distance, because two inputs holding
+    /// the same thing are two different answers to "where does this go" and
+    /// picking one silently passes it off as the only one. A path through a
+    /// holder names the holder, since the argument no longer carries the type
+    /// that was asked about and the chain alone can't say which one it does.
+    fn chains_passing(&self, input: &'a str) -> Vec<(&'a str, String, Vec<&'a SchemaRecord>)> {
         let mut seen: HashSet<&str> = [input].into_iter().collect();
         let mut frontier = vec![input];
         while !frontier.is_empty() {
-            if let Some(&taken) = frontier
+            let mut chains: Vec<(&'a str, String, Vec<&'a SchemaRecord>)> = frontier
                 .iter()
-                .find(|at| !self.chains_taking(at).is_empty())
-            {
-                return Some(taken);
+                .flat_map(|&held| {
+                    self.chains_taking(held)
+                        .into_iter()
+                        .map(move |(arg, chain)| {
+                            let path = match held == input {
+                                true => format!("{}({arg}:)", label(&chain)),
+                                false => format!("{}({arg}: {held})", label(&chain)),
+                            };
+                            (held, path, chain)
+                        })
+                })
+                .collect();
+            if !chains.is_empty() {
+                chains.sort_by(|(_, a, x), (_, b, y)| {
+                    chain_order(x).cmp(&chain_order(y)).then(a.cmp(b))
+                });
+                return chains;
             }
             frontier = frontier
                 .iter()
                 .flat_map(|&at| self.inputs_holding(at))
                 .filter(|holder| seen.insert(holder))
                 .collect();
+            frontier.sort_unstable();
         }
-        None
+        Vec::new()
     }
 
     /// The input objects with a field of type `input` — the way *in* to it.
@@ -496,16 +520,17 @@ impl<'a> Schema<'a> {
         holders
     }
 
-    /// Every field taking an argument of type `input`, best first, each paired
-    /// with the chain of fields an operation nests to reach it.
+    /// Every field taking an argument of type `input`, each paired with the
+    /// argument's name and the chain of fields an operation nests to reach it.
+    /// Unordered — [`chains_passing`](Self::chains_passing) sorts, because the
+    /// paths from several holders rank against each other.
     ///
     /// A root consumer is the whole chain by itself. A consumer on a plain
     /// object is reached the way any nested field is — through the chain
     /// leading to the type it hangs off — and is dropped when nothing leads
-    /// there, since an alternative you can't call isn't one. Shortest chain
-    /// first, so what gets drafted is the least operation carrying the input.
-    fn chains_taking(&self, input: &str) -> Vec<(String, Vec<&'a SchemaRecord>)> {
-        let mut chains: Vec<(String, Vec<&'a SchemaRecord>)> = Vec::new();
+    /// there, since an alternative you can't call isn't one.
+    fn chains_taking(&self, input: &str) -> Vec<(&'a str, Vec<&'a SchemaRecord>)> {
+        let mut chains: Vec<(&'a str, Vec<&'a SchemaRecord>)> = Vec::new();
         // Every record with arguments hangs off some parent, so this covers the
         // roots and the object fields both. Unordered, hence the sort below.
         for r in self.fields.values().flatten().copied() {
@@ -527,12 +552,11 @@ impl<'a> Schema<'a> {
                     _ => continue,
                 };
                 chain.push(r);
-                // The argument is named, not just the path: it's the whole
-                // answer to "where does this input go".
-                chains.push((format!("{}({arg}:)", label(&chain)), chain));
+                // The argument is carried alongside, not just the path: it's
+                // half the answer to "where does this input go".
+                chains.push((arg, chain));
             }
         }
-        chains.sort_by(|(a, x), (b, y)| chain_order(x).cmp(&chain_order(y)).then(a.cmp(b)));
         chains
     }
 

@@ -793,4 +793,38 @@ fn an_input_only_another_input_holds_is_drafted_through_that_one() {
         ex.variables,
         serde_json::json!({ "input": { "address": { "city": "<String!>", "zip": "<String!>" } } })
     );
+    // one holder, so nothing to choose between
+    assert!(ex.alternatives.is_empty(), "{:?}", ex.alternatives);
+}
+
+#[test]
+fn every_input_that_holds_the_target_is_offered() {
+    // Two inputs hold an Address and both are taken, so "where does this go"
+    // has two answers. The nearest-holder rule still decides what gets drafted,
+    // but hiding the other would pass a semantically different operation off as
+    // the only one — the same property the direct-take path already has.
+    let sdl = "\
+        type Query { ping: String }\n\
+        type Mutation {\n\
+          bill(input: Billing!): Boolean!\n\
+          ship(input: Shipping!): Boolean!\n\
+        }\n\
+        input Billing { address: Address! }\n\
+        input Shipping { address: Address! }\n\
+        input Address { city: String! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Address").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    // Each path names the input its argument carries: the alternative isn't
+    // just another field, it's another thing to pass.
+    assert_eq!(
+        ex.paths(),
+        [
+            "Mutation.bill(input: Billing)",
+            "Mutation.ship(input: Shipping)"
+        ]
+    );
+    assert_eq!(ex.through.as_deref(), Some("Billing"));
 }
