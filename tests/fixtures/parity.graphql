@@ -1,0 +1,53 @@
+"""A small schema that exercises every field of a record: descriptions,
+documented arguments, defaults, deprecation, abstract types, and applied
+directives. Its introspection dump sits beside it as parity.json — see
+tests/source_parity.rs for how the pair is regenerated."""
+directive @auth(requires: Role!) on FIELD_DEFINITION | OBJECT
+
+"Who may see a field."
+enum Role {
+  "Full access."
+  ADMIN
+  MEMBER
+  OLD @deprecated(reason: "Use MEMBER.")
+}
+
+interface Node {
+  "Globally unique."
+  id: ID!
+}
+
+"An account."
+type User implements Node @auth(requires: MEMBER) {
+  id: ID!
+  "Public handle."
+  name: String!
+  secret: String @auth(requires: ADMIN)
+  posts(
+    "How many to return."
+    first: Int = 10
+    after: String
+  ): [Post!]!
+  email: String @deprecated(reason: "Use contact.")
+}
+
+type Post implements Node {
+  id: ID!
+  body: String
+}
+
+union SearchResult = User | Post
+
+"What to search for."
+input SearchInput {
+  "Free text."
+  query: String!
+  limit: Int = 25
+  roles: [Role!] = [MEMBER]
+}
+
+type Query {
+  "Look a user up."
+  user("Their id." id: ID!): User
+  search(input: SearchInput!): [SearchResult!]!
+}

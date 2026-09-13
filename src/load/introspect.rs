@@ -77,17 +77,60 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
 /// server sent, so both go through here and get the same answer.
 fn records_from(raw: &[u8], source: &str, refresh: bool) -> Result<Vec<SchemaRecord>> {
     // The parsed records depend only on the response bytes, so the record
-    // cache short-circuits the (large) JSON parse on repeat queries.
-    if !refresh {
-        if let Some(records) = super::record_cache::load(raw) {
-            return Ok(records);
+    // cache short-circuits the (large) JSON parse on repeat queries. One exit,
+    // so the disclosure below is not something a cache hit skips.
+    let records = match (!refresh).then(|| super::record_cache::load(raw)).flatten() {
+        Some(records) => records,
+        None => {
+            let body: Value = serde_json::from_slice(raw)
+                .with_context(|| format!("parsing introspection response from {source}"))?;
+            let records = from_introspection(schema_of(&body, source)?)?;
+            super::record_cache::store(raw, &records);
+            records
         }
-    }
-    let body: Value = serde_json::from_slice(raw)
-        .with_context(|| format!("parsing introspection response from {source}"))?;
-    let records = from_introspection(schema_of(&body, source)?)?;
-    super::record_cache::store(raw, &records);
+    };
+    note_undisclosed_directives(&records);
     Ok(records)
+}
+
+/// Directives every server defines whether the schema uses them or not, so a
+/// definition is no evidence that anything was hidden: `@skip`/`@include` apply
+/// to operations rather than to the schema, `@deprecated` arrives by its own
+/// side channel (`isDeprecated`), and `@specifiedBy`/`@oneOf` come with the
+/// built-in scalars. GitHub's 11k-record dump defines exactly these five.
+const UNREMARKABLE_DIRECTIVES: &[&str] = &["skip", "include", "deprecated", "specifiedBy", "oneOf"];
+
+/// Say, under `-v`, that this source can't answer "what's applied here".
+///
+/// Standard introspection exposes directive *definitions* but not their
+/// applications, so every record's `directives` comes back empty — which reads
+/// exactly like a schema that applies none. The schema defining directives of
+/// its own is the evidence that the difference matters; without that, the
+/// silence is accurate and there is nothing to disclose.
+///
+/// A `-v` line rather than a status one: it would otherwise print on every run
+/// against a federated endpoint, where `@key` is on half the types.
+fn note_undisclosed_directives(records: &[SchemaRecord]) {
+    if !crate::logging::is_verbose() {
+        return;
+    }
+    let defined: Vec<&str> = records
+        .iter()
+        .filter(|r| r.kind == Kind::Directive)
+        .map(|r| r.name.as_str())
+        .filter(|n| !UNREMARKABLE_DIRECTIVES.contains(n))
+        .collect();
+    let Some((first, rest)) = defined.split_first() else {
+        return;
+    };
+    let named = match rest.len() {
+        0 => format!("@{first}"),
+        n => format!("@{first} (+{n} more)"),
+    };
+    crate::detail!(
+        "introspection reports no applied directives — this schema defines {named}, \
+         but not where it's used; its SDL says that"
+    );
 }
 
 /// The `__schema` object inside an introspection payload — under `data` as a
