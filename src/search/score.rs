@@ -39,6 +39,12 @@ pub(crate) struct Match {
     /// the cut acts on this rather than on the number: it's a fact about the
     /// two strings, not a threshold a future band could drift into.
     pub(crate) exact: bool,
+    /// The query matched the record's own name, rather than its path or an
+    /// argument — both of which are somebody else's name. Read for the same
+    /// reason as `exact`: the argument pass asks whether anything was *named*
+    /// like the query, and no constant sits under every name match, so a weak
+    /// one can score below a path accident on a long path.
+    pub(crate) named: bool,
     /// What the tail cut compares: the quality, on the 0..[`SCALE`] scale. The
     /// qualifier boost is left out because it can't tell two candidates apart —
     /// every member of the named type is handed the same one — so including it
@@ -96,7 +102,10 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
     let name_lower = rec.name.to_ascii_lowercase();
 
     if name_lower == q {
-        return Some(finish(EXACT, true, qualifier, rec));
+        return Some(Match {
+            exact: true,
+            ..finish(EXACT, qualifier, rec)
+        });
     }
     let quality = if let Some(m) = match_quality(&q, &rec.name, &name_lower) {
         // A match that starts the name lands in the band above every match that
@@ -112,17 +121,24 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
         // less of a long name than of a short one, which is the point.
         TYPO * (1.0 - d as f64 / q.len().max(name_lower.len()) as f64)
     } else {
-        // No name match: fall back to the qualified path (`user.email` vs
-        // `User.email`), measured the same way and discounted for being the
-        // path rather than the name.
-        PATH * match_quality(
-            &query.to_ascii_lowercase(),
-            &rec.path,
-            &rec.path.to_ascii_lowercase(),
-        )?
+        // Nothing of the name matched, by either reading of it.
+        return score_path(query, qualifier, rec);
     };
 
-    Some(finish(quality, false, qualifier, rec))
+    Some(finish(quality, qualifier, rec))
+}
+
+/// The name pass's last resort: the query against the record's qualified path
+/// (`user.email` vs `User.email`), measured like a name match and discounted
+/// by [`PATH`] for not being one. The path is this record's name with another
+/// record's in front of it, so matching it names neither.
+fn score_path(query: &str, qualifier: Option<&str>, rec: &SchemaRecord) -> Option<Match> {
+    let path_lower = rec.path.to_ascii_lowercase();
+    let m = match_quality(&query.to_ascii_lowercase(), &rec.path, &path_lower)?;
+    Some(Match {
+        named: false,
+        ..finish(PATH * m, qualifier, rec)
+    })
 }
 
 /// How good a match `query` is for `text`, in [0, 1]: how cleanly it aligned,
@@ -187,18 +203,24 @@ pub(crate) fn score_arg(query: &str, rec: &SchemaRecord) -> Option<Match> {
     let (leaf, qualifier) = parse_qualified(query);
     let quality = best_arg_match(&leaf.to_ascii_lowercase(), rec)?;
     // Naming an argument exactly is not naming the record: the record is the
-    // field that takes it, and the exact-tier cut is about records.
-    Some(finish(quality, false, qualifier, rec))
+    // field that takes it, and both set-level rules are about records.
+    Some(Match {
+        named: false,
+        ..finish(quality, qualifier, rec)
+    })
 }
 
 /// Put a quality on the reported scale and add the boost a `Type.` qualifier
-/// earns the field whose parent it names (`Repository.name`).
-fn finish(quality: f64, exact: bool, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
+/// earns the field whose parent it names (`Repository.name`). Reports the
+/// ordinary case — the query matched the name, but isn't it; a caller whose
+/// match is something else says so at its own call site.
+fn finish(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
     let boost = qualifier
         .and_then(|q| parent_boost(q, rec.parent.as_deref()))
         .unwrap_or(0.0);
     Match {
-        exact,
+        exact: false,
+        named: true,
         merit: (quality * SCALE).round() as i64,
         score: ((quality + boost) * SCALE).round() as i64,
     }
@@ -262,13 +284,16 @@ pub(crate) fn score_phrase(
     let mut matched = 0;
     let mut sum = Match {
         exact: true,
+        named: false,
         merit: 0,
         score: 0,
     };
     for token in tokens {
         if let Some(m) = scorer(token, rec) {
             matched += 1;
+            // Exact only if every word it matched was; named if any was.
             sum.exact &= m.exact;
+            sum.named |= m.named;
             sum.merit += m.merit;
             sum.score += m.score;
         }

@@ -297,29 +297,53 @@ fn glob_search<'a>(
 }
 
 /// Fuzzy-match `query`, by name or path first and by argument names only if
-/// that found nothing. Two passes rather than one ranking, because "arguments
-/// answer only when nothing is *named* like the query" is a property of the
-/// whole result set: no per-record score can see whether something else
-/// matched.
+/// nothing was *named* like it. Two passes rather than one ranking, because
+/// that condition is a property of the whole result set: no per-record score
+/// can see whether something else matched.
+///
+/// The gate asks the first pass for a name match, not for any match at all. A
+/// subsequence of some record's qualified path is the weakest signal the tool
+/// has, and letting one stand in for "something matched" hid every field
+/// taking `until` behind `CheckRun.title`. When nothing takes the query as an
+/// argument either, those path matches are all there is, so they stand.
 fn fuzzy_search<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     predicate: &Predicate<'_>,
 ) -> Vec<Hit<'a>> {
-    let hits = rank(query, records, predicate, score::score);
-    if hits.is_empty() {
-        return rank(query, records, predicate, score::score_arg);
-    }
-    hits
+    let by_name = rank(query, records, predicate, score::score);
+    // Only a one-word query can *name* a record; a phrase describes one, and
+    // the word-coverage filter in `rank` is its equivalent — the same line the
+    // exact cut draws. So a phrase's gate is the older one: did anything come
+    // back at all.
+    let answered = match score::phrase_tokens(query).is_empty() {
+        true => by_name.iter().any(|(m, _)| m.named),
+        false => !by_name.is_empty(),
+    };
+    let hits = match answered {
+        true => by_name,
+        false => match rank(query, records, predicate, score::score_arg) {
+            by_arg if by_arg.is_empty() => by_name,
+            by_arg => by_arg,
+        },
+    };
+    hits.into_iter()
+        .map(|(m, record)| Hit {
+            record,
+            score: m.score,
+        })
+        .collect()
 }
 
 /// Score every record `scorer` matches, best first, with the weak tail cut.
+/// Returns the matches themselves, not [`Hit`]s: the caller chooses between
+/// two passes by what they matched, which the reported score can't say.
 fn rank<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     predicate: &Predicate<'_>,
     scorer: score::Scorer,
-) -> Vec<Hit<'a>> {
+) -> Vec<(score::Match, &'a SchemaRecord)> {
     use rayon::prelude::*;
     // A multi-word query is matched word by word: no single name contains
     // "cancel a subscription" as one subsequence, so scoring it whole is a
@@ -387,12 +411,7 @@ fn rank<'a>(
             }
         }
     }
-    hits.into_iter()
-        .map(|(m, record)| Hit {
-            record,
-            score: m.score,
-        })
-        .collect()
+    hits
 }
 
 #[cfg(test)]
@@ -711,6 +730,51 @@ mod tests {
         assert_eq!(
             hits.first().map(|h| h.record.path.as_str()),
             Some("Query.repository")
+        );
+    }
+
+    #[test]
+    fn a_path_match_is_not_something_having_matched_a_name() {
+        // `until` names no record here: it reaches `CheckRun.title` only as a
+        // subsequence of that *path*, at an eighth of what the field taking
+        // `until:` scores. A first pass holding nothing but that has still
+        // found nothing anyone named — and one unrelated type is all it took
+        // to hide the answer.
+        let sdl = "type Query { history(until: String): String }\n\
+                   type CheckRun { title: String }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        let paths = |q: &str| {
+            search(q, &records, Default::default())
+                .iter()
+                .map(|h| h.record.path.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths("until"), ["Query.history"]);
+
+        // The other half of the same rule: a path match is weak, but when
+        // nothing takes the query as an argument either, it's all there is.
+        assert_eq!(paths("queryhistory"), ["Query.history"]);
+    }
+
+    #[test]
+    fn a_phrase_is_answered_by_the_words_it_covers_not_by_what_named_it() {
+        // A phrase can't name a record, so its gate is coverage, not naming —
+        // the line the exact cut already draws. This input field covers both
+        // words on its path alone, and the argument pass mustn't take the
+        // query off it and hand back every field taking a `method:`. The name
+        // is GitHub's, at GitHub's length: share is measured over what follows
+        // the match, so a shorter stand-in doesn't reach this arrangement.
+        let sdl = "input UpdateEnterpriseTwoFactorAuthenticationDisallowedMethodsSettingInput \
+                   { settingValue: String }\n\
+                   type Query { things(method: String): String }\n";
+        let records = crate::load::sdl::from_sdl(sdl).expect("should parse");
+        let paths: Vec<&str> = search("method use", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            ["UpdateEnterpriseTwoFactorAuthenticationDisallowedMethodsSettingInput.settingValue"]
         );
     }
 
