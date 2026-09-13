@@ -1,0 +1,13 @@
+# One field returning a pathologically long type name, among ordinary ones —
+# the return-type equivalent of the long path that PATH_WIDTH exists to contain.
+type Query {
+  id: ID
+  name: String
+  count: Int
+  ready: Boolean
+  elaborate: UpdateEnterpriseTwoFactorAuthenticationDisallowedMethodsSettingPayload
+}
+
+type UpdateEnterpriseTwoFactorAuthenticationDisallowedMethodsSettingPayload {
+  ok: Boolean
+}

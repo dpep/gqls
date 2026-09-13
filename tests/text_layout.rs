@@ -154,6 +154,46 @@ fn kind_tags_align_when_there_is_no_return_column() {
 }
 
 #[test]
+fn one_pathological_return_type_does_not_tax_every_other_row() {
+    // The path column is capped for exactly this reason and the return column
+    // wasn't, so a 70-character type name pushed every `[kind]` tag past the
+    // fold and the four short rows became unreadable to save the fifth a wrap.
+    const OUTLIER: &str = "UpdateEnterpriseTwoFactorAuthenticationDisallowedMethodsSettingPayload";
+    let out = run_against("tests/fixtures/wide_return_type.graphql", &["Query."]);
+    let ordinary: Vec<&str> = rows(&out)
+        .into_iter()
+        .filter(|l| !l.contains(OUTLIER))
+        .collect();
+    assert!(ordinary.len() > 2, "need several ordinary rows:\n{out}");
+    for line in &ordinary {
+        assert!(
+            line.chars().count() <= 80,
+            "an outlier pushed an ordinary row past the fallback width: {line}"
+        );
+    }
+    let kinds: Vec<usize> = ordinary.iter().filter_map(|l| kind_column(l)).collect();
+    assert_eq!(
+        kinds.len(),
+        ordinary.len(),
+        "expected a kind tag per row:\n{out}"
+    );
+    assert!(
+        kinds.iter().all(|c| *c == kinds[0]),
+        "kind tags should share a column, got {kinds:?} in:\n{out}"
+    );
+    // The outlier overflows its own line rather than being cut: the point is
+    // that it stops taxing its neighbours, not that it gets hidden.
+    let long = rows(&out)
+        .into_iter()
+        .find(|l| l.contains(OUTLIER))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(
+        long.chars().count() > 80,
+        "expected the outlier to run long: {long}"
+    );
+}
+
+#[test]
 fn a_multibyte_marker_does_not_skew_the_columns() {
     // `(…)` is three bytes and one column. Padding computed in bytes would
     // pull every row that takes arguments two columns left of the rest — and

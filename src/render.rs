@@ -475,6 +475,18 @@ const MIN_DESCRIPTION_WIDTH: usize = 20;
 /// allowed to overflow its own line instead.
 const PATH_WIDTH: usize = 48;
 
+/// The same rule for the return column, which a generated schema can make just
+/// as pathological — `UpdateEnterprise…SettingPayload` is 70 characters, and
+/// uncapped it pushed every `[kind]` tag on the page past 130.
+///
+/// A smaller number than [`PATH_WIDTH`] because return types are shorter, not
+/// because the columns differ in kind: across two production schemas nine rows
+/// in ten return something under 30 columns wide, which is the same proportion
+/// 48 leaves alone in the path column. Wide enough that `-> [FooConnection!]!`
+/// still aligns; narrow enough that with both caps the kind tag can't be pushed
+/// past about 84 columns whatever the schema does.
+const RETURN_WIDTH: usize = 32;
+
 /// A row's cells, kept as plain text so the column widths can be measured, and
 /// styled only on the way out.
 pub(crate) struct Row {
@@ -540,8 +552,17 @@ pub(crate) fn print_text(matches: &[Match], descriptions: bool, explain: Option<
         .max()
         .unwrap_or(0)
         .min(PATH_WIDTH);
-    let ret_w = rows.iter().map(|r| r.ret.len()).max().unwrap_or(0);
-    let kind_w = rows.iter().map(|r| r.kind.len()).max().unwrap_or(0);
+    let ret_w = rows
+        .iter()
+        .map(|r| r.ret.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(RETURN_WIDTH);
+    let kind_w = rows
+        .iter()
+        .map(|r| r.kind.chars().count())
+        .max()
+        .unwrap_or(0);
 
     for row in &rows {
         let mut line = style::Line::default();
