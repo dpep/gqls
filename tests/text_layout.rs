@@ -610,3 +610,54 @@ fn a_root_type_lists_its_operations_as_fields() {
     assert!(out.contains("user(…)"), "{out}");
     assert!(out.contains("search(…)"), "{out}");
 }
+
+#[test]
+fn a_types_fields_carry_the_directives_applied_to_them() {
+    // Which subgraph owns a field is only in its `@join__field`, so a fields
+    // block without directives meant naming every field, one command each.
+    let out = run_against("tests/fixtures/federated.graphql", &["Product"]);
+    let row = |name: &str| {
+        out.lines()
+            .find(|l| l.trim_start().starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} row in:\n{out}"))
+            .to_string()
+    };
+    assert!(
+        row("name").contains("@join__field(graph: PRODUCTS)"),
+        "{out}"
+    );
+    assert!(
+        row("weight").contains("@join__field(graph: PRODUCTS)"),
+        "{out}"
+    );
+    // They share the description's column rather than taking one of their own,
+    // so a field with neither still ends at its type.
+    assert_eq!(
+        column_of(&row("name"), "@join__field"),
+        column_of(&row("shippingEstimate"), "@join__field"),
+        "directives not aligned:\n{out}"
+    );
+    assert_eq!(row("upc").trim_end(), row("upc"), "{out}");
+}
+
+#[test]
+fn dropping_descriptions_keeps_a_fields_directives() {
+    // `-D` hides the schema's prose. A directive isn't prose — it's the same
+    // kind of fact as the `(deprecated: …)` marker `-D` also keeps.
+    let out = run_against("tests/fixtures/federated.graphql", &["Product", "-D"]);
+    assert!(out.contains("@join__field(graph: REVIEWS"), "{out}");
+    assert!(!out.contains("How much it costs to ship"), "{out}");
+}
+
+#[test]
+fn a_deprecated_field_is_not_also_listed_as_a_directive() {
+    // `@deprecated` is rendered as its reason; repeating the raw directive
+    // beside it would say the same thing twice, at four times the width.
+    let out = run(&["Mutation"]);
+    let row = out
+        .lines()
+        .find(|l| l.trim_start().starts_with("deleteUser"))
+        .unwrap_or_else(|| panic!("{out}"));
+    assert!(row.contains("(deprecated: use archiveUser)"), "{out}");
+    assert!(!out.contains("@deprecated"), "{out}");
+}

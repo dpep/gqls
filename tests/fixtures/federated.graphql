@@ -1,0 +1,20 @@
+# A federated supergraph's shape: one type whose fields come from different
+# subgraphs, which is only visible in the `@join__field(graph: …)` applied to
+# each. Mirrors `graph_weaver`'s supergraph fixture — the schema where a
+# fields block with no directives on it hid which subgraph owned what.
+directive @join__field(graph: String, requires: String, external: Boolean) on FIELD_DEFINITION
+directive @join__type(graph: String, key: String) on OBJECT
+
+type Query {
+  product(upc: String!): Product @join__field(graph: PRODUCTS)
+}
+
+type Product
+  @join__type(graph: PRODUCTS, key: "upc")
+  @join__type(graph: REVIEWS, key: "upc") {
+  upc: String!
+  name: String! @join__field(graph: PRODUCTS)
+  weight: Int! @join__field(graph: PRODUCTS) @join__field(graph: REVIEWS, external: true)
+  """How much it costs to ship, computed from the parts REVIEWS asked for."""
+  shippingEstimate: Int! @join__field(graph: REVIEWS, requires: "price weight")
+}

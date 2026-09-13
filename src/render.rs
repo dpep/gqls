@@ -33,6 +33,21 @@ pub(crate) struct Match<'a> {
 /// page. `--json` carries the whole list either way.
 const MAX_LISTED: usize = 6;
 
+/// A record's applied directives, minus `@deprecated`.
+///
+/// Deprecation is rendered as its reason everywhere it appears — a `deprecated`
+/// annotation row, a `(deprecated: …)` marker in a field row — and the reason is
+/// the part worth reading. One rule, so the two places that show directives
+/// can't disagree about which ones.
+fn applied_directives(record: &SchemaRecord) -> Vec<&str> {
+    record
+        .directives
+        .iter()
+        .map(String::as_str)
+        .filter(|d| !d.starts_with("@deprecated"))
+        .collect()
+}
+
 /// One annotation's worth of names, elided past [`MAX_LISTED`].
 fn listed(items: &[String]) -> String {
     let shown = items.len().min(MAX_LISTED);
@@ -81,6 +96,17 @@ pub(crate) struct Field<'a> {
     /// non-null field optional, so a type without it reads as mandatory.
     #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<&'a str>,
+    /// Applied directives, `@deprecated` excluded — it has its own marker.
+    ///
+    /// They share the description's cell rather than taking a column, because
+    /// the two barely co-occur: schemas that document their fields use `@`
+    /// almost only for `@deprecated`, and the schemas that apply directives
+    /// field-by-field are generated ones (a federation supergraph) with no
+    /// prose at all. A column of their own would be a blank gutter on every row
+    /// of every schema that has neither — which includes every schema loaded by
+    /// introspection, since it can't report applied directives at all.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    directives: Vec<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,6 +186,7 @@ pub(crate) fn extras<'a>(record: &'a SchemaRecord, records: &'a [SchemaRecord]) 
             type_ref: r.type_ref.as_deref().unwrap_or(""),
             args: r.args.iter().map(String::as_str).collect(),
             default: r.default.as_deref(),
+            directives: applied_directives(r),
             description: r.description.as_deref(),
             deprecated: r.deprecated.as_deref(),
         })
@@ -196,6 +223,9 @@ pub(crate) fn extras<'a>(record: &'a SchemaRecord, records: &'a [SchemaRecord]) 
                     type_ref: arg.type_ref,
                     args: Vec::new(),
                     default: arg.default,
+                    // An argument's own directives aren't in the record model;
+                    // `args` is a list of signature strings.
+                    directives: Vec::new(),
                     description: record.arg_descriptions.get(arg.name).map(String::as_str),
                     deprecated: None,
                 }
@@ -224,14 +254,7 @@ pub(crate) fn annotations(record: &SchemaRecord, extras: &Extras, descriptions: 
     if let Some(reason) = record.deprecated.as_deref().filter(|r| !r.is_empty()) {
         out.push(note("deprecated", reason.to_string()));
     }
-    // `@deprecated` is skipped: the line above already carries it, with the
-    // reason, which is the part worth reading.
-    let applied: Vec<&str> = record
-        .directives
-        .iter()
-        .map(String::as_str)
-        .filter(|d| !d.starts_with("@deprecated"))
-        .collect();
+    let applied = applied_directives(record);
     if !applied.is_empty() {
         out.push(note("directives", applied.join(" ")));
     }
@@ -402,6 +425,18 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, d
             None => String::new(),
         };
         let mut text = marker.clone();
+        // Directives share the description's cell instead of taking a column.
+        // They're facts about the field, like the deprecation marker beside
+        // them, and they precede the prose for the same reason it does: on a
+        // federated schema `@join__field(graph: REVIEWS)` is what the reader
+        // came for. Not gated by `-D` — that hides the schema's prose, and a
+        // directive isn't prose.
+        for directive in &field.directives {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(directive);
+        }
         if let Some(d) = field.description.filter(|_| descriptions) {
             if !text.is_empty() {
                 text.push(' ');
