@@ -22,6 +22,15 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Changed
+- **The one-time embedding pass no longer guesses "may take a minute".** It
+  reports an estimate measured from the run's own rate, and now prints to
+  non-terminal stderr every 15s — a piped or CI run could not tell slow from
+  hung, and on the largest schema tested this is minutes, not one.
+- **`--json`/`--ndjson` carry `degraded: true`** when semantic ranking fell back
+  to the hash embedder; absent otherwise. The warning was stderr-only, which
+  never reaches a caller parsing stdout.
+- **Cached introspection responses are bounded by count and size**, least
+  recently used evicted, rather than by age alone.
 - **`-e`/`-R` say out loud when several records are spelled exactly like the
   query.** `id` names `Character.id`, `Location.id` and `Episode.id`; the pick
   used to look settled. It still drafts and still exits 0 — the runners-up go to
@@ -32,6 +41,17 @@ early entries are terser than what follows.
   fetches nothing; the note points at `--depth`. The draft itself is unchanged.
 
 ### Fixed
+- **The introspection cache ignored the credentials that fetched a schema.** It
+  keyed on the URL alone, so the first response to succeed was replayed for every
+  later run against that URL whatever headers were supplied — or not supplied.
+  A revoked or rotated token kept working for up to an hour, a CI check existing
+  to assert *auth is enforced* passed falsely, and two callers sharing a URL with
+  different credentials could be served each other's schema. The key covers the
+  request headers now — sorted, names lowercased, hashed, never written to the
+  path. Entries cached under the old rule are unreachable and refetch once;
+  nothing for you to do.
+- **A parsed-record cache file that won't decode says so under `-v`** before
+  falling back to reparsing, the way the introspection cache already did.
 - **`-e` leaked a multi-line deprecation reason out of its comment.** A `#`
   comment ends at the newline, so only the reason's first line stayed commented
   and the rest landed in the selection set, where a server reads it as field
