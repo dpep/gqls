@@ -145,6 +145,31 @@ fn a_batch_answers_before_the_producer_closes() {
 }
 
 #[test]
+fn a_batch_refuses_the_document_form_of_json() {
+    // `-j` is one complete array per query; several of them concatenated are
+    // not a JSON document, and nothing said so — `-J` is the streaming form.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args([SCHEMA, "-j", "--fuzzy"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("gqls should be runnable");
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(b"user\ncreateUser\n")
+        .expect("writing queries to stdin");
+    let out = child.wait_with_output().expect("gqls should exit");
+    assert!(!out.status.success(), "should not exit clean: {out:?}");
+    assert!(out.stdout.is_empty(), "nothing unparseable was emitted");
+    let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
+    assert!(stderr.contains("-J"), "says which flag to use: {stderr}");
+}
+
+#[test]
 fn a_piped_query_that_names_one_record_explains_it() {
     // The explanation was switched off for piped input, so the same query
     // answered differently depending on how it arrived — and a pipe is how an

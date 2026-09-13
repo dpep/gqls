@@ -546,6 +546,16 @@ pub fn run() -> Result<()> {
     if batch && (cli.resolve || cli.example) {
         anyhow::bail!("--resolve and --example take a single query, not piped input");
     }
+    // `-j` is one complete document per query, and a batch emits several — no
+    // parser accepts the concatenation, and the breakage is invisible until a
+    // consumer chokes on it. `-J` is the streaming form and always was.
+    if batch && matches!(output, Output::Json) {
+        anyhow::bail!(
+            "-j emits one JSON document per query, which a batch concatenates into \
+             something no parser reads — use -J/--ndjson for piped queries, or pass \
+             the query as an argument"
+        );
+    }
 
     // Built on the first query that needs it, then reused: loading the model is
     // the dominant cost of a semantic query, and paying it per line would undo
