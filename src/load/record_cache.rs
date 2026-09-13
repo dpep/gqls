@@ -42,7 +42,17 @@ pub fn load(source: &[u8]) -> Option<Vec<SchemaRecord>> {
     read_span.note(|| format!("{:.1} MB", buf.len() as f64 / 1_048_576.0));
     drop(read_span);
     let mut decode_span = crate::profile::span("cache: decode");
-    let records = decode(&buf)?;
+    // A file that won't decode is a miss, and reparsing is the right answer —
+    // but silently, "why was that run slow" is unanswerable. The introspection
+    // cache says the same thing in the same situation; the next `store` writes
+    // this same path, so there's nothing to clean up.
+    let Some(records) = decode(&buf) else {
+        crate::detail!(
+            "cached records unusable ({}) — reparsing",
+            crate::paths::display(&p)
+        );
+        return None;
+    };
     decode_span.note(|| format!("{} records", records.len()));
     drop(decode_span);
     crate::detail!("schema cache hit: {}", crate::paths::display(&p));
