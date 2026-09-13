@@ -51,6 +51,22 @@ early entries are terser than what follows.
   per query and a batch answers many, so the output was concatenated top-level
   values no parser reads. A batch refuses `-j` and points at `-J`, the streaming
   form.
+- **An SDL description is no longer rewritten as if it were code.** The three
+  normalisations gqls applies before parsing — the federation `extend schema`
+  header, a description above `schema { … }`, and a pre-2018 `implements A, B`
+  list — searched raw text for their keywords, so documentation that spelled one
+  got edited. A description *opening* with the word `schema` was the worst: it
+  deleted back to the previous string literal, dropping the type defined in
+  between out of the schema entirely, or failing the parse outright.
+  Descriptions and `#` comments are left alone now.
+- **A schema file is read for what it holds, not what it's called.** An
+  introspection dump saved as `schema.graphql` — what `curl … > schema.graphql`
+  writes — came back as `parsing SDL: Parse error at 1:1`, blaming a syntax error
+  in a file with nothing wrong with it. The first non-whitespace byte picks the
+  loader now, and SDL under a `.json` name reads as SDL for the same reason. A
+  JSON file that is no dump still says so, naming the file. A dump with *no*
+  extension still can't be passed on the command line: an argument is only
+  recognised as a source by its extension or its scheme.
 - **`@deprecated` with no reason now reads "No longer supported"** — the spec's
   default for the argument, and what a conforming server reports for the same
   schema — where gqls said "deprecated", rendering as the stutter
