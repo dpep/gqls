@@ -58,6 +58,12 @@ Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `
 
 **Fuzzy bridges spelling, not vocabulary.** It matches names built out of your query's characters in order, so a typo or a dropped vowel still lands — but a synonym or a missing domain word is a different name, not a mangled one. `currentUser` finds nothing when the field is `me`, and `updateAddress` misses `updateUserAddress` the moment an unrelated `UPDATE_ADDRESS` outranks it. When you're guessing at a name rather than recalling one, search the word you're sure of (`address`) or write a phrase — a phrase is what turns semantic ranking on.
 
+A multi-word query is matched one word at a time, so a phrase isn't a hard zero when semantic ranking is unavailable or still warming. Noise words (`a`, `the`, `of`, …) are dropped, and the records covering the most words win outright — `cancelSubscription` beats the many that merely echo `subscription`. When nothing covers the whole phrase, every single-word match stands.
+
+Which means a phrase works best trimmed to its content words, the way you'd type a search-engine query, not a question: `user credit score` finds the field where `where do we expose a users credit score` buries it. Dropping noise words keeps them from scoring, but every word you leave in is a word a record can cover, and the ones you didn't mean still count.
+
+Only whitespace opens this path: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` answers `no matches for "Post.role"` and stops — it doesn't retry as a phrase, though `gqls role` alone finds four records. The miss message shows the rewrite, which is the tell; drop the type word. Quoting won't help, since the qualifier is recognised either way.
+
 A miss says what made it one. The filters in play, and what dropping them would find (`nothing returns Issue with -k query — 43 match without it`); and the schema, when gqls discovered one rather than being handed it (`no matches for "country" in examples/schema.graphql`) — "not in this schema" and "you're searching the wrong schema" otherwise read identically.
 
 ```sh
@@ -129,12 +135,6 @@ printf 'cancel a subscription\ndispute a transaction\n' | gqls schema.graphql -J
 ```
 
 Use `-J`, not `-j`: `-j` is one complete JSON array per query, and a batch would concatenate them into something no parser reads, so a batch refuses `-j` and says to use the streaming form. Every row carries the `query` that produced it, so one stream stays untangleable, and a query that matched nothing still reports `{"query": …, "status": "no_matches"}` rather than vanishing. A single query's output is unchanged — no `query` field — so existing callers parse exactly what they always did. A piped query that names one record explains it, exactly as the same query typed as an argument would: the asymmetry was invisible, and a pipe is how an agent drives this. An explicit query beats a pipe, and `--resolve`/`--example` take one query only.
-
-A multi-word query is matched one word at a time, so a phrase isn't a hard zero when semantic ranking is unavailable or still warming. Noise words (`a`, `the`, `of`, …) are dropped, and the records covering the most words win outright — `cancelSubscription` beats the many that merely echo `subscription`. When nothing covers the whole phrase, every single-word match stands.
-
-Which means a phrase works best trimmed to its content words, the way you'd type a search-engine query, not a question: `user credit score` finds the field where `where do we expose a users credit score` buries it. Dropping noise words keeps them from scoring, but every word you leave in is a word a record can cover, and the ones you didn't mean still count.
-
-Only whitespace opens this path: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` answers `no matches for "Post.role"` and stops — it doesn't retry as a phrase, though `gqls role` alone finds four records. The miss message shows the rewrite, which is the tell; drop the type word. Quoting won't help, since the qualifier is recognised either way.
 
 ### Filter by return type
 `--returns TYPE` keeps only fields whose type is `TYPE`, ignoring `[]`/`!` wrappers — the way to find a field when you know what it returns but not what it's called:
