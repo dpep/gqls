@@ -102,6 +102,103 @@ fn strip_schema_description(sdl: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(sdl)
 }
 
+/// Rewrite a pre-2018 interface list — `type X implements A, B {` — into the
+/// current `A & B` spelling that graphql-parser (0.4) accepts. Borrowed (no-op)
+/// when there's nothing of the sort, which is every modern schema.
+///
+/// Commas are insignificant whitespace in GraphQL, so the old form is really
+/// `implements A B`: a second name with no separator, which the 2018 grammar
+/// dropped. graphql-ruby still reads and emits it (its own 26k-line benchmark
+/// schema is written that way), and so did every schema printed before then.
+/// Rejecting them costs the whole file, and the parse error points at the
+/// second interface name and says "expected end of input" — a long way from
+/// what's wrong.
+///
+/// Rewriting the source before parsing is a liberty, so this takes it only
+/// where the old grammar is unambiguous: a `type`/`interface` keyword, a name,
+/// `implements`, two or more names with no `&` between them, and a `{` or `@`
+/// closing the list. Nothing that matches all of that parses today, so no file
+/// that loads now can be changed by it.
+fn join_legacy_implements(sdl: &str) -> std::borrow::Cow<'_, str> {
+    if !sdl.contains("implements") {
+        return std::borrow::Cow::Borrowed(sdl);
+    }
+    let b = sdl.as_bytes();
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut i = 0;
+    while let Some(found) = sdl[i..].find("implements") {
+        let at = i + found;
+        let after = at + "implements".len();
+        i = after;
+        let boundary =
+            (at == 0 || !is_ident(b[at - 1])) && !b.get(after).copied().is_some_and(is_ident);
+        if !boundary || !follows_a_type_header(sdl, at) {
+            continue;
+        }
+        let Some((names, end)) = legacy_interface_list(b, sdl, after) else {
+            continue;
+        };
+        out.push_str(&sdl[copied..after]);
+        out.push(' ');
+        out.push_str(&names.join(" & "));
+        copied = end;
+        i = end;
+    }
+    if copied == 0 {
+        return std::borrow::Cow::Borrowed(sdl);
+    }
+    out.push_str(&sdl[copied..]);
+    std::borrow::Cow::Owned(out)
+}
+
+/// Whether `type Name` / `interface Name` sits immediately before byte `at` —
+/// the context that makes a name list an interface list rather than prose in a
+/// description that happens to say "implements".
+fn follows_a_type_header(sdl: &str, at: usize) -> bool {
+    let b = sdl.as_bytes();
+    let mut j = at;
+    let back_over = |b: &[u8], mut j: usize, f: fn(u8) -> bool| {
+        while j > 0 && f(b[j - 1]) {
+            j -= 1;
+        }
+        j
+    };
+    j = back_over(b, j, |c| c.is_ascii_whitespace());
+    let name_start = back_over(b, j, is_ident);
+    if name_start == j {
+        return false; // no type name
+    }
+    let j = back_over(b, name_start, |c| c.is_ascii_whitespace());
+    let kw_start = back_over(b, j, is_ident);
+    matches!(&sdl[kw_start..j], "type" | "interface")
+}
+
+/// The names in a legacy interface list starting at `from`, with the byte index
+/// just past the last one — or `None` if the list is already `&`-separated, is a
+/// single name, or isn't closed by a type body.
+fn legacy_interface_list<'a>(b: &[u8], sdl: &'a str, from: usize) -> Option<(Vec<&'a str>, usize)> {
+    let mut names = Vec::new();
+    let mut j = skip_trivia(b, from);
+    let mut end = j;
+    loop {
+        let name_end = skip_ident(b, j);
+        if name_end == j {
+            break;
+        }
+        names.push(&sdl[j..name_end]);
+        end = name_end;
+        let next = skip_trivia(b, name_end);
+        if b.get(next) == Some(&b'&') {
+            return None; // already the modern spelling
+        }
+        j = next;
+    }
+    // A type body has to follow; anything else and this wasn't an interface list.
+    let closes = matches!(b.get(skip_trivia(b, end)), Some(b'{') | Some(b'@'));
+    (names.len() > 1 && closes).then_some((names, end))
+}
+
 /// If a schema extension (`extend schema <directives> [block]`) starts at `i`,
 /// return the byte index just past it; else `None`.
 fn extend_schema_block(b: &[u8], i: usize) -> Option<usize> {
@@ -224,6 +321,7 @@ pub fn from_sdl(text: &str) -> Result<Vec<SchemaRecord>> {
     // strip them first — they apply only federation directives, no types.
     let text = strip_schema_extensions(text);
     let text = strip_schema_description(&text);
+    let text = join_legacy_implements(&text);
     let doc = parse_schema::<String>(&text).map_err(|e| anyhow!("parsing SDL: {e}"))?;
 
     let mut roots = default_roots();
@@ -617,6 +715,45 @@ mod tests {
             .find(|r| r.name == "User" && r.kind == Kind::Object)
             .unwrap();
         assert!(user.possible_types.is_empty());
+    }
+
+    #[test]
+    fn a_pre_2018_interface_list_still_loads() {
+        // graphql-ruby reads and emits this form; graphql-parser 0.4 rejects the
+        // whole file over it, pointing at the second name.
+        let sdl = "interface Node { id: ID! }\n\
+            interface Timestamped { at: String }\n\
+            type User implements Node, Timestamped { id: ID! at: String }\n\
+            type Post implements Node Timestamped { id: ID! at: String }\n\
+            type Query { me: User }\n";
+        let recs = from_sdl(sdl).expect("a legacy interface list should load");
+        let node = recs.iter().find(|r| r.name == "Node").unwrap();
+        assert_eq!(node.possible_types, ["User", "Post"]);
+        let stamped = recs.iter().find(|r| r.name == "Timestamped").unwrap();
+        assert_eq!(stamped.possible_types, ["User", "Post"]);
+    }
+
+    #[test]
+    fn only_an_interface_list_is_rewritten() {
+        // The modern spelling is left exactly as it is…
+        let modern = "interface Node { id: ID! }\ntype User implements Node & Node { id: ID! }\n";
+        assert!(matches!(
+            join_legacy_implements(modern),
+            std::borrow::Cow::Borrowed(_)
+        ));
+
+        // …and so is the word in prose, where there's no type header above it.
+        let prose = "\"An account, implements Node, Timestamped.\"\ntype User { id: ID! }\n";
+        assert!(matches!(
+            join_legacy_implements(prose),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let recs = from_sdl(prose).unwrap();
+        let user = recs.iter().find(|r| r.name == "User").unwrap();
+        assert_eq!(
+            user.description.as_deref(),
+            Some("An account, implements Node, Timestamped.")
+        );
     }
 
     #[test]
