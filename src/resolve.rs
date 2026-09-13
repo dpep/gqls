@@ -47,6 +47,11 @@ pub(crate) struct RqHit {
     /// Index of the candidate query that surfaced this hit (0 = best).
     #[serde(skip)]
     candidate_rank: usize,
+    /// Whether the hit carries the name its candidate asked for. Always true of
+    /// a verified hit; among guesses it's what separates the method that
+    /// implements the field from everything rq's fuzzy recall reached.
+    #[serde(skip)]
+    named: bool,
 }
 
 /// Resolve `rec` to its code definition(s) via rq, best first. `schema_path`,
@@ -80,10 +85,13 @@ pub(crate) fn resolve(
             // A convention only counts if the hit is the symbol the convention
             // named, where it said it would be. Otherwise it's something rq
             // reached from the query, wearing the convention's authority.
+            hit.named = named(&cand.query, &hit);
             hit.loose = cand.loose || !satisfies(&cand.query, &hit);
             let key = format!("{}:{}", hit.file, hit.line);
             match best.get(&key) {
-                Some(prev) if (prev.loose, prev.candidate_rank) <= (hit.loose, idx) => {}
+                Some(prev)
+                    if (prev.loose, !prev.named, prev.candidate_rank)
+                        <= (hit.loose, !hit.named, idx) => {}
                 _ => {
                     best.insert(key, hit);
                 }
@@ -108,21 +116,33 @@ pub(crate) fn resolve(
         }
     }
 
-    // Which convention matched comes first: a hit from `Mutations::VerbNoun`
-    // is evidence, while proximity is a tiebreak between equally-good matches.
-    // Ranking on proximity first let five unrelated files that happen to sit
-    // one directory closer bury a confident match.
-    hits.sort_by(|a, b| {
-        a.loose
-            .cmp(&b.loose)
-            .then(a.candidate_rank.cmp(&b.candidate_rank))
-            .then(b.proximity.cmp(&a.proximity))
-            .then(b.confidence.total_cmp(&a.confidence))
-            // a total order, so equally-ranked hits don't shuffle between runs
-            .then_with(|| (&a.file, a.line).cmp(&(&b.file, b.line)))
-    });
+    hits.sort_by(better);
     hits.truncate(limit);
     Ok(hits)
+}
+
+/// Order two hits, best first.
+///
+/// Evidence before circumstance: whether a graphql-ruby convention was met at
+/// all, then whether the hit is even named what was asked for, then which
+/// convention it was. Proximity and rq's own confidence are tiebreaks between
+/// otherwise equal matches — ranking on proximity first let five unrelated
+/// files that happen to sit one directory closer bury a confident match.
+///
+/// The name key does nothing to verified hits, which all carry the name by
+/// definition. It earns its place among the guesses, where the alternative is
+/// an order the reader is invited to mistake for confidence: a bare `cards`
+/// search returns nine `module Cards` and the one `def cards` that implements
+/// the field.
+fn better(a: &RqHit, b: &RqHit) -> std::cmp::Ordering {
+    a.loose
+        .cmp(&b.loose)
+        .then(b.named.cmp(&a.named))
+        .then(a.candidate_rank.cmp(&b.candidate_rank))
+        .then(b.proximity.cmp(&a.proximity))
+        .then(b.confidence.total_cmp(&a.confidence))
+        // a total order, so equally-ranked hits don't shuffle between runs
+        .then_with(|| (&a.file, a.line).cmp(&(&b.file, b.line)))
 }
 
 /// Whether a hit is the definition the candidate named, rather than somewhere
@@ -469,6 +489,7 @@ mod tests {
             loose: false,
             proximity: 0,
             candidate_rank: 0,
+            named: true,
         }
     }
 
@@ -519,6 +540,30 @@ mod tests {
             "QueryType#cards",
             &named_hit("Cards", Some("QueryType"))
         ));
+    }
+
+    #[test]
+    fn a_guess_named_what_was_asked_for_outranks_one_that_merely_resembles_it() {
+        // `BankAccount.cards` falls through to a bare `cards` search, which rq
+        // answers with nine `module Cards` and the one `def cards` that
+        // implements the field. rq is confident about the modules — the only
+        // thing telling them apart is the name that was asked for.
+        let guess = |name: &str, file: &str, confidence: f64| {
+            let mut h = named_hit(name, Some("Cards"));
+            h.file = file.into();
+            h.loose = true;
+            h.candidate_rank = 3;
+            h.confidence = confidence;
+            h.named = name == "cards";
+            h
+        };
+        let mut hits = [
+            guess("Cards", "app/services/cards/replace_card.rb", 1.0),
+            guess("cards", "app/graphql/queries/cards.rb", 0.2),
+            guess("Cards", "app/graphql/resolvers/cards/get_cards.rb", 1.0),
+        ];
+        hits.sort_by(better);
+        assert_eq!(hits[0].file, "app/graphql/queries/cards.rb");
     }
 
     #[test]
