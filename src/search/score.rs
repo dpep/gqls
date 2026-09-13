@@ -1,11 +1,28 @@
 //! Fuzzy scoring — a DP subsequence aligner ported from `rq`
 //! (`~/code/lib/rust/rq/src/search/score.rs`), adapted to `SchemaRecord`.
 //!
-//! Match quality dominates (exact > prefix > abbreviation), with a small kind
-//! weight and a qualifier (`Type.field`) parent boost layered on. The aligner
-//! is a real dynamic program — it rewards word-boundary (camelCase / `_`) and
-//! contiguous matches, penalizes gaps, and only spans *adjacent* words — so
-//! abbreviations like `refproc → RefundProcessor` rank the way a human reads.
+//! A score is one number on one scale: **the fraction of a perfect match this
+//! is**, where perfect means the query *is* the name. 1.0 is exact, ~0.95 a
+//! short prefix, ~0.7 a clean word inside a longer name, ~0.5 a correction —
+//! and those mean the same thing whatever the query's length, the name's
+//! length, or which branch produced them. That is what lets the weak-tail cut
+//! compare two matches as a ratio, and what keeps a 7-char query's 88% match
+//! from scoring an order of magnitude under an 8-char query's 99% one.
+//!
+//! Two things make the number: how cleanly the query's characters sit in the
+//! name ([`align`], divided by [`perfect`]), and how much of the name it
+//! accounts for ([`share`]). Neither is enough alone — `dispute` sits perfectly
+//! inside `in_app_disputes` and is half of it, while `uesr` sits just as
+//! perfectly inside `closingIssuesReferences` and is a sixth of it.
+//!
+//! The aligner underneath is a real dynamic program — it rewards word-boundary
+//! (camelCase / `_`) and contiguous matches, penalizes gaps, and only spans
+//! *adjacent* words — so abbreviations like `refproc → RefundProcessor` rank
+//! the way a human reads.
+//!
+//! Kind weight is not in the score. A root field and the type it returns are
+//! equally good answers to the same query; which one you want is a tiebreak,
+//! and the caller sorts on it as one.
 
 use crate::model::SchemaRecord;
 
@@ -18,22 +35,56 @@ pub(crate) type Scorer = fn(&str, &SchemaRecord) -> Option<Match>;
 /// answer carries both.
 #[derive(Clone, Copy)]
 pub(crate) struct Match {
-    /// The query *is* the record's name: the top tier, and the one no ratio can
-    /// express — `700 - tail` puts a long prefix beneath the subsequence
-    /// ceiling, so the tiers under it overlap as numbers.
+    /// The query *is* the record's name. Quality 1.0 says the same thing, but
+    /// the cut acts on this rather than on the number: it's a fact about the
+    /// two strings, not a threshold a future band could drift into.
     pub(crate) exact: bool,
-    /// What the tail cut compares: everything in `score` that can tell two
-    /// candidates apart. The qualifier boost can't — every member of the named
-    /// type is handed the same one — so leaving it in would make a more precise
-    /// query cut its tail *less*.
+    /// What the tail cut compares: the quality, on the 0..[`SCALE`] scale. The
+    /// qualifier boost is left out because it can't tell two candidates apart —
+    /// every member of the named type is handed the same one — so including it
+    /// would make a more precise query cut its tail *less*.
     pub(crate) merit: i64,
     /// Ranking order: `merit` plus that boost, which is what floats the right
     /// type's fields when the qualifier named no type to filter by.
     pub(crate) score: i64,
 }
 
-/// The exact tier's quality. Every other tier scores below it.
-const EXACT: f64 = 1000.0;
+/// A perfect match: the query is the name.
+const EXACT: f64 = 1.0;
+
+/// The floor of the band a match that *starts* the name lands in. Below it sits
+/// every match that starts somewhere else, so a prefix outranks a containment
+/// however cleanly the containment aligned — the separation the old prefix tier
+/// had, kept, because merging the two is what buried `Package` under
+/// `deletePackageVersion`.
+const ANCHOR: f64 = 0.80;
+
+/// How much of a match's quality is *how much of the name it accounts for*, the
+/// rest being how cleanly it aligned.
+const SHARE: f64 = 0.50;
+
+/// The ceiling on a match the user had to be corrected into. Under [`ANCHOR`],
+/// so no correction outranks a match that is really there, and above the weak
+/// end of a containment, so `uesr` still finds `user` rather than the four
+/// letters that happen to run together inside `closingIssuesReferences`.
+const TYPO: f64 = 0.65;
+
+/// What a match on the qualified path is worth against the same match on the
+/// name — the last signal the name pass has, and the weakest. Under
+/// `TAIL_CUTOFF` of the anchored band on purpose: the record's own name didn't
+/// match, so the moment anything's did, this one is the tail.
+const PATH: f64 = 0.25;
+
+/// What naming the enclosing type exactly (`Repository.name`) is worth, and
+/// what a mere prefix of it is. On the same scale as everything else: naming
+/// the type is worth a third of naming the field.
+const QUALIFIED: f64 = 0.30;
+const QUALIFIED_PREFIX: f64 = 0.15;
+
+/// A quality of 1.0, as the integer the rest of gqls reports and sorts on.
+/// Large enough that the differences that matter — a character of name length,
+/// a word of it — survive rounding.
+const SCALE: f64 = 1000.0;
 
 /// Score `query` against a record's name or qualified path, best-is-higher, or
 /// `None` if neither matches (not even as a subsequence).
@@ -44,27 +95,80 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
     let q = leaf.to_ascii_lowercase();
     let name_lower = rec.name.to_ascii_lowercase();
 
-    // Match quality on the leaf name — the dominant term.
-    let quality = if name_lower == q {
-        EXACT
-    } else if name_lower.starts_with(&q) {
-        let tail = rec.name.chars().count().saturating_sub(q.chars().count());
-        700.0 - (tail as f64).min(100.0)
-    } else if let Some(s) = subsequence_score(&q, &rec.name) {
-        s.min(600.0)
+    if name_lower == q {
+        return Some(finish(EXACT, true, qualifier, rec));
+    }
+    let quality = if let Some(m) = match_quality(&q, &rec.name, &name_lower) {
+        // A match that starts the name lands in the band above every match that
+        // doesn't, and takes the same measure of itself within it.
+        match name_lower.starts_with(&q) {
+            true => ANCHOR + (EXACT - ANCHOR) * m,
+            false => ANCHOR * m,
+        }
     } else if let Some(d) = typo_distance(&q, &name_lower) {
-        // a transposition / single typo (`usre` -> `User`) isn't a clean
-        // subsequence; match it, but rank below a real match, penalized by
-        // edit distance.
-        (260.0 - 70.0 * d as f64).max(80.0)
+        // A transposition / single typo (`usre` -> `User`) isn't a subsequence
+        // at all. It covers the whole name by construction, so what's left to
+        // measure is how much of it survived the correction — an edit costs
+        // less of a long name than of a short one, which is the point.
+        TYPO * (1.0 - d as f64 / q.len().max(name_lower.len()) as f64)
     } else {
         // No name match: fall back to the qualified path (`user.email` vs
-        // `User.email`), a weaker signal and the last one this pass has.
-        let s = subsequence_score(&query.to_ascii_lowercase(), &rec.path)?;
-        (s * 0.5).min(300.0)
+        // `User.email`), measured the same way and discounted for being the
+        // path rather than the name.
+        PATH * match_quality(
+            &query.to_ascii_lowercase(),
+            &rec.path,
+            &rec.path.to_ascii_lowercase(),
+        )?
     };
 
-    Some(finish(quality, qualifier, rec))
+    Some(finish(quality, false, qualifier, rec))
+}
+
+/// How good a match `query` is for `text`, in [0, 1]: how cleanly it aligned,
+/// times how much of `text` it accounts for. `None` if it isn't a subsequence.
+/// `text_lower` is `text` lowercased — the aligner needs the original casing to
+/// see camelCase humps, and the rest needs it gone.
+fn match_quality(query: &str, text: &str, text_lower: &str) -> Option<f64> {
+    let a = align(query, text)?;
+    // Above 1.0 means nothing: a query spanning an interior word boundary
+    // collects a bonus the perfect run has no boundary to earn.
+    let fidelity = (a.score / perfect(a.len)).min(EXACT);
+    Some(fidelity * (1.0 - SHARE + SHARE * share(query, text_lower, &a)))
+}
+
+/// How much of `text` the query accounts for, measured from where the match
+/// begins: the characters it matched, plus those of every *further* place the
+/// query occurs in full, over what is left of the text from that point.
+///
+/// Measuring from the match's start is the head-noun rule: what a name puts
+/// *before* the match qualifies it, what it puts *after* means the match wasn't
+/// what the name is about. `pokemon_v2_movelearnmethod` is a move-learn-method;
+/// `move_learn_method_id` is an id. Count from the start of the name and the
+/// second wins for being shorter, which on a schema where every name begins
+/// `pokemon_v2_` is the whole table list in the wrong order.
+///
+/// Counting the *further* occurrences is the same rule seen from the other end:
+/// `pokemon` is 78% of `pokemon_v2_pokemon` and 47% of `pokemon_v2_item`, and
+/// crediting only the occurrence the aligner consumed makes the shared prefix
+/// carry the answer.
+fn share(query: &str, text_lower: &str, a: &Alignment) -> f64 {
+    let from = text_lower
+        .char_indices()
+        .nth(a.start)
+        .map_or(text_lower.len(), |(i, _)| i);
+    let rest = &text_lower[from..];
+    let len = rest.chars().count();
+    if len == 0 {
+        return 0.0;
+    }
+    let mut occurrences = 0;
+    let mut scan = rest;
+    while let Some(i) = scan.find(query) {
+        occurrences += 1;
+        scan = &scan[i + query.len()..];
+    }
+    ((a.len * occurrences.max(1)) as f64 / len as f64).min(1.0)
 }
 
 /// Score `query` against the record's *argument* names, or `None` if none of
@@ -74,40 +178,45 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
 /// answer — which is what you'd call anyway, and naming it then says what the
 /// argument is for. It's a separate pass rather than a lower tier of [`score`]
 /// because "only when nothing else matched" is a property of the whole result
-/// set, not of any one record: a weak name subsequence scores in the tens, so
-/// no constant sits below every name match, and a single pass could only
-/// approximate the rule. Scoring an exact argument 200 displaced the input
-/// objects actually named `input` on a Relay schema, where hundreds of
-/// mutations take one.
+/// set, not of any one record: a bad name match can score as low as you like,
+/// so no constant sits below every one of them, and a single pass could only
+/// approximate the rule. Scoring an exact argument above a weak name match
+/// displaced the input objects actually named `input` on a Relay schema, where
+/// hundreds of mutations take one.
 pub(crate) fn score_arg(query: &str, rec: &SchemaRecord) -> Option<Match> {
     let (leaf, qualifier) = parse_qualified(query);
     let quality = best_arg_match(&leaf.to_ascii_lowercase(), rec)?;
-    Some(finish(quality, qualifier, rec))
+    // Naming an argument exactly is not naming the record: the record is the
+    // field that takes it, and the exact-tier cut is about records.
+    Some(finish(quality, false, qualifier, rec))
 }
 
-/// Finish a match: add the kind weight that floats roots and named types above
-/// leaf args, then the boost a `Type.` qualifier earns the field whose parent
-/// it names (`Repository.name`).
-fn finish(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
+/// Put a quality on the reported scale and add the boost a `Type.` qualifier
+/// earns the field whose parent it names (`Repository.name`).
+fn finish(quality: f64, exact: bool, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
     let boost = qualifier
         .and_then(|q| parent_boost(q, rec.parent.as_deref()))
         .unwrap_or(0.0);
-    let merit = quality + rec.kind.weight() as f64;
     Match {
-        exact: quality == EXACT,
-        merit: merit.round() as i64,
-        score: (merit + boost).round() as i64,
+        exact,
+        merit: (quality * SCALE).round() as i64,
+        score: ((quality + boost) * SCALE).round() as i64,
     }
 }
 
 /// How well `query` matches any of `rec`'s argument names, or `None` for none.
-/// An exact argument name outranks a subsequence of one; these scores only
+/// An exact argument name outranks a subsequence of one; these qualities only
 /// ever rank against each other, within the fallback pass.
 fn best_arg_match(query: &str, rec: &SchemaRecord) -> Option<f64> {
+    /// A subsequence of an argument name, against naming one outright.
+    const ARG_SUBSEQUENCE: f64 = 0.5;
     rec.arg_types()
-        .filter_map(|(name, _)| match name.to_ascii_lowercase() == query {
-            true => Some(200.0),
-            false => subsequence_score(query, name).map(|s| (s * 0.25).min(100.0)),
+        .filter_map(|(name, _)| {
+            let lower = name.to_ascii_lowercase();
+            match lower == query {
+                true => Some(EXACT),
+                false => match_quality(query, name, &lower).map(|m| ARG_SUBSEQUENCE * m),
+            }
         })
         .fold(None, |best: Option<f64>, s| {
             Some(best.map_or(s, |b| b.max(s)))
@@ -183,21 +292,15 @@ pub(crate) fn parse_qualified(query: &str) -> (&str, Option<&str>) {
 fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
     let parent = parent?;
     if parent.eq_ignore_ascii_case(qualifier) {
-        Some(300.0)
+        Some(QUALIFIED)
     } else if parent
         .to_ascii_lowercase()
         .starts_with(&qualifier.to_ascii_lowercase())
     {
-        Some(150.0)
+        Some(QUALIFIED_PREFIX)
     } else {
         None
     }
-}
-
-/// Score `query` as a subsequence of `name` (the best alignment's score), or
-/// `None` if it isn't a subsequence.
-fn subsequence_score(query: &str, name: &str) -> Option<f64> {
-    align(query, name).map(|a| a.score)
 }
 
 /// Edit distance between the (lowercased) query and name for the typo tier, or
@@ -265,6 +368,19 @@ const CONTIGUOUS: f64 = 10.0;
 
 struct Alignment {
     score: f64,
+    /// The query's length *as the aligner saw it*, separators dropped — what
+    /// [`perfect`] has to be measured against for the ratio to mean anything.
+    len: usize,
+    /// Where in the name the first query char landed, so [`share`] can measure
+    /// what the match left unexplained rather than what preceded it.
+    start: usize,
+}
+
+/// What an `n`-char query scores when it *is* the name: every char matched,
+/// contiguously, from the first. Derived from the aligner's own constants so
+/// the two can't drift.
+fn perfect(n: usize) -> f64 {
+    MATCH + BOUNDARY + START + (n.saturating_sub(1) as f64) * (MATCH + CONTIGUOUS)
 }
 
 /// Find the best alignment of `query` as a subsequence of `name`, maximizing
@@ -359,11 +475,18 @@ fn align(query: &str, name: &str) -> Option<Alignment> {
     }
 
     let last = q.len() - 1;
-    let score = (0..n)
-        .filter_map(|i| table[last][i].map(|(s, _)| s))
-        .max_by(|a, b| a.total_cmp(b))?;
+    let (score, end) = (0..n)
+        .filter_map(|i| table[last][i].map(|(s, _)| (s, i)))
+        .max_by(|(a, _), (b, _)| a.total_cmp(b))?;
+    // Walk the backpointers home for the first matched position.
+    let mut start = end;
+    for qi in (1..q.len()).rev() {
+        start = table[qi][start].expect("on the winning path").1;
+    }
     Some(Alignment {
         score: score.max(0.0),
+        len: q.len(),
+        start,
     })
 }
 
@@ -418,6 +541,132 @@ mod tests {
         // only the first is the top tier the tail cut recognises
         assert!(exact.exact);
         assert!(!prefix.exact && !fuzzy.exact);
+    }
+
+    /// A match's score as a fraction of the best possible for that query — the
+    /// thing the whole scale is for.
+    fn fraction(query: &str, name: &str) -> f64 {
+        let got = score(query, &rec(name, &format!("T.{name}"), Kind::Field)).unwrap();
+        let best = score(query, &rec(query, &format!("T.{query}"), Kind::Field)).unwrap();
+        got.score as f64 / best.score as f64
+    }
+
+    #[test]
+    fn the_same_match_is_worth_the_same_at_any_query_length() {
+        // The same shape of match — the query as a whole word at a boundary,
+        // one word of filler either side — at three query lengths. Under the
+        // raw aligner score these came out 0.08, 0.16 and 0.30 of a perfect
+        // match: the tier ceiling was "20 x query length" wearing a tier's
+        // clothes, so a cut that compared them compared nothing.
+        let spread = [
+            fraction("cat", "in_app_cats"),
+            fraction("dispute", "in_app_disputes"),
+            fraction("reconciliation", "in_app_reconciliations"),
+        ];
+        let (lo, hi) = (
+            spread.iter().cloned().fold(f64::MAX, f64::min),
+            spread.iter().cloned().fold(0.0, f64::max),
+        );
+        // Some spread is real and stays: a containment can't earn the bonus for
+        // starting the name, and that bonus is a bigger share of a short query.
+        // Three letters buried in a name *are* weaker evidence than fourteen.
+        assert!(
+            hi / lo < 1.5,
+            "same match, three lengths, spread {spread:?} — 3.6x apart is what \
+             this replaced, and a ratio can't mean anything across that"
+        );
+        assert!(
+            lo > 0.5,
+            "the weakest of {spread:?} is under half a perfect match, so the \
+             weak-tail cut would drop all three"
+        );
+    }
+
+    #[test]
+    fn a_shared_prefix_does_not_hand_the_answer_to_the_shortest_name() {
+        // Every name on a Hasura schema starts `pokemon_v2_`, so the leading
+        // occurrence says nothing and the tail-length tiebreak inverts: the
+        // record the query names twice must beat three unrelated shorter ones.
+        let wanted = score(
+            "pokemon",
+            &rec("pokemon_v2_pokemon", "query_root.x", Kind::Query),
+        )
+        .unwrap()
+        .score;
+        for other in ["pokemon_v2_item", "pokemon_v2_move", "pokemon_v2_berry"] {
+            let got = score("pokemon", &rec(other, "query_root.y", Kind::Query))
+                .unwrap()
+                .score;
+            assert!(
+                got < wanted,
+                "{other} scored {got}, pokemon_v2_pokemon {wanted}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_a_name_puts_after_the_match_counts_against_it() {
+        // `movelearnmethod` is what `pokemon_v2_movelearnmethod` *is*, and only
+        // the qualifier of what `move_learn_method_id` is. Measured from the
+        // start of the name the shorter one wins for being shorter — which is
+        // every table on a Hasura schema ranked under its own id columns.
+        let table = score(
+            "movelearnmethod",
+            &rec("pokemon_v2_movelearnmethod", "query_root.x", Kind::Query),
+        )
+        .unwrap();
+        let column = score(
+            "movelearnmethod",
+            &rec(
+                "move_learn_method_id",
+                "T.move_learn_method_id",
+                Kind::Field,
+            ),
+        )
+        .unwrap();
+        assert!(
+            table.score > column.score,
+            "table {} column {}",
+            table.score,
+            column.score
+        );
+    }
+
+    #[test]
+    fn a_correction_outranks_letters_that_merely_run_together() {
+        // `uesr` is one transposition from `user` and a clean four-char run
+        // inside `closingIssuesReferences` — which is a sixth of that name and
+        // has no business beating the word the user meant.
+        let meant = score("uesr", &rec("user", "Query.user", Kind::Query)).unwrap();
+        let accident = score(
+            "uesr",
+            &rec("closingIssuesReferences", "PullRequest.x", Kind::Field),
+        )
+        .unwrap();
+        assert!(
+            meant.score > accident.score,
+            "user {} closingIssuesReferences {}",
+            meant.score,
+            accident.score
+        );
+    }
+
+    #[test]
+    fn kind_never_enters_the_score() {
+        // A root field and the object it returns answer the query equally well.
+        // As a term, kind weight's flat gap also bought name length in whatever
+        // currency the tier was denominated in — and could outbid an exact name
+        // once the bands stopped being 300 points apart.
+        let root = score(
+            "pokemon",
+            &rec("pokemon", "query_root.pokemon", Kind::Query),
+        )
+        .unwrap();
+        let object = score("pokemon", &rec("pokemon", "pokemon", Kind::Object)).unwrap();
+        assert_eq!(root.score, object.score);
+        let exact = score("car", &rec("CAR", "Icon.CAR", Kind::EnumValue)).unwrap();
+        let prefix = score("car", &rec("card", "Mutation.card", Kind::Mutation)).unwrap();
+        assert!(exact.score > prefix.score);
     }
 
     #[test]

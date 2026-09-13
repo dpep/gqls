@@ -10,11 +10,12 @@ pub struct Hit<'a> {
     pub score: i64,
 }
 
-/// Drop hits whose merit is below this fraction of the best — the long fuzzy
-/// tail beneath a strong prefix or subsequence match. The tier above that, an
-/// exact name, is cut for by name in [`rank`] instead: the tiers overlap as
-/// numbers, so no ratio can separate them.
-const TAIL_CUTOFF: f64 = 0.4;
+/// Drop hits whose quality is below this fraction of the best — the long fuzzy
+/// tail beneath a strong match. A ratio of qualities, which is a ratio of two
+/// answers to the same question ("what fraction of a perfect match is this"),
+/// so 0.4 means the same thing for every query. Above it sits one thing a ratio
+/// still can't express, an exact name, cut for by name in [`rank`].
+const TAIL_CUTOFF: f64 = 0.5;
 
 /// Resolve a `Type.field` query's qualifier to a schema type: an exact
 /// (case-insensitive) parent name, or failing that the unique closest
@@ -353,11 +354,16 @@ fn rank<'a>(
         .map(|(_, m, r)| (m, r))
         .collect();
 
-    // highest score first; break ties toward the shorter path (the more
-    // "central" definition — `User` before `AdminUserAuditLogEntry`).
+    // Highest score first. Then kind: a root field and the type it returns
+    // answer a query equally well, so which you want is a tiebreak and not a
+    // term — as a term its flat 20-point gap between a root and a type also
+    // bought 20 characters of name length, and bought them in whatever
+    // currency the tier happened to be denominated in. Then the shorter path,
+    // the more "central" definition (`User` before `AdminUserAuditLogEntry`).
     hits.sort_by(|(a, ar), (b, br)| {
         b.score
             .cmp(&a.score)
+            .then_with(|| br.kind.weight().cmp(&ar.kind.weight()))
             .then_with(|| ar.path.len().cmp(&br.path.len()))
     });
 
@@ -366,12 +372,11 @@ fn rank<'a>(
     // ratio of a number nobody earned over anyone else cuts *less* the more
     // precisely the user typed.
     //
-    // Above the ratio sits a tier it can't reach: an exact name. `700 - tail`
-    // puts a long prefix under the subsequence ceiling, so the tiers overlap as
-    // numbers and no fraction means "nothing weaker than an exact match
-    // survives" — which is what the cut is for. Only a one-word query can
-    // *name* a record; a phrase describes one, and the word-coverage filter
-    // above is its equivalent.
+    // Above the ratio sits the one thing it can't reach: an exact name. A ratio
+    // says "much worse than the best", and an exact name means the rest are
+    // wrong however close they scored. Only a one-word query can *name* a
+    // record; a phrase describes one, and the word-coverage filter above is its
+    // equivalent.
     let names = tokens.is_empty();
     if let Some(top) = hits.first().map(|(m, _)| *m) {
         match names && top.exact {
@@ -881,6 +886,39 @@ mod tests {
         assert_eq!(paths("user"), ["Query.user"]);
         // `use` names none of them, so the two prefixes stand and the scatter goes
         assert_eq!(paths("use"), ["Query.user", "Query.userProfile"]);
+    }
+
+    #[test]
+    fn a_word_inside_a_longer_name_survives_a_prefix_match() {
+        // `dispute` is a contiguous, word-boundary-aligned containment of
+        // `in_app_disputes` — an 88% match. Scored as a raw alignment it came
+        // to 145 against the 699 a prefix earned, so the cut dropped it and no
+        // query reached the mutation that files a dispute.
+        let records = vec![
+            rec("disputes", Some("Query"), Kind::Query),
+            rec("in_app_disputes", Some("Mutation"), Kind::Mutation),
+            // and the tail still goes: `disput` only scattered through this one
+            rec("dxixsxpxuxt", Some("Query"), Kind::Query),
+        ];
+        let paths: Vec<&str> = search("disput", &records, Default::default())
+            .iter()
+            .map(|h| h.record.path.as_str())
+            .collect();
+        assert_eq!(paths, ["Query.disputes", "Mutation.in_app_disputes"]);
+    }
+
+    #[test]
+    fn kind_breaks_a_tie_rather_than_buying_one() {
+        // A root field and the object it returns match `pokemon` identically,
+        // so kind orders them — but it is no longer a term that could also buy
+        // twenty characters of name length against a better match.
+        let records = vec![
+            rec("pokemon", None, Kind::Object),
+            rec("pokemon", Some("query_root"), Kind::Query),
+        ];
+        let hits = search("pokemon", &records, Default::default());
+        assert_eq!(hits[0].score, hits[1].score);
+        assert_eq!(hits[0].record.path, "query_root.pokemon");
     }
 
     #[test]
