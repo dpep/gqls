@@ -828,7 +828,19 @@ pub fn run() -> Result<()> {
             );
         }
         let explained = explained.map(|(_, m)| m);
-        output.write_matches(&matches, batch.then_some(query), explained, &records)?;
+        // Only a session that actually ranked these matches can degrade them:
+        // without one the rows are fuzzy, which is unaffected by the model.
+        #[cfg(feature = "_semantic")]
+        let degraded = session.as_ref().is_some_and(|s| s.degraded());
+        #[cfg(not(feature = "_semantic"))]
+        let degraded = false;
+        output.write_matches(
+            &matches,
+            batch.then_some(query),
+            explained,
+            &records,
+            degraded,
+        )?;
         drop(out_span);
         // Status, not a -v diagnostic: matches were dropped, and a list that
         // simply stops at -l reads as the whole answer. An explanation isn't a
@@ -899,6 +911,11 @@ fn read_queries() -> impl Iterator<Item = Result<String>> {
         })
 }
 
+/// `skip_serializing_if` for a flag that means something only when set.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 impl Output {
     /// `label` is the originating query, set only in batch mode: with many
     /// queries answered on one stream a consumer can't otherwise tell whose
@@ -910,6 +927,7 @@ impl Output {
         label: Option<&str>,
         explained: Option<search::NameMatch>,
         records: &[SchemaRecord],
+        degraded: bool,
     ) -> Result<()> {
         #[derive(Serialize)]
         struct Row<'a> {
@@ -932,6 +950,13 @@ impl Output {
             /// fields, since to a consumer they're all just what gqls knows.
             #[serde(flatten)]
             extras: Extras<'a>,
+            /// Present (and true) only when semantic ranking fell back to the
+            /// hash embedder. Stderr says so, which serves a human and nothing
+            /// else — most of this tool's JSON is read by an agent that never
+            /// sees it. Omitted on the good path, so the usual shape is
+            /// unchanged.
+            #[serde(skip_serializing_if = "is_false")]
+            degraded: bool,
         }
         let rows = || {
             matches.iter().map(|m| Row {
@@ -946,6 +971,7 @@ impl Output {
                     Some(_) => render::extras(m.record, records),
                     None => Extras::default(),
                 },
+                degraded,
             })
         };
         // A query that matched nothing would otherwise vanish from the stream,
@@ -953,7 +979,11 @@ impl Output {
         // output says so explicitly; text mode already says it on stderr.
         if matches.is_empty() {
             if let Some(q) = label {
-                let miss = serde_json::json!({ "query": q, "status": "no_matches" });
+                let mut miss = serde_json::json!({ "query": q, "status": "no_matches" });
+                if degraded {
+                    // Why nothing matched is exactly what a caller needs here.
+                    miss["degraded"] = true.into();
+                }
                 match self {
                     Output::Json => println!("{}", serde_json::to_string_pretty(&miss)?),
                     Output::Ndjson => println!("{}", serde_json::to_string(&miss)?),
@@ -1148,7 +1178,7 @@ fn one_named_record<'a>(
                 .collect();
             // A candidate list by construction: this path exists because the
             // query did *not* name a record, so there's nothing to explain.
-            output.write_matches(&matches, None, None, &[])?;
+            output.write_matches(&matches, None, None, &[], false)?;
             return Err(Handled.into());
         }
     }
