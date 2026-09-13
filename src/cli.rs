@@ -259,7 +259,7 @@ fn fuzzy_matches<'a>(
         .into_iter()
         .map(|h| Match {
             record: h.record,
-            score: h.score as f64,
+            score: Some(h.score as f64),
         })
         .collect();
     (matches, named)
@@ -290,7 +290,10 @@ fn semantic_matches<'a>(
     session
         .rank(query, records, filters, cli.limit)
         .into_iter()
-        .map(|(score, record)| Match { record, score })
+        .map(|(score, record)| Match {
+            record,
+            score: Some(score),
+        })
         .collect()
 }
 
@@ -318,13 +321,16 @@ fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) ->
             .or_insert((0.0, m.record))
             .0 += 0.7 / (K + rank as f64 + 1.0);
     }
-    let mut merged: Vec<Match> = scored
-        .into_values()
-        .map(|(score, record)| Match { record, score })
-        .collect();
-    merged.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let mut merged: Vec<(f64, &SchemaRecord)> = scored.into_values().collect();
+    merged.sort_by(|a, b| b.0.total_cmp(&a.0));
     merged.truncate(limit);
     merged
+        .into_iter()
+        .map(|(score, record)| Match {
+            record,
+            score: Some(score),
+        })
+        .collect()
 }
 
 /// Spawn a detached `gqls --warm <source>` so the schema's vectors embed in the
@@ -775,11 +781,13 @@ pub fn run() -> Result<()> {
                 );
             }
             // The score is whatever ranking gave it, or nothing when ranking
-            // put it past `-l` — naming a record explains it either way.
+            // put it past `-l` — naming a record explains it either way. Null
+            // rather than 0.0: zero is a legal score, so substituting it made
+            // `-l` silently rewrite a number consumers sort and threshold on.
             let score = matches
                 .iter()
                 .find(|m| std::ptr::eq(m.record, record))
-                .map_or(0.0, |m| m.score);
+                .and_then(|m| m.score);
             matches = vec![Match { record, score }];
         }
         // A miss is nothing matching, not an empty page of matches: `-l 0`
@@ -884,7 +892,10 @@ impl Output {
             query: Option<&'a str>,
             #[serde(flatten)]
             record: &'a SchemaRecord,
-            score: f64,
+            /// Null where ranking never scored the record — an explanation
+            /// stands on the name that was typed, so it survives a `-l` that
+            /// sorted the record off the page. The key is always present.
+            score: Option<f64>,
             /// `"exact"` or `"corrected"` on the one record a query named, and
             /// absent otherwise — the discriminator for "this response is an
             /// explanation, not a list". Additive, so the array shape and every
@@ -1020,7 +1031,7 @@ fn one_named_record<'a>(
                 .take(limit)
                 .map(|h| Match {
                     record: h.record,
-                    score: h.score as f64,
+                    score: Some(h.score as f64),
                 })
                 .collect();
             // A candidate list by construction: this path exists because the

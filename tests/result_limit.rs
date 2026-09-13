@@ -82,6 +82,24 @@ fn naming_one_record_explains_it_at_any_limit() {
 }
 
 #[test]
+fn the_limit_never_rewrites_a_score() {
+    // `User` names the type and ranks below `Query.user`, so a tight `-l`
+    // leaves the explained record outside the ranked page. Substituting 0.0
+    // there put a legal-looking score on a record nothing had scored, and a
+    // consumer sorting or thresholding on it had no way to tell.
+    let score = |limit: &str| -> serde_json::Value {
+        let (stdout, _) = run(&["User", "-j", "-l", limit]);
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(&stdout).expect("-j should be JSON");
+        assert_eq!(rows.len(), 1, "naming one record explains it: {stdout}");
+        assert!(rows[0].get("score").is_some(), "the key stays: {stdout}");
+        rows[0]["score"].clone()
+    };
+    assert!(score("5").is_number(), "ranking reached it at -l 5");
+    assert!(score("1").is_null(), "ranking never reached it at -l 1");
+}
+
+#[test]
 fn an_empty_page_is_not_a_miss() {
     // `-l 0` shows nothing, which is not the same as nothing matching.
     let (stdout, stderr) = run(&["user", "-l", "0"]);

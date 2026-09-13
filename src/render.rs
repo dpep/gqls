@@ -21,7 +21,10 @@ use crate::style;
 #[derive(Clone, Copy)]
 pub(crate) struct Match<'a> {
     pub record: &'a SchemaRecord,
-    pub score: f64,
+    /// `None` where ranking never reached this record: naming one explains it
+    /// even when it sorted past `-l`. Optional rather than zero because zero
+    /// is a legal score, so a consumer can't tell the two apart.
+    pub score: Option<f64>,
 }
 
 /// Most names to list in one annotation row before saying "and N more". A type
