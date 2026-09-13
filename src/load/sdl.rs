@@ -20,6 +20,42 @@ fn default_roots() -> Roots {
     }
 }
 
+/// Byte offsets where `needle` appears as *code* — outside string literals and
+/// `#` comments.
+///
+/// The three rewrites below edit raw SDL text before the parser sees it, so
+/// each has to know which occurrences of its keyword the parser would read as
+/// grammar. A description is prose however exactly it spells one of them, and
+/// rewriting prose is never a no-op: it drops words from documentation, and a
+/// description *starting* with `schema` took the type above it with it.
+///
+/// Comments count as prose for the same reason, and because a stray `"` in one
+/// would otherwise make the rest of the file look like one long string.
+fn code_matches<'a>(sdl: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let b = sdl.as_bytes();
+    // How far the text has been proven to be code. Only ever moves forward, so
+    // the scan stays linear however many occurrences it has to test.
+    let mut code_to = 0usize;
+    sdl.match_indices(needle)
+        .filter(move |&(at, _)| {
+            while code_to < at {
+                let Some(rel) = b[code_to..at].iter().position(|&c| c == b'"' || c == b'#') else {
+                    break;
+                };
+                let start = code_to + rel;
+                code_to = if b[start] == b'"' {
+                    skip_string(b, start)
+                } else {
+                    line_end(b, start)
+                };
+            }
+            let is_code = code_to <= at;
+            code_to = code_to.max(at);
+            is_code
+        })
+        .map(|(at, _)| at)
+}
+
 /// graphql-parser (0.4) doesn't parse GraphQL *schema extensions*
 /// (`extend schema <directives> [block]`) — the header of every Apollo
 /// Federation v2 subgraph file (`extend schema @link(url: "…", import: […])`).
@@ -31,18 +67,16 @@ fn strip_schema_extensions(sdl: &str) -> std::borrow::Cow<'_, str> {
     }
     let b = sdl.as_bytes();
     let mut out = String::new();
-    let mut i = 0;
     let mut copied = 0;
-    while i < b.len() {
-        if b[i] == b'e' {
-            if let Some(end) = extend_schema_block(b, i) {
-                out.push_str(&sdl[copied..i]);
-                i = end;
-                copied = end;
-                continue;
-            }
+    for at in code_matches(sdl, "extend") {
+        if at < copied {
+            continue; // inside a block already removed
         }
-        i += 1;
+        let Some(end) = extend_schema_block(b, at) else {
+            continue;
+        };
+        out.push_str(&sdl[copied..at]);
+        copied = end;
     }
     if copied == 0 {
         return std::borrow::Cow::Borrowed(sdl);
@@ -65,13 +99,11 @@ fn strip_schema_description(sdl: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(sdl);
     }
     let b = sdl.as_bytes();
-    let mut i = 0;
-    while let Some(found) = sdl[i..].find("schema") {
-        let at = i + found;
-        i = at + "schema".len();
+    for at in code_matches(sdl, "schema") {
+        let after = at + "schema".len();
         // A word boundary on both sides, so `schemaVersion` and the `schema` in
         // `extend schema` (already stripped) don't match.
-        if (at > 0 && is_ident(b[at - 1])) || b.get(i).copied().is_some_and(is_ident) {
+        if (at > 0 && is_ident(b[at - 1])) || b.get(after).copied().is_some_and(is_ident) {
             continue;
         }
         // Walk back over whitespace to whatever precedes the keyword.
@@ -126,11 +158,11 @@ fn join_legacy_implements(sdl: &str) -> std::borrow::Cow<'_, str> {
     let b = sdl.as_bytes();
     let mut out = String::new();
     let mut copied = 0;
-    let mut i = 0;
-    while let Some(found) = sdl[i..].find("implements") {
-        let at = i + found;
+    for at in code_matches(sdl, "implements") {
+        if at < copied {
+            continue; // inside a list already rewritten
+        }
         let after = at + "implements".len();
-        i = after;
         let boundary =
             (at == 0 || !is_ident(b[at - 1])) && !b.get(after).copied().is_some_and(is_ident);
         if !boundary || !follows_a_type_header(sdl, at) {
@@ -143,7 +175,6 @@ fn join_legacy_implements(sdl: &str) -> std::borrow::Cow<'_, str> {
         out.push(' ');
         out.push_str(&names.join(" & "));
         copied = end;
-        i = end;
     }
     if copied == 0 {
         return std::borrow::Cow::Borrowed(sdl);
@@ -153,8 +184,8 @@ fn join_legacy_implements(sdl: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Whether `type Name` / `interface Name` sits immediately before byte `at` —
-/// the context that makes a name list an interface list rather than prose in a
-/// description that happens to say "implements".
+/// the grammar context that makes what follows an interface list rather than,
+/// say, a field named `implements`.
 fn follows_a_type_header(sdl: &str, at: usize) -> bool {
     let b = sdl.as_bytes();
     let mut j = at;
@@ -287,6 +318,14 @@ fn skip_balanced(b: &[u8], mut i: usize, open: u8, close: u8) -> usize {
                 return i + 1;
             }
         }
+        i += 1;
+    }
+    i
+}
+
+/// The index of the newline ending the line `i` is on, or the end of input.
+fn line_end(b: &[u8], mut i: usize) -> usize {
+    while b.get(i).is_some_and(|&c| c != b'\n') {
         i += 1;
     }
     i
@@ -754,6 +793,61 @@ mod tests {
             user.description.as_deref(),
             Some("An account, implements Node, Timestamped.")
         );
+    }
+
+    #[test]
+    fn a_description_is_prose_to_every_normalisation() {
+        // All three rewrite raw text, so all three have to tell code from the
+        // documentation around it. The `schema` case was the loud one: it
+        // deleted back to the previous string, swallowing the type between.
+        let swallowed = "\"A user of the system.\"\n\
+            type User { id: ID! }\n\
+            \"schema version this was written by\"\n\
+            type Account { id: ID! owner: User }\n";
+        let recs = from_sdl(swallowed).expect("should parse");
+        let user = recs
+            .iter()
+            .find(|r| r.path == "User")
+            .expect("the type between the two descriptions should survive");
+        assert_eq!(user.description.as_deref(), Some("A user of the system."));
+        let account = recs.iter().find(|r| r.path == "Account").unwrap();
+        assert_eq!(
+            account.description.as_deref(),
+            Some("schema version this was written by")
+        );
+
+        // …and the other two edit the prose they match in, silently.
+        let mentions_extend = "\"\"\"\n@link lets you extend schema behaviour.\n\"\"\"\n\
+            type Query { a: Int }\n";
+        let recs = from_sdl(mentions_extend).expect("should parse");
+        assert_eq!(
+            recs.iter().find(|r| r.path == "Query").unwrap().description,
+            Some("@link lets you extend schema behaviour.".to_string())
+        );
+
+        let quotes_sdl =
+            "\"\"\"\nExample: type User implements Node, Timestamped { id: ID! }\n\"\"\"\n\
+            type Query { a: Int }\n";
+        let recs = from_sdl(quotes_sdl).expect("should parse");
+        assert_eq!(
+            recs.iter().find(|r| r.path == "Query").unwrap().description,
+            Some("Example: type User implements Node, Timestamped { id: ID! }".to_string())
+        );
+    }
+
+    #[test]
+    fn a_comment_cannot_open_a_string_that_swallows_the_file() {
+        // An unbalanced quote is legal in a comment, where the parser reads
+        // nothing. Counting it would leave every keyword after it looking like
+        // prose — here, the description above `schema`, which has to go.
+        let sdl = "# see the \"federation docs\n\
+            \"\"\"Our public API.\"\"\"\n\
+            schema { query: Query }\n\
+            type Query { me: ID }\n";
+        assert!(from_sdl(sdl)
+            .expect("should parse")
+            .iter()
+            .any(|r| r.path == "Query.me"));
     }
 
     #[test]
