@@ -68,6 +68,15 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **An argument answers when nothing matched a *name*, not when nothing matched
+  at all.** The first pass matches names *and* qualified paths, so a weak
+  subsequence of someone else's path counted as an answer and suppressed the
+  argument pass entirely. `gqls <github> until` returned `CheckRun.title` at
+  0.128 of a perfect match and hid the seven fields that take `until:` at 1.0 —
+  one unrelated type in the schema was enough to do it. Path matches still stand
+  when nothing takes the query as an argument either, and an argument still
+  never outranks a name: `first` returns the fields named for it, not the 348
+  that take one.
 - **The introspection cache ignored the credentials that fetched a schema.** It
   keyed on the URL alone, so the first response to succeed was replayed for every
   later run against that URL whatever headers were supplied — or not supplied.
