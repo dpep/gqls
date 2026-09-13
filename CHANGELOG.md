@@ -22,6 +22,14 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **A type's fields block showed no directives.** The type carried its own and a
+  named field carried its own, but the list between them carried none — so
+  working out which subgraph owns each field of a federated type meant naming
+  every field, one command each. Directives sit in the description's cell now,
+  after any `(deprecated: …)` marker, because the two are disjoint in practice:
+  across 14,806 field records in four schemas, exactly one carries both. A schema
+  whose fields have no applied directives renders exactly as before — which is
+  every schema loaded by introspection, since the protocol can't report them.
 - **A query that names a record exactly no longer reports weaker matches
   alongside it.** `gqls Query.me` claimed two other matches on a fully qualified,
   unique path: the weak-tail cut compared the *ranking* score, which carries the
