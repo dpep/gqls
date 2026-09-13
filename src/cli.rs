@@ -464,10 +464,18 @@ pub fn run() -> Result<()> {
     let (positional_query, positional_source) =
         split_positionals(&cli.args, cli.warm || cli.returns.is_some() || piped);
 
+    // Which schema answered is only worth saying when nobody chose it — see
+    // [`no_matches`]. Named the way `-v` names it: the walk starts at the cwd,
+    // so the discovered schema is always under it.
+    let discovered = positional_source.is_none();
     let source = match positional_source {
         Some(s) => s,
         None => load::discover(cli.refresh)?,
     };
+    let discovered_source = discovered.then(|| match std::env::current_dir() {
+        Ok(cwd) => load::rel(&cwd, std::path::Path::new(&source)),
+        Err(_) => source.clone(),
+    });
     let load_opts = load::LoadOptions {
         headers: parse_headers(&cli.header)?,
         refresh: cli.refresh,
@@ -807,10 +815,17 @@ pub fn run() -> Result<()> {
         // gqls's own wildcard, not anything the caller typed — so that case
         // reports the filter they actually gave.
         if total == 0 && explained.is_none() {
-            match returns.filter(|_| query == "*") {
-                Some(ty) => crate::status!("nothing returns {ty}"),
-                None => crate::status!("no matches for {query:?}"),
-            }
+            crate::status!(
+                "{}",
+                no_matches(
+                    query,
+                    kind,
+                    returns,
+                    filters,
+                    &records,
+                    discovered_source.as_deref(),
+                )
+            );
         }
         let explained = explained.map(|(_, m)| m);
         output.write_matches(&matches, batch.then_some(query), explained, &records)?;
@@ -992,6 +1007,72 @@ fn explained_match<'a>(
     match candidates.as_slice() {
         [only] => search::names_the_record(query, only).map(|m| (*only, m)),
         _ => None,
+    }
+}
+
+/// Why an empty answer was empty.
+///
+/// A miss is about the filters as much as the query. "nothing returns Issue"
+/// reads as a fact about the schema, and it was false — 43 fields return one,
+/// and `-k query` was what emptied the set; a reader reasonably concluded the
+/// type was unreachable. So the sentence names the flags in play and, where
+/// dropping them would find something, how much.
+///
+/// `source` is set only when gqls discovered the schema itself. A discovered
+/// schema is an assumption baked into every answer, and a miss is the one place
+/// it's worth the line: "not in this schema" and "wrong schema" look identical
+/// otherwise. Said here rather than on every run, where it would be a line
+/// nobody reads on the common path.
+fn no_matches(
+    query: &str,
+    kind: Option<Kind>,
+    returns: Option<&str>,
+    filters: search::Filters<'_>,
+    records: &[SchemaRecord],
+    source: Option<&str>,
+) -> String {
+    // `--returns` with no QUERY searches gqls's own `*`, so the sentence is
+    // about the filter rather than about anything the caller typed.
+    let about_returns = returns.filter(|_| query == "*");
+    let mut subject = match about_returns {
+        Some(ty) => format!("nothing returns {ty}"),
+        None => format!("no matches for {query:?}"),
+    };
+    if let Some(s) = source {
+        subject += &format!(" in {s}");
+    }
+
+    // The flags the sentence doesn't already name, and the search without them.
+    // A `parent` stays: it comes from the query's own `Type.` qualifier, so
+    // it's part of what was asked rather than something laid over it.
+    let mut relaxed = search::Filters {
+        parent: filters.parent,
+        ..Default::default()
+    };
+    let mut unnamed = Vec::new();
+    match about_returns {
+        Some(_) => relaxed.returns = filters.returns,
+        None => {
+            if let Some(ty) = returns {
+                unnamed.push(format!("--returns {ty}"));
+            }
+        }
+    }
+    if let Some(k) = kind {
+        unnamed.push(format!("-k {}", k.as_str()));
+    }
+    if unnamed.is_empty() {
+        return subject;
+    }
+    let listed = unnamed.join(" and ");
+    // Only reached on a miss, so the second pass costs a run that found nothing.
+    match search::search(query, records, relaxed).len() {
+        0 => format!("{subject} with {listed}"),
+        n => format!(
+            "{subject} with {listed} — {n} match{} without {}",
+            if n == 1 { "es" } else { "" },
+            if unnamed.len() == 1 { "it" } else { "them" },
+        ),
     }
 }
 

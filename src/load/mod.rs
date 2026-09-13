@@ -465,7 +465,7 @@ fn sniff_is_schema(path: &Path) -> bool {
     })
 }
 
-fn rel(root: &Path, p: &Path) -> String {
+pub(crate) fn rel(root: &Path, p: &Path) -> String {
     p.strip_prefix(root)
         .unwrap_or(p)
         .to_string_lossy()
