@@ -77,9 +77,9 @@ pub(crate) fn resolve(
         for mut hit in found {
             hit.via = cand.query.clone();
             hit.candidate_rank = idx;
-            // A convention only counts if the hit actually sits where the
-            // convention said. Otherwise it's a name match wearing a
-            // convention's name.
+            // A convention only counts if the hit is the symbol the convention
+            // named, where it said it would be. Otherwise it's something rq
+            // reached from the query, wearing the convention's authority.
             hit.loose = cand.loose || !satisfies(&cand.query, &hit);
             let key = format!("{}:{}", hit.file, hit.line);
             match best.get(&key) {
@@ -125,19 +125,43 @@ pub(crate) fn resolve(
     Ok(hits)
 }
 
-/// Whether a hit actually satisfies the qualification the candidate asked for.
+/// Whether a hit is the definition the candidate named, rather than somewhere
+/// rq's fuzzy matching wandered from it.
 ///
-/// rq is a fuzzy navigator by design: a query for `Resolvers::User` will
-/// cheerfully return a bare `class User` in `app/models`, because the name
-/// matches even though the namespace doesn't. That's a fine search result and a
-/// terrible resolver answer — the whole point of asking for `Resolvers::User`
-/// was to test a convention, and a hit outside `Resolvers` didn't pass it. A
-/// bare candidate (`user`) qualifies nothing, so there's nothing to check.
+/// rq is a fuzzy navigator by design, and it misses in both halves of a
+/// qualified name: `Resolvers::User` will cheerfully return a bare `class User`
+/// in `app/models`, and `MeResolver` returns every `*Resolver` in the repo.
+/// Both are fine search results and terrible resolver answers — the point of
+/// asking was to test a convention, and a hit that isn't named what the
+/// convention named, in the namespace it named, didn't pass it. So both halves
+/// have to hold. A bare candidate (`user`) still has a name to check.
 fn satisfies(candidate: &str, hit: &RqHit) -> bool {
+    named(candidate, hit) && in_namespace(candidate, hit)
+}
+
+/// Whether the hit carries the name the candidate asked for. Case matters:
+/// Ruby's `Cards` and `cards` are different symbols, and a module named for the
+/// field is rarely the method that implements it.
+fn named(candidate: &str, hit: &RqHit) -> bool {
+    wanted_name(candidate) == hit.name
+}
+
+/// The symbol a candidate names: `Mutations::Card::ActivateCard` →
+/// `ActivateCard`, `QueryType#user` → `user`.
+fn wanted_name(candidate: &str) -> &str {
+    let after_method = candidate.rsplit_once('#').map_or(candidate, |(_, m)| m);
+    after_method
+        .rsplit_once("::")
+        .map_or(after_method, |(_, n)| n)
+}
+
+/// Whether the hit sits where the candidate said it would.
+fn in_namespace(candidate: &str, hit: &RqHit) -> bool {
     let qualifier = match candidate.rsplit_once('#') {
         Some((q, _)) => q,
         None => match candidate.rsplit_once("::") {
             Some((q, _)) => q,
+            // a bare candidate qualifies nothing, so there's nothing to check
             None => return true,
         },
     };
@@ -430,8 +454,12 @@ mod tests {
     }
 
     fn hit(parent: Option<&str>) -> RqHit {
+        named_hit("user", parent)
+    }
+
+    fn named_hit(name: &str, parent: Option<&str>) -> RqHit {
         RqHit {
-            name: "user".into(),
+            name: name.into(),
             file: "f.rb".into(),
             line: 1,
             kind: "method".into(),
@@ -448,8 +476,11 @@ mod tests {
     fn a_hit_outside_the_namespace_asked_for_is_not_a_convention_match() {
         // rq is fuzzy: `Resolvers::User` returns a bare `class User` in
         // app/models. The name matches; the convention was not met.
-        assert!(!satisfies("Resolvers::User", &hit(None)));
-        assert!(satisfies("Resolvers::User", &hit(Some("Resolvers"))));
+        assert!(!satisfies("Resolvers::User", &named_hit("User", None)));
+        assert!(satisfies(
+            "Resolvers::User",
+            &named_hit("User", Some("Resolvers"))
+        ));
 
         // a federated root class satisfies `Query#user` even when deeply nested
         assert!(satisfies(
@@ -460,6 +491,34 @@ mod tests {
 
         // a bare candidate qualifies nothing, so there's nothing to verify
         assert!(satisfies("user", &hit(None)));
+    }
+
+    #[test]
+    fn a_hit_that_isnt_named_what_the_convention_named_is_not_a_convention_match() {
+        // `MeResolver` is an unqualified candidate, so the namespace check has
+        // nothing to test — and rq's recall for it is every `*Resolver` in the
+        // repo. Unmarked, those read as verified answers.
+        assert!(!satisfies(
+            "MeResolver",
+            &named_hit("SubmitReferrerChimesignResolver", Some("Resolvers"))
+        ));
+        assert!(satisfies(
+            "MeResolver",
+            &named_hit("MeResolver", Some("Resolvers"))
+        ));
+
+        // the namespace can be right and the name still wrong: rq answers
+        // `Queries::Me` with every module under `Queries`
+        assert!(!satisfies(
+            "Queries::Me",
+            &named_hit("MerchantRewards", Some("Queries"))
+        ));
+
+        // a module named for the field isn't the method that implements it
+        assert!(!satisfies(
+            "QueryType#cards",
+            &named_hit("Cards", Some("QueryType"))
+        ));
     }
 
     #[test]
