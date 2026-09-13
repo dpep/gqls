@@ -238,6 +238,27 @@ impl Candidate {
     }
 }
 
+/// The Ruby namespace a container type contributes to its fields' classes:
+/// `CardMutationRoot` → `Mutations::Card`, so its `activate_card` field lives
+/// at `Mutations::Card::ActivateCard`. Most of a real schema's mutations hang
+/// off such a container rather than off the root itself.
+///
+/// `None` for an ordinary object type — only a `Root` suffix is a type
+/// declaring itself a container, and guessing wider would nest classes for
+/// every field in the schema.
+fn container_namespace(type_name: &str) -> Option<String> {
+    [
+        ("MutationRoot", "Mutations"),
+        ("QueryRoot", "Queries"),
+        ("SubscriptionRoot", "Subscriptions"),
+    ]
+    .into_iter()
+    .find_map(|(suffix, module)| {
+        let stem = type_name.strip_suffix(suffix).filter(|s| !s.is_empty())?;
+        Some(format!("{module}::{stem}"))
+    })
+}
+
 pub(crate) fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
     let field = &rec.name;
     let snake = to_snake(field);
@@ -259,6 +280,13 @@ pub(crate) fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
         }
         Kind::Query | Kind::Subscription => {
             c.push(Candidate::convention(format!("Resolvers::{pascal}")));
+            // `Queries::` is the mirror of the `Mutations::` convention above,
+            // and of what a namespaced root contributes below.
+            let module = match rec.kind {
+                Kind::Subscription => "Subscriptions",
+                _ => "Queries",
+            };
+            c.push(Candidate::convention(format!("{module}::{pascal}")));
             c.push(Candidate::convention(format!("{pascal}Resolver")));
             c.push(Candidate::convention(format!(
                 "Resolvers::{pascal}Resolver"
@@ -273,6 +301,11 @@ pub(crate) fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
         }
         Kind::Field | Kind::InputField => {
             if let Some(t) = &rec.parent {
+                // The type-method conventions below land on the `field :x`
+                // declaration; the class the container nests is the code.
+                if let Some(ns) = container_namespace(t) {
+                    c.push(Candidate::convention(format!("{ns}::{pascal}")));
+                }
                 c.push(Candidate::convention(format!("{t}Type#{snake}")));
                 c.push(Candidate::convention(format!("{t}#{snake}")));
                 c.push(Candidate::convention(format!("Types::{t}Type#{snake}")));
@@ -462,6 +495,21 @@ mod tests {
         assert!(c.contains(&"QueryType#user".to_string()));
         // a federated subgraph's root class is `Query`, not `QueryType`
         assert!(c.contains(&"Query#user".to_string()), "{c:?}");
+        // the mirror of the `Mutations::` convention
+        assert!(c.contains(&"Queries::User".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn a_namespaced_root_nests_the_fields_class() {
+        // Most of a real schema's mutations hang off a container type, and the
+        // type-method conventions only reach the `field :activate_card` line.
+        let c = queries(&rec("activate_card", Some("CardMutationRoot"), Kind::Field));
+        assert_eq!(c[0], "Mutations::Card::ActivateCard");
+        let c = queries(&rec("cards", Some("CardQueryRoot"), Kind::Field));
+        assert_eq!(c[0], "Queries::Card::Cards");
+        // an ordinary object type is not a container and nests nothing
+        let c = queries(&rec("cards", Some("BankAccount"), Kind::Field));
+        assert_eq!(c[0], "BankAccountType#cards");
     }
 
     #[test]
