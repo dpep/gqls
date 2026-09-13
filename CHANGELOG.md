@@ -8,32 +8,23 @@ early entries are terser than what follows.
 
 ## Unreleased
 
-### Added
-- **`--resolve` follows a namespaced root.** A field on `CardMutationRoot` looks
-  for `Mutations::Card::ActivateCard`, and `Queries::`/`Subscriptions::` are
-  tried beside `Resolvers::` for root fields. Across six field shapes on a real
-  server repo the tally went from 1 clean hit, 1 near miss, 3 misses and 1
-  confidently wrong answer, to 5 clean hits, 1 honest miss and none wrong.
-- **`-v` says when introspection can't report applied directives.** The protocol
-  exposes directive *definitions* but not their applications, so `directives` is
-  always empty from an endpoint or a dump however many `@auth`s the SDL applies —
-  a limit of the protocol, not of the schema. Said only when the schema defines
-  directives of its own, so it stays quiet on the five every server defines.
-  `@deprecated` is the exception and is reconstructed.
-
 ### Changed
-- **`--profile` times the network apart from the parse** when the source is a
-  URL. Both were inside one `load` span, so a slow run against a live endpoint
-  gave no way to tell a slow endpoint from slow gqls — on one measurement the
-  split was 481ms of network against 3ms of parsing.
-- **Ranking scores mean one thing on one scale**: the fraction of a perfect
-  match, where perfect means the query *is* the name. A clean word inside a
-  longer name used to score an order of magnitude below a prefix match of the
-  same quality, so the weak-tail cut dropped it — `gqls <schema> disput` never
-  reached `Mutation.in_app_disputes`. **Scores are smaller and differently
-  shaped**: a perfect match is 1000 (plus up to 300 for a `Type.` qualifier),
-  where the old top was 1060. Anything sorting or thresholding on the `score`
-  field of `-j`/`-J` output should re-check its numbers.
+- **A fuzzy score is now the fraction of a perfect match**, where perfect means
+  the query *is* the name — one scale, meaning the same thing whatever the
+  query's length, the name's length, or which branch produced it. A clean word
+  inside a longer name used to score an order of magnitude below a prefix match
+  of the same quality, so the weak-tail cut dropped it outright: `gqls <schema>
+  disput` never reached `Mutation.in_app_disputes` at any limit. It ranks 85th of
+  116 now — still past a default page, but findable.
+
+  **`--json`/`--ndjson` consumers:** scores are smaller and differently shaped.
+  A perfect match is 1000, plus up to 300 where a `Type.` qualifier names the
+  right parent; the old top was 1060. Note that only the fuzzy ranker writes on
+  this scale — `--semantic` reports a cosine in 0..1 and the default combine of
+  the two reports a rank-fusion score around 0.03, as both always did. Sort on
+  `score` within one query; don't compare it across two.
+- **Kind — root field, type, leaf field — no longer adds to the score**; it
+  breaks ties between matches of equal quality instead.
 - **A name that repeats the query, or ends with it, outranks a shorter name that
   merely starts with it.** On a schema where every name shares a prefix —
   anything Hasura-generated — `gqls <schema> pokemon` returned four unrelated
@@ -41,8 +32,10 @@ early entries are terser than what follows.
   at 899. Measured over 2309 queries on four schemas, 292 changed top hits are
   better and 17 worse by an independent referee; the table-lookup case went from
   17 unfindable to 7.
-- **Kind — root field, type, leaf field — no longer adds to the score**; it
-  breaks ties between matches of equal quality instead.
+- **`--profile` times the network apart from the parse** when the source is a
+  URL. Both were inside one `load` span, so a slow run against a live endpoint
+  gave no way to tell a slow endpoint from slow gqls — on one measurement the
+  split was 481ms of network against 3ms of parsing.
 - **The one-time embedding pass no longer guesses "may take a minute".** It
   reports an estimate measured from the run's own rate, and now prints to
   non-terminal stderr every 15s — a piped or CI run could not tell slow from
@@ -60,6 +53,19 @@ early entries are terser than what follows.
 - **`-e` says when one level of selection reaches no leaf at all.** A Relay
   connection has nothing but object-valued fields, so the default draft runs and
   fetches nothing; the note points at `--depth`. The draft itself is unchanged.
+
+### Added
+- **`--resolve` follows a namespaced root.** A field on `CardMutationRoot` looks
+  for `Mutations::Card::ActivateCard`, and `Queries::`/`Subscriptions::` are
+  tried beside `Resolvers::` for root fields. Across six field shapes on a real
+  server repo the tally went from 1 clean hit, 1 near miss, 3 misses and 1
+  confidently wrong answer, to 5 clean hits, 1 honest miss and none wrong.
+- **`-v` says when introspection can't report applied directives.** The protocol
+  exposes directive *definitions* but not their applications, so `directives` is
+  always empty from an endpoint or a dump however many `@auth`s the SDL applies —
+  a limit of the protocol, not of the schema. Said only when the schema defines
+  directives of its own, so it stays quiet on the five every server defines.
+  `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
 - **The introspection cache ignored the credentials that fetched a schema.** It
@@ -140,8 +146,9 @@ early entries are terser than what follows.
 - **`score` reported `0.0` for a record ranking never scored.** Naming a record
   explains it even when `-l` sorted it off the ranked page, and the row then
   carried a zero — a legal score, so nothing distinguished "ranked lowest" from
-  "never computed", and one query at two limits reported 1040.0 and 0.0. It is
-  `null` now; the key is always present, so the document shape is unchanged.
+  "never computed", and the same query at two limits reported a real score and
+  then a zero. It is `null` now; the key is always present, so the document
+  shape is unchanged.
 - **`-j` emitted unparseable JSON for piped queries.** `-j` is one complete array
   per query and a batch answers many, so the output was concatenated top-level
   values no parser reads. A batch refuses `-j` and points at `-J`, the streaming
