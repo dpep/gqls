@@ -45,6 +45,8 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 
 One caveat when reading a schema by introspection: the protocol exposes directive *definitions* but not their applications, so `directives` is always empty from an endpoint or a JSON dump, whatever the SDL applies. `@deprecated` is the exception — it travels by its own channel and is reconstructed. `-v` says so when the schema defines directives of its own.
 
+Order is the other thing a dump doesn't carry. An abstract type's members come back in the order the source gives them — document order from SDL, the server's own from an introspection dump — so the same schema read two ways can list them differently. Membership is the guarantee; order is not.
+
 ### Federated schemas (Apollo Federation v2)
 `gqls` parses subgraph SDL directly — the `extend schema @link(...)` header and `@key`/`@shareable` directives that trip up plain GraphQL parsers — so you can `cd` into a subgraph package and search its own schema. Auto-discovery follows suit: at the repo root it prefers the composed `supergraph*` schema, but run from inside a subgraph it uses that subgraph's local schema.
 
@@ -300,6 +302,8 @@ In a list a description is elided to one line — enough to tell one row from th
 ```sh
 gqls repository schema.json -J | jq -r '.path'
 ```
+
+Exit codes, for a caller that branches on them. `0` when gqls answered — including when the answer is nothing, since "not in this schema" is a valid answer to a search and not a failure, and including an `-e` draft off a corrected spelling. `1` when a mode couldn't deliver the thing it promises: `-e`/`-R` handed a query that names no one record, a schema that won't load, a kind that isn't a kind. `2` is a usage error the argument parser rejected before gqls ran.
 
 `-q`/`--quiet` silences the stderr status lines (results and hard errors still print); `-v`/`--verbose` adds diagnostics — cache hits/misses, the `rq` candidates `-R` tried, and why the embedding model loaded or fell back to the hash embedder. Under `-R`, verbose also passes `-v` through to `rq` and streams its trace.
 

@@ -66,6 +66,14 @@ it (`no matches for "country" in examples/schema.graphql`). Read that last part
 before retrying: a miss against a schema you didn't choose is often the wrong
 schema, not an absent field.
 
+**Exit codes say which kind of nothing you got.** `0` means gqls answered, and
+an empty result is an answer — a miss exits `0`, so don't read a zero exit as
+"found something", and don't read a miss as a tool failure worth retrying
+differently. `1` means a mode couldn't deliver what it promises: `-e`/`-R` given
+a query that names no one record, a schema that won't load, a kind that isn't a
+kind. `2` is a usage error the argument parser rejected — you got the flags
+wrong, fix the command. Check the code before parsing stdout.
+
 When the query *names* exactly one of its matches — the leaf is that record's
 name, not merely its best fuzzy match — gqls stops listing and explains it
 instead: the one record, annotated. Searching narrows; naming finds. Case
@@ -102,6 +110,12 @@ but not their applications, so it is always empty from a live endpoint or a JSON
 dump however many the SDL applies. `@deprecated` is the exception — it arrives
 by its own channel and is reconstructed. If a user asks what's applied to a
 field, you need the SDL.
+
+`possible_types` carries another: an abstract type's members come back in the
+order the source gives them — document order from SDL, the server's own from an
+introspection dump — so the same schema read two ways can list them
+differently. Membership is the guarantee; order is not, so never present the
+first member as primary or the order as meaningful.
 
 **Explaining is triggered by the letters, not by what you meant.** A coincidental
 exact match wins and is then reported in full, which reads as authority: against
