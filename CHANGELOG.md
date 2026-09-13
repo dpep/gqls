@@ -21,7 +21,24 @@ early entries are terser than what follows.
   directives of its own, so it stays quiet on the five every server defines.
   `@deprecated` is the exception and is reconstructed.
 
+### Changed
+- **`-e`/`-R` say out loud when several records are spelled exactly like the
+  query.** `id` names `Character.id`, `Location.id` and `Episode.id`; the pick
+  used to look settled. It still drafts and still exits 0 — the runners-up go to
+  stderr, and `-e -j` gains `also_named` (`[]` when there was no choice), because
+  a stderr line doesn't reach a JSON consumer.
+- **`-e` says when one level of selection reaches no leaf at all.** A Relay
+  connection has nothing but object-valued fields, so the default draft runs and
+  fetches nothing; the note points at `--depth`. The draft itself is unchanged.
+
 ### Fixed
+- **`-e` leaked a multi-line deprecation reason out of its comment.** A `#`
+  comment ends at the newline, so only the reason's first line stayed commented
+  and the rest landed in the selection set, where a server reads it as field
+  names. On one real schema that broke **80 of 2083 drafts** — all from a single
+  field, because it's selected under every actor chain. Every free-form string a
+  draft quotes is flattened to one line now, including an optional argument's
+  block-string default, which was independently broken.
 - **A type's fields block showed no directives.** The type carried its own and a
   named field carried its own, but the list between them carried none — so
   working out which subgraph owns each field of a federated type meant naming
