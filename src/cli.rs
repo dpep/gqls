@@ -979,6 +979,12 @@ fn explained_match<'a>(
 /// favourite into something that reads as authoritative — an operation to paste,
 /// a file and line to open. Where the query was merely *closest* to a field, the
 /// candidates are printed instead and the pick handed back to the user.
+///
+/// A hit the query spells exactly, casing included, outranks the one that
+/// merely scored highest — the same rule [`explained_match`] applies, since
+/// ranking itself is case-blind and GraphQL capitalises types and not fields.
+/// Without it `gqls Card` explained the type while `gqls Card -e` silently
+/// drafted against the field `Mutation.card`.
 fn one_named_record<'a>(
     query: &str,
     hits: &[search::Hit<'a>],
@@ -986,7 +992,14 @@ fn one_named_record<'a>(
     limit: usize,
     output: Output,
 ) -> Result<&'a SchemaRecord> {
-    let Some(top) = hits.first() else {
+    // Best-first, so `find` takes the strongest exact-cased hit where several
+    // records share a name (`User.id`, `Post.id`, …) — ranking still breaks
+    // those ties, as it always did.
+    let top = hits
+        .iter()
+        .find(|h| search::names_the_record_exactly(query, h.record))
+        .or_else(|| hits.first());
+    let Some(top) = top else {
         anyhow::bail!("no schema entity matches {query:?} to {action}");
     };
     // Both messages are part of the answer rather than commentary on it, so

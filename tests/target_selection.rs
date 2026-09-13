@@ -125,6 +125,20 @@ fn json_output_stays_json() {
 }
 
 #[test]
+fn case_picks_the_target_the_way_it_picks_the_explanation() {
+    // Ranking is case-blind, so `User` and `user` rank identically and the
+    // field wins both — while `gqls User` explains the type. `-e` reads as
+    // authoritative enough to paste, so it has to agree.
+    let payload = |query: &str| -> serde_json::Value {
+        let out = run_with("-e", query, &["-j"]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        serde_json::from_str(&stdout(&out)).expect("a draft should be JSON")
+    };
+    assert_eq!(payload("User")["path"], "User");
+    assert_eq!(payload("user")["path"], "Query.user");
+}
+
+#[test]
 fn listing_a_types_fields_is_a_list_not_a_draft() {
     // `User.` enumerates — there's no single field to draft for.
     let out = run("-e", "User.");
