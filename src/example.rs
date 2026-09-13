@@ -26,6 +26,11 @@
 //! * **Deprecated fields are flagged, not dropped.** They're still selected and
 //!   marked `# deprecated: reason`, because silently omitting a field the schema
 //!   still serves is its own surprise.
+//! * **Schema prose in a draft is flattened to one line.** A `#` comment ends
+//!   at the next line terminator, so a deprecation reason that spans lines
+//!   would spill its tail into the selection set, where a server reads it as
+//!   field names. Everything free-form goes through [`one_line`]; names and
+//!   type references can't hold a newline and don't need it.
 //! * **An `errors` block only when the schema has one.** The payload/errors
 //!   convention is widespread but not universal, so it's expanded only when
 //!   that field really exists.
@@ -249,7 +254,7 @@ pub fn build(
     if let Some(reason) = &target.deprecated {
         deprecated.push(match reason.is_empty() {
             true => target.path.clone(),
-            false => format!("{} ({reason})", target.path),
+            false => format!("{} ({})", target.path, one_line(reason)),
         });
     }
     // An input target asks "where does this go", not "what comes back", so it
@@ -813,7 +818,7 @@ impl<'a> Schema<'a> {
                 }
                 Some(reason) => {
                     deprecated.push(f.path.clone());
-                    format!("  # deprecated: {reason}")
+                    format!("  # deprecated: {}", one_line(reason))
                 }
                 None => String::new(),
             };
@@ -1043,7 +1048,9 @@ impl Variables {
                 // argument needs nothing from the caller.
                 let demanded = required.is_some_and(|t| base_of(type_ref) == t);
                 if !demanded && (!type_ref.ends_with('!') || default.is_some()) {
-                    optional.push(format!("{}({})", field.name, arg.trim()));
+                    // A signature carries a default, and a default can be a
+                    // block string; it's rendered as a comment like the rest.
+                    optional.push(format!("{}({})", field.name, one_line(arg)));
                     continue;
                 }
                 // Disambiguate a name already taken by an outer field's arg.
@@ -1257,6 +1264,16 @@ fn required_args(r: &SchemaRecord) -> usize {
         .map(|a| split_arg(a))
         .filter(|a| a.type_ref.ends_with('!') && a.default.is_none())
         .count()
+}
+
+/// Schema prose, flattened onto one line so it can sit in a `#` comment.
+///
+/// A comment runs to the next line terminator, so any schema text that reaches
+/// a draft has to arrive without one: a deprecation reason spanning two lines
+/// puts its tail into the selection set, where a server reads it as fields. The
+/// same reason a note goes *after* an opening brace and never before it.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `Organization` → `organization`, for the head of an alias.

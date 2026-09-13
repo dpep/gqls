@@ -494,6 +494,44 @@ fn a_deprecated_object_valued_field_keeps_its_brace_out_of_the_comment() {
 }
 
 #[test]
+fn a_multi_line_deprecation_reason_stays_inside_its_comment() {
+    // The same leak as the brace, from the other side: a `#` comment ends at
+    // the newline, so only the reason's first line stayed commented and the
+    // rest landed in the selection set, where a server read it as fields. It
+    // parses either way, which is why this asserts on the shape and not on
+    // `parse_query`.
+    let sdl = "\
+        type Query { team: Team @deprecated(reason: \"\"\"\n\
+        \x20 Querying a Team at the root is discouraged.\n\
+        \x20 Ref T12456.\n\
+        \"\"\") }\n\
+        type Team { invitations: Invitations @deprecated(reason: \"\"\"\n\
+        \x20 Use a generic connection.\n\
+        \x20 Interim until the generic type exists.\n\
+        \"\"\") }\n\
+        type Invitations { totalCount: Int }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.team").unwrap();
+    let ex = example::build(target, &records, Some(2)).expect("drafting should succeed");
+
+    // Inline: the whole reason, on the one line the note opened.
+    assert!(
+        ex.operation.contains(
+            "invitations {  # deprecated: Use a generic connection. \
+             Interim until the generic type exists.\n"
+        ),
+        "{}",
+        ex.operation
+    );
+    // And the same reason carried out to the caller, which prints it as one
+    // status line.
+    assert_eq!(
+        ex.deprecated[0],
+        "Query.team (Querying a Team at the root is discouraged. Ref T12456.)"
+    );
+}
+
+#[test]
 fn an_implementor_that_only_adds_object_fields_still_appears() {
     // Its additions are all object-valued, so it has nothing but markers —
     // and dropping every marker inside an interface's fragments dropped the
