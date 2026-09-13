@@ -70,7 +70,13 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
     }
 
     crate::detail!("introspecting {url}");
+    // Timed apart from the parse below, because for a remote source the network
+    // is usually most of the wall clock and the least controllable part of it —
+    // one undifferentiated `load` span can't tell a slow endpoint from slow gqls.
+    let mut fetch_span = crate::profile::span("introspect: fetch");
     let bytes = fetch(url, &opts.headers)?;
+    fetch_span.note(|| format!("{:.1} KB", bytes.len() as f64 / 1024.0));
+    drop(fetch_span);
     // Parse and validate *before* caching. Servers answer 200 with an `errors`
     // body for an expired token or disabled introspection; caching that would
     // turn a transient failure into an hour of them.
@@ -95,9 +101,12 @@ pub(super) fn records_from(raw: &[u8], source: &str, refresh: bool) -> Result<Ve
     let records = match (!refresh).then(|| super::record_cache::load(raw)).flatten() {
         Some(records) => records,
         None => {
+            let mut parse_span = crate::profile::span("introspect: parse");
             let body: Value = serde_json::from_slice(raw)
                 .with_context(|| format!("parsing introspection response from {source}"))?;
             let records = from_introspection(schema_of(&body, source)?)?;
+            parse_span.note(|| format!("{} records", records.len()));
+            drop(parse_span);
             super::record_cache::store(raw, &records);
             records
         }

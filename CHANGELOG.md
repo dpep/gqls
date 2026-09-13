@@ -22,6 +22,10 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Changed
+- **`--profile` times the network apart from the parse** when the source is a
+  URL. Both were inside one `load` span, so a slow run against a live endpoint
+  gave no way to tell a slow endpoint from slow gqls — on one measurement the
+  split was 481ms of network against 3ms of parsing.
 - **Ranking scores mean one thing on one scale**: the fraction of a perfect
   match, where perfect means the query *is* the name. A clean word inside a
   longer name used to score an order of magnitude below a prefix match of the
