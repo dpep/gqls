@@ -5,7 +5,7 @@
 [![crates.io](https://img.shields.io/crates/v/gqls-cli.svg)](https://crates.io/crates/gqls-cli)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Point `gqls` at a schema and find the type, field or directive you're after — by approximate name, by meaning, or by jumping straight to its resolver in code. It reads an SDL file, an introspection dump, a live endpoint, or a federated supergraph, so instead of grepping SDL and guessing the exact spelling you get ranked matches — even on schemas too big to scroll, where GitHub's ~68k-line API answers in ~0.15s.
+Point `gqls` at a schema and find the type, field or directive you're after — by approximate name, by meaning, or by jumping straight to its resolver in code. It reads an SDL file, an introspection dump, a live endpoint, or a federated supergraph, so instead of grepping SDL and guessing the exact spelling you get ranked matches — even on schemas too big to scroll, where GitHub's ~68k-line API answers in ~0.03s.
 
 ```sh
 gqls user schema.graphql              # fuzzy: usr, usre, User.email all match
@@ -40,7 +40,7 @@ The resolver jump (`-R`) shells out to [`rq`](https://github.com/dpep/rq); insta
 ### Input sources
 - **SDL file** — `gqls user schema.graphql`
 - **Introspection JSON dump** — `gqls user schema.json`
-- **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query; add auth with `-H "Authorization: Bearer …"`, repeatable). Remote responses are cached ~1h so repeat queries don't refetch all day; a `localhost` endpoint is never cached (you're likely editing that schema). Tune with `GQLS_INTROSPECT_TTL` (seconds; `0` disables), `--refresh` to bypass, `--clear-cache` to wipe.
+- **Live endpoint** — `gqls user https://api.example.com/graphql` (POSTs the introspection query; add auth with `-H "Authorization: Bearer …"`, repeatable). Remote responses are cached ~1h so repeat queries don't refetch all day; a `localhost` endpoint is never cached (you're likely editing that schema). The cache key covers the request headers as well as the URL, so two runs against one endpoint under different credentials get their own schemas rather than whichever response landed first — and a revoked token stops working when it's revoked, not an hour later. Header names are lowercased and the whole key is hashed, so nothing writes a token into a path. Entries are held by count and total size, least recently used evicted first. Tune the lifetime with `GQLS_INTROSPECT_TTL` (seconds; `0` disables), `--refresh` to bypass, `--clear-cache` to wipe.
 - **Auto-discovery** — omit the source and `gqls` finds a schema in the current tree (preferring `.graphqls`, then `schema.*`, then an introspection `.json`, then any SDL-looking `.graphql`; in a federated monorepo, a `supergraph*` schema wins when several exist). The tree is searched in parallel, hidden directories and known build/dependency directories (`node_modules`, `target`, `venv`, `coverage`, …) are skipped whole, and a candidate is only opened when nothing already found outranks it — so a repo with a `schema.graphql` at a sensible place is found without reading a single file. The answer is then remembered per directory for an hour so repeat runs skip the walk entirely, which is otherwise the most expensive thing a warm query does. If nothing is found beneath you, the search widens rather than failing: first to the enclosing git repository (so `gqls user` in `repo/src/components` finds the repo's schema), then to the generated directories it skipped, so a schema written by a build step is still found. Dependency directories are never searched — a schema in `node_modules` describes someone else's API. A remembered answer is dropped once the schema it names moves; `--refresh` re-walks, `GQLS_DISCOVER_TTL` (seconds; `0` disables) tunes it, and `-v` says which schema answered either way.
 
 One caveat when reading a schema by introspection: the protocol exposes directive *definitions* but not their applications, so `directives` is always empty from an endpoint or a JSON dump, whatever the SDL applies. `@deprecated` is the exception — it travels by its own channel and is reconstructed. `-v` says so when the schema defines directives of its own.
@@ -56,7 +56,7 @@ Parsing is as far as it goes. `@join__*` and friends come back as raw text; gqls
 
 Several words are one query, so `gqls cancel a subscription` needs no quotes, and the schema is recognised wherever it sits among the arguments. A leading kind word filters like `-k` — `gqls query user`, `gqls type User` — and gqls says on stderr when it read a word that way.
 
-Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality, with root `Query`/`Mutation` fields floated up. Weak long-tail matches are cut relative to the best hit; when the limit drops matches, the total is reported on stderr so a truncated list can't pass for the whole answer.
+Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality — how cleanly your query's characters sit in the name, times how much of the name they account for — and kind breaks the tie, which is what floats a root `Query`/`Mutation` field above the type it returns when both match equally well. Weak long-tail matches are cut relative to the best hit, and a query that names a record exactly cuts everything weaker outright. When the limit drops matches, the total is reported on stderr so a truncated list can't pass for the whole answer.
 
 **Fuzzy bridges spelling, not vocabulary.** It matches names built out of your query's characters in order, so a typo or a dropped vowel still lands — but a synonym or a missing domain word is a different name, not a mangled one. `currentUser` finds nothing when the field is `me`, and `updateAddress` misses `updateUserAddress` the moment an unrelated `UPDATE_ADDRESS` outranks it. When you're guessing at a name rather than recalling one, search the word you're sure of (`address`) or write a phrase — a phrase is what turns semantic ranking on.
 
@@ -64,7 +64,9 @@ A multi-word query is matched one word at a time, so a phrase isn't a hard zero 
 
 Which means a phrase works best trimmed to its content words, the way you'd type a search-engine query, not a question: `user credit score` finds the field where `where do we expose a users credit score` buries it. Dropping noise words keeps them from scoring, but every word you leave in is a word a record can cover, and the ones you didn't mean still count.
 
-Only whitespace opens this path: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` answers `no matches for "Post.role"` and stops — it doesn't retry as a phrase, though `gqls role` alone finds four records. The miss message shows the rewrite, which is the tell; drop the type word. Quoting won't help, since the qualifier is recognised either way.
+Only whitespace opens this path: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` says `no matches for "Post.role"` — it doesn't retry as a phrase, though `gqls role` alone finds four records. What you get instead is whatever semantic ranking makes of `role` among `Post`'s own fields, which here is `Post.id` and `Post.author`: the stderr miss line is the tell that none of it is the field you asked for. Drop the type word. Quoting won't help, since the qualifier is recognised either way.
+
+**On a schema where every name starts the same way, name the type.** A Hasura or PostGraphile schema prefixes its whole table list — `pokemon_v2_pokemon`, `pokemon_v2_item`, `pokemon_v2_move` — so a bare word matches all of it. Ranking now puts the table you meant first (a name that repeats your query, or ends with it, beats a shorter one that merely starts with it), but the rest of the list is still right behind it: one word against a seven-table toy returns fourteen matches. Spell the type out, or add `-k query` to get the entry points and nothing else. Guessing at a stem and scrolling is the slow path.
 
 A miss says what made it one. The filters in play, and what dropping them would find (`nothing returns Issue with -k query — 43 match without it`); and the schema, when gqls discovered one rather than being handed it (`no matches for "country" in examples/schema.graphql`) — "not in this schema" and "you're searching the wrong schema" otherwise read identically.
 
@@ -95,6 +97,35 @@ Role  [enum]
 
 Every kind that has fields lists them, which for an object or an interface is most of what it is — reaching them through `User.` instead is a ranked search that stops at `-l`. A field taking arguments is marked `posts(…)` rather than given a column of signatures; naming the field spells them out. A type with more fields than fit is elided with the command that lists the rest (`… and 121 more — `gqls 'Repository.' -l 145` lists them all`); `--json` is never elided.
 
+Each field carries its own applied directives, in the description's cell after any `(deprecated: …)` marker. On a federated supergraph that makes "which subgraph owns what" one command:
+
+```sh
+$ gqls Product supergraph.graphql
+gqls: 2 other matches for "Product" (--no-explain to list them)
+Product  [object]
+  directives     @join__implements(graph: PRODUCTS, interface: "Purchasable")
+                 @join__type(graph: PRODUCTS, key: "upc") @join__type(graph:
+                 REVIEWS, key: "upc", extension: true)
+  referenced by  Bundle.items, Query.product, Query.topProducts, Review.product
+  fields
+    dimensions        Dimensions!  @join__field(graph: PRODUCTS)
+                                   @join__field(graph: REVIEWS, external: true)
+    name              String!      @join__field(graph: PRODUCTS)
+    price             Int!         @join__field(graph: PRODUCTS)
+                                   @join__field(graph: REVIEWS, external: true)
+    upc               String!
+    weight            Int!         @join__field(graph: PRODUCTS)
+                                   @join__field(graph: REVIEWS, external: true)
+    crateSize         String!      @join__field(graph: REVIEWS, requires:
+                                   "weight dimensions { length width unit { code
+                                   } }")
+    reviews           [Review!]!   @join__field(graph: REVIEWS)
+    shippingEstimate  Int!         @join__field(graph: REVIEWS, requires: "price
+                                   weight")
+```
+
+That's the supergraph's own text, printed, not federation semantics interpreted. A schema whose fields apply no directives renders exactly as it always did — which is every schema read by introspection, since the protocol can't report them.
+
 On a schema small enough to read whole, `gqls User` and `gqls 'User.'` look like the same answer. The difference is what happens when the type is big: `gqls 'Repository.'` is a ranked search that hands you 20 of GitHub's 145 fields in alphabetical order, with each description clipped to whatever the columns leave; `gqls Repository` lists them in schema order with their types and docs, and names the command for the rest. Keep `User.` for searching *within* a type — `gqls 'User.*email*'`.
 
 ```sh
@@ -124,12 +155,12 @@ Commentable  [interface]
     comments(…)  [Comment!]!  Comments, newest first.
 ```
 
-Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names and empties the description column of an input object's fields. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values`, `fields`, `arguments` and `referenced_by`, so a consumer gets the same facts.
+Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names and empties the description column of an input object's fields. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values`, `fields`, `arguments` and `referenced_by`, so a consumer gets the same facts — and each entry in `fields` carries its own `directives`.
 
 **An exact name wins even when it's a coincidence.** Explaining is triggered by the letters, not by what you meant, so `gqls 'update address'` against a schema with a `SupportTicketDispositionLink.UPDATE_ADDRESS` enum value explains that — confidently, in full — while `UserMutation.update_user_address` sits in the matches it didn't show. The tell is the `N other matches` line above the answer: when the record you got isn't the one you were after, `--no-explain` lists what else matched.
 
 ### Many queries at once
-Pipe queries on stdin, one per line, and a single run answers them all — the schema, the embedding model and the vectors load once instead of once per query. On a 10k-record schema, 20 meaning-based queries drop from 1.83s to 0.52s:
+Pipe queries on stdin, one per line, and a single run answers them all — the schema, the embedding model and the vectors load once instead of once per query. Against GitHub's 11,217-record schema, 20 meaning-based queries drop from 2.7s to 0.7s — about four times faster:
 
 ```sh
 cat queries.txt | gqls schema.graphql -J
@@ -190,7 +221,7 @@ Wildcards skip semantic ranking (you asked for a list, not a guess); combine the
 In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". Members means fields *or* enum values, so `gqls Role.ADMIN` reaches one value and its documentation, and `gqls 'Role.*'` lists the lot. A misspelled qualifier snaps to the unique closest type (`Compnay.employe` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching. That correction applies to fuzzy queries, not to wildcards — patterns match literally, so `Compnay.` finds nothing rather than guessing.
 
 ### Semantic search — automatic, combined with fuzzy
-By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), truncated to 64 dimensions and cosine-ranked; the model is fetched once from the HuggingFace Hub, then cached offline. What gets embedded is the record's path, description and return type, with identifiers split into words (`cancelSubscription` → `cancel Subscription`) and `[]`/`!` wrappers dropped — the tokenizer shreds camelCase into meaningless word pieces otherwise.
+By default gqls returns fuzzy matches and semantic ones, merged via Reciprocal Rank Fusion, so exact-name and meaning-based hits both surface (fuzzy weighted a touch higher to keep exact matches on top). Semantic ranking uses a local `all-MiniLM-L6-v2` model (ONNX Runtime), truncated to 256 dimensions and cosine-ranked; the model is fetched once from the HuggingFace Hub, then cached offline. What gets embedded is the record's path, description and return type, with identifiers split into words (`cancelSubscription` → `cancel Subscription`) and `[]`/`!` wrappers dropped — the tokenizer shreds camelCase into meaningless word pieces otherwise.
 
 ```sh
 gqls 'delete a repository'    # a phrase — semantic leads, fuzzy matches per word
@@ -200,7 +231,9 @@ gqls user --semantic          # force semantic only  (--fuzzy forces fuzzy only)
 
 When the query names something that exists — an exact match, or the word whole at a boundary (`name` → `lastName`) — the combine is skipped: fuzzy found what you typed, so meaning-based lookalikes would only pad the list. A query that names a real field or type is therefore answered by fuzzy alone every time, which is why semantic ranking can look like it isn't running: a phrase is what buys it. `-v` says when it was skipped, and `--semantic` forces it back on. The space form (`gqls 'User name'`) is the loose variant: same type filter, but semantic stays on, so nearby fields (`lastName`, `firstName`) surface too. Semantic results are tail-bounded relative to the best hit, so a large `-l` can't fill with monotonic noise.
 
-Per-record vectors are cached, keyed by schema content and model. The first time gqls sees a schema it returns fuzzy results immediately and embeds in the background — so the next run is combined and instant (GitHub's schema: ~40s to embed once, then ~0.3s warm queries). `GQLS_NO_AUTOWARM=1` disables the background embed. Editing the schema re-embeds only what changed — vectors are keyed per record, so adding a few fields costs a few inferences, not the whole schema — and the superseded cache file is collected, so a drifting schema keeps one file rather than one per edit. `--refresh` forces a full re-embed, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and Homebrew have it; `--no-default-features` is fuzzy-only.
+Per-record vectors are cached, keyed by schema content and model. The first time gqls sees a schema it returns fuzzy results immediately and embeds in the background — so the next run is combined and instant. The embed is the one slow thing gqls does, and how slow depends on the schema, the machine and the build by multiples, so it doesn't guess: past a few hundred records it prints progress with an estimate derived from the rate that run is achieving (`embedded 8076/11217 (~41s left)`). In a terminal that's one line, rewritten; piped — CI, or an agent capturing stderr — it's a line every 15 seconds, so a long wait reads as slow rather than hung.
+
+Editing the schema re-embeds only what changed — vectors are keyed per record, so adding a few fields costs a few inferences, not the whole schema — and the superseded cache file is collected, so a drifting schema keeps one file rather than one per edit. `GQLS_NO_AUTOWARM=1` disables the background embed, `--refresh` forces a full re-embed, `--clear-cache` wipes the cache, and `gqls --warm <schema>` embeds up front (e.g. in CI). Semantic needs a semantic build — the default `cargo install` and Homebrew have it; `--no-default-features` is fuzzy-only. When the model can't be loaded at all, gqls ranks with a hash fallback and says so — on stderr, and as `degraded: true` on every row of `--json`/`--ndjson`, since a caller reading stdout would otherwise have no way to tell weaker results from good ones.
 
 ### Draft an example operation (`-e`)
 Find a field, then get something you can paste into a client:
@@ -241,12 +274,14 @@ A field with optional arguments and a payload/errors convention gets two more bl
 
 Both respect capitalisation the way explaining does: a record the query spells exactly, case included, beats one that merely ranked higher. `gqls Card -e` drafts against the type `Card`, not the field `Mutation.card`.
 
+When several records are spelled exactly alike, the pick is said out loud rather than left to look settled — `gqls id -e` reports `id names 4 records; using Node.id` on stderr, drafts, and exits 0. `-e -j` carries the runners-up as `also_named` (`[]` when there was no choice), because a stderr line doesn't reach a JSON consumer.
+
 The rules are deliberately conservative, because a wrong guess costs more than a visible hole:
 
 - **Documented arguments say what they're for.** An `# arguments:` block under the operation carries the schema's own prose for each argument along the chain, since a signature says what to pass and not what passing it does. Only the documented ones — a block of names with nothing beside them says less than no block at all.
 - **Arguments you must supply become variables** — nothing is inlined into the query body, and each placeholder names its type (`"<ID!>"`), so it can't be mistaken for a usable value the way `""` or `0` can.
 - **Anything the server can supply is left out and listed underneath** — a nullable argument, or one with a schema default (even a non-null one, like `first: Int! = 10`). The operation runs as-is, and the knobs you skipped are still visible with their defaults.
-- **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# field: Type { … }` marker per object-valued field.
+- **One level of selection, leaf fields only.** A scalar or enum return gets no selection set at all. An object return gets its scalar/enum fields plus a `# field: Type { … }` marker per object-valued field. When that level reaches no leaf at all — a Relay connection is nothing but `edges`, `nodes` and `pageInfo` — the draft is runnable and fetches nothing, so a stderr line says `every field here returns an object (--depth selects inside them)`.
 - **An `errors` block only if the schema really has one** — the payload/errors convention is common, not universal, so it's expanded only when that field exists.
 - **The variables block is a fillable skeleton, not a restatement.** An input-object argument is expanded into its fields in the schema's own order, so the thing you paste into a client is the thing that shows the shape — `"<CreateUserInput!>"` only ever repeated the signature twenty lines above it. A list gets one element; a self-reference (`Filter { and: [Filter!] }`) closes as `"<Filter!>"`, since its shape is in the object directly containing it. An input the schema has no fields for stays a placeholder rather than becoming a `{}` that claims it takes nothing. Since an expanded key no longer names its type, the heading does: `# variables — input: CreateUserInput!`.
 - **Enums are listed beside the block, not inside it** — JSON has no way to hold "one of these", so `# enums:` names the choice for each enum the variables reach. It's the only thing left that the skeleton can't express.
@@ -259,7 +294,7 @@ The rules are deliberately conservative, because a wrong guess costs more than a
 - **An input draft stays about the input.** It asks where the value goes, not what comes back, so the reply gets the barest selection a server accepts (`__typename`) and only the named input's own types are expanded — `gqls PostFilter -e` was spelling out `PostOrder`, `PostOrderField` and `OrderDirection` off a sibling argument it doesn't even fill in. `--depth 1` asks for the payload back. (`--depth 0` means the same barest selection for any target; it used to be silently clamped to 1.)
 - **Each section appears only when it has something in it** — no empty `# variables` block for an operation that takes none, and no `# paths` block when there's only the one the draft already shows.
 
-Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, enums, variable_types, deprecated, paths}` for scripting.
+Every drafted operation is parsed back with a GraphQL parser in the test suite, and a network-gated test drafts against a live endpoint and *executes* the result there — so what it prints is not just well-formed but accepted by the server it came from. `-j`/`--json` emits `{path, operation, variables, optional_args, passed_inside, arguments, enums, variable_types, deprecated, paths, also_named}` for scripting.
 
 ### Resolver jump (`-R`, graphql-ruby)
 Find a field, then jump to the resolver or method that implements it, via `rq`:
@@ -273,19 +308,23 @@ Like `-e`, it only resolves a field the query names (or misspells slightly) — 
 
 `gqls` tries graphql-ruby naming conventions (resolver class, type method, mutation class) and ranks the candidates, best convention first; package proximity to the schema file breaks ties, so in a federated monorepo the resolver in the schema's own subgraph wins over a same-named one elsewhere.
 
-**Its reliability varies by field kind, and it says so.** Mutations are the strong case: `Mutations::VerbNoun` is a near-universal convention. Root fields also try the bare root class (`Query#field`), since a federated subgraph names its root `Query` rather than `QueryType`. When no convention matches, gqls falls back to searching for the name alone — those results are marked `(guess)` and announced on stderr, because a name-similarity hit is not a resolver lookup. Fields declared purely as `field :name, Type` with no method body currently can't be found at all: `rq` locates definitions, and a macro call isn't one.
+**Its reliability varies by field kind, and it says so.** Mutations are the strong case: `Mutations::VerbNoun` is a near-universal convention, and a schema that namespaces its roots is followed into the namespace — `CardMutationRoot.activate_card` looks for `Mutations::Card::ActivateCard`. Root fields also try `Queries::`/`Subscriptions::` beside `Resolvers::`, and the bare root class (`Query#field`), since a federated subgraph names its root `Query` rather than `QueryType`. A field declared only as `field :name, Type` resolves to the declaration itself, which needs `rq` 0.35.2 or newer.
+
+Everything else is a `(guess)`, announced on stderr — both the bare name search gqls falls back to when every convention misses, and a hit that merely *resembles* what a convention named. `Resolvers::User` will happily return a bare `class User` in `app/models`; that is a fine search result and a terrible resolver answer, so it no longer wears the convention's authority. Guesses are ordered by whether they carry the name searched for, which is what separates the one `def cards` from the nine `module Cards` above it.
 
 ### Output
 Text results carry the path, the type, the kind, and the schema description — a match is usually confirmable without opening the schema:
 
 ```sh
 $ gqls user examples/schema.graphql
-Query.user(…)            -> User      [query]   — Look up a user by id.
-User                                  [object]  — An account.
-ArchiveUserPayload.user  -> User      [field]
-Query.users(…)           -> [User!]!  [query]   — Page through every user in…
-UserError                             [object]  — Something the caller can fix,…
+Query.user(…)            -> User  [query]   — Look up a user by id.
+User                              [object]  — An account.
+ArchiveUserPayload.user  -> User  [field]
 ```
+
+Three rows, not the dozen a schema this size contains the letters for: the
+query spells `user` exactly, and an exact name cuts everything weaker outright.
+`Query.users` and `UserError` are real matches, and neither is what you typed.
 
 An argument list collapses to `(…)` beside other results and spells out in full
 when a result stands alone — the list is for telling rows apart, and one long
@@ -311,12 +350,18 @@ Exit codes, for a caller that branches on them. `0` when gqls answered — inclu
 
 ```sh
 $ gqls user big.graphql --fuzzy --profile
-  load          9.4ms  48501 records
-  fuzzy scan    6.5ms  2464 of 48501 records matched
-  output        0.0ms
-  ──────────
-  total        16.3ms
+  cache: read       0.8ms  4.3 MB
+  cache: decode     5.3ms  48501 records
+  load              6.7ms  48501 records
+  fuzzy scan       10.4ms  184 of 48501 records matched
+  output           18.9ms
+  ─────────────
+  total            36.3ms
 ```
+
+For a URL source, `introspect: fetch` is timed apart from `introspect: parse`,
+so a slow run against a live endpoint says which half was slow — on one
+measurement, 481ms of network against 3ms of parsing.
 
 The phases have to add up. When they don't, the report says so on an `unaccounted` line rather than leaving you to subtract — un-instrumented work is exactly what a profile is for, and a report that quietly omits it points you at the phases that are fast instead of the seconds that aren't. Nested phases (`cache: read` inside `load`) are shown but not double-counted.
 
@@ -346,7 +391,7 @@ The plugin is the better default; [`claude/INSTALL.md`](claude/INSTALL.md) cover
 
 `script/check.sh` is the gate — formatting, clippy, and tests across every feature configuration gqls ships (default/semantic, fuzzy-only, and the `semantic-dynamic` build Homebrew uses). Run it before pushing.
 
-**Every timing in this README is a release build** — an installed binary, or `cargo build --release`. A debug build searches at roughly the same speed, since most of that is reading a cache, but it runs the embedding model many times slower: `--warm` on a large schema takes minutes rather than the ~40s quoted above, and prints one line before going quiet for all of it.
+**Every timing in this README is a release build** — an installed binary, or `cargo build --release`. A debug build searches at roughly the same speed, since most of that is reading a cache, but it runs the embedding model many times slower. That is why nothing here quotes a fixed duration for the embed: the progress line measures the run you're actually in.
 
 Releases are cut by the shared `release` script the whole `dpep/tools` tap uses, not from this repo.
 
