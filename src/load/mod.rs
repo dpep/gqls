@@ -88,7 +88,9 @@ impl Reach {
 /// — it's the composed graph of a federated monorepo. Otherwise by tier:
 /// `.graphqls`, then a `schema.*` file, then an introspection `.json`, then any
 /// `.graphql`/`.gql` whose contents look like SDL. Ties break on depth, so the
-/// nearest wins; other candidates elsewhere are reported.
+/// nearest wins, then on path; every other candidate found is reported under
+/// `-v`, alongside the one chosen — a silent tie is how you end up reading
+/// answers from a schema you didn't mean.
 ///
 /// The walk is the most expensive thing a warm query does, so its answer is
 /// remembered per directory (see [`discover_cache`]); `refresh` re-walks.
@@ -125,14 +127,14 @@ pub(crate) fn discover(refresh: bool) -> Result<String> {
 
     // Counts the candidates confirmed, which is all of them only when the search
     // had to read everything. Under-reporting a hint is the right way round:
-    // every file named here really is a schema.
-    let elsewhere = candidates
-        .iter()
-        .filter(|c| c.path.parent() != chosen.path.parent())
-        .count();
+    // every file counted here really is a schema.
+    //
+    // A sibling counts: `api.graphqls` beside `legacy.graphqls` is the tie most
+    // worth hearing about, and it was the one case this said nothing about.
+    let others = candidates.len();
     crate::detail!("using schema {}", rel(&searched, &chosen.path));
-    if elsewhere > 0 {
-        crate::detail!("{elsewhere} other schema file(s) elsewhere — pass a path to pick one");
+    if others > 0 {
+        crate::detail!("{others} other schema file(s) found — pass a path to pick one");
     }
     discover_cache::store(&root, &chosen.path);
 
