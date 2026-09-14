@@ -207,6 +207,15 @@ struct Cli {
     #[arg(long, value_name = "N")]
     depth: Option<usize>,
 
+    /// Route --example takes, in the notation `# paths` prints:
+    /// `Query.repository`, or a chain `Query.repository > Repository.issues`.
+    /// Each segment names a field, case-insensitively. For when the shortest
+    /// route isn't the one you want — a schema with a global-ID lookup reaches
+    /// half its types in one hop through `node(id:)`, and those are the routes
+    /// `# paths` then lists.
+    #[arg(long, value_name = "PATH", requires = "example")]
+    via: Option<String>,
+
     /// Jump to the graphql-ruby resolver/method for the field the query names,
     /// via `rq` (must be installed). A looser query gets the candidate list.
     #[arg(short = 'R', long)]
@@ -660,7 +669,8 @@ pub fn run() -> Result<()> {
         }
 
         if cli.example {
-            let done = run_example(query, &records, filters, cli.depth, cli.limit, output);
+            let via = cli.via.as_deref().unwrap_or_default();
+            let done = run_example(query, &records, filters, cli.depth, via, cli.limit, output);
             emit_profile(started, output);
             return done;
         }
@@ -1266,6 +1276,7 @@ fn run_example(
     records: &[SchemaRecord],
     filters: search::Filters<'_>,
     depth: Option<usize>,
+    via: &str,
     limit: usize,
     output: Output,
 ) -> Result<()> {
@@ -1281,7 +1292,7 @@ fn run_example(
             crate::example::MAX_DEPTH
         );
     }
-    let example = crate::example::build(target, records, depth)?;
+    let example = crate::example::build_via(target, records, depth, via)?;
     if !example.deprecated.is_empty() {
         // Selected anyway and marked inline, but worth saying out loud —
         // pasting a deprecated field is the kind of thing you want to know now.

@@ -29,6 +29,22 @@ fn help() -> String {
 const SEMANTIC: bool = cfg!(feature = "_semantic");
 
 #[test]
+fn via_is_refused_without_the_flag_it_routes() {
+    // Its help says it routes --example, and it does nothing else. A flag that
+    // silently no-ops is the promise this file exists to keep it from making.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args(["Query.user", "--via", "Query.user", "--fuzzy"])
+        .arg("examples/schema.graphql")
+        .output()
+        .expect("gqls should be runnable");
+
+    assert!(!out.status.success(), "--via alone should be refused");
+    let err = String::from_utf8(out.stderr).expect("stderr should be utf-8");
+    assert!(err.contains("--example"), "{err}");
+}
+
+#[test]
 fn the_help_matches_the_build_it_ships_in() {
     let help = help();
     let claims_ranking = help.contains("ranked together");

@@ -38,6 +38,181 @@ fn draft_at(path: &str, depth: Option<usize>) -> example::Example {
     example::build(target, &records, depth).expect("drafting should succeed")
 }
 
+/// A schema with the disease `--via` treats: a global-ID lookup returns an
+/// interface every type implements, so every type sits one hop from a root and
+/// the shortest route to anything is through `node(id:)`.
+const GLOBAL_ID: &str = "\
+    type Query { node(id: ID!): Node, repository(name: String!): Repository, viewer: User }\n\
+    interface Node { id: ID! }\n\
+    type User { login: String! }\n\
+    type Repository implements Node { id: ID! issue(number: Int!): Issue issues: IssueConnection! }\n\
+    type IssueConnection { nodes: [Issue!]! }\n\
+    type Issue implements Node { id: ID! title: String! }\n";
+
+/// Draft `path` from `sdl` along `route`, which is empty for no route.
+fn drafted_via(sdl: &str, path: &str, route: &str) -> example::Example {
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records
+        .iter()
+        .find(|r| r.path == path)
+        .unwrap_or_else(|| panic!("{path} missing from the fixture"));
+    example::build_via(target, &records, None, route).expect("drafting should succeed")
+}
+
+/// Why drafting `path` from `sdl` along `route` can't be done.
+fn refused_via(sdl: &str, path: &str, route: &str) -> String {
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records
+        .iter()
+        .find(|r| r.path == path)
+        .unwrap_or_else(|| panic!("{path} missing from the fixture"));
+    example::build_via(target, &records, None, route)
+        .expect_err("this route should not draft")
+        .to_string()
+}
+
+#[test]
+fn a_named_route_is_taken_over_the_shortest_one() {
+    // The whole point: the walk settles a type at its nearest hop and drops
+    // every later edge into it, so the way round through a repository isn't
+    // ranked low — without a route named it was never a candidate.
+    let shortest = drafted_via(GLOBAL_ID, "Issue.title", "");
+    assert_eq!(shortest.via.as_deref(), Some("Query.node"));
+
+    let ex = drafted_via(GLOBAL_ID, "Issue.title", "Query.repository");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert_eq!(
+        ex.via.as_deref(),
+        Some("Query.repository > Repository.issue")
+    );
+    assert!(!ex.operation.contains("node("), "{}", ex.operation);
+}
+
+#[test]
+fn an_empty_route_is_no_route_rather_than_one_nothing_matches() {
+    // The one input that could read either way. It means no route, which is
+    // what keeps an empty-string case out of every guard downstream.
+    let records = gqls::load::sdl::from_sdl(GLOBAL_ID).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Issue.title").unwrap();
+    let unrouted = example::build(target, &records, None).expect("drafting should succeed");
+    for empty in ["", "   ", " > "] {
+        let ex = example::build_via(target, &records, None, empty)
+            .unwrap_or_else(|e| panic!("`--via {empty:?}` should draft: {e}"));
+        assert_eq!(ex.operation, unrouted.operation);
+    }
+}
+
+#[test]
+fn a_route_of_two_segments_pins_both_hops() {
+    // The second segment is what picks the connection: `issue(number:)` gets
+    // there a hop sooner, so nothing but saying so reaches `issues`.
+    let ex = drafted_via(
+        GLOBAL_ID,
+        "Issue.title",
+        "Query.repository > Repository.issues",
+    );
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert_eq!(
+        ex.via.as_deref(),
+        Some("Query.repository > Repository.issues > IssueConnection.nodes")
+    );
+}
+
+#[test]
+fn a_route_ending_on_an_abstract_type_still_narrows_to_the_target() {
+    // The route says how to get to the union; the draft still has to spell the
+    // fragment that makes the target selectable once it's there.
+    let sdl = "\
+        type Query { node(id: ID!): Node, repository(name: String!): Repository }\n\
+        interface Node { id: ID! }\n\
+        type Repository implements Node { id: ID! timeline: [Event!]! }\n\
+        union Event = Issue | Commit\n\
+        type Issue implements Node { id: ID! title: String! }\n\
+        type Commit implements Node { id: ID! sha: String! }\n";
+    assert_eq!(
+        drafted_via(sdl, "Issue.title", "").via.as_deref(),
+        Some("Query.node"),
+        "the fixture should have the disease"
+    );
+
+    let ex = drafted_via(sdl, "Issue.title", "Query.repository > Repository.timeline");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert!(ex.operation.contains("timeline {"), "{}", ex.operation);
+    assert!(ex.operation.contains("... on Issue {"), "{}", ex.operation);
+}
+
+#[test]
+fn a_route_segment_naming_no_field_says_which_segment() {
+    // Every way a route can fail used to come out as "isn't reachable from a
+    // root field — nothing returns Issue", which is false twice over.
+    let err = refused_via(
+        GLOBAL_ID,
+        "Issue.title",
+        "Query.repository > Repository.issuez",
+    );
+    assert!(err.contains("hop 2"), "{err}");
+    assert!(err.contains("Repository.issuez"), "{err}");
+    // and what did work, so the reader knows where to look
+    assert!(err.contains("Query.repository"), "{err}");
+    assert!(!err.contains("reachable from a root field"), "{err}");
+}
+
+#[test]
+fn a_route_leading_nowhere_near_the_target_says_that_and_not_that_nothing_does() {
+    let err = refused_via(GLOBAL_ID, "Issue.title", "Query.viewer");
+    assert!(err.contains("Query.viewer"), "{err}");
+    assert!(err.contains("--via"), "{err}");
+    assert!(!err.contains("nothing returns Issue"), "{err}");
+}
+
+#[test]
+fn a_target_the_route_puts_past_the_cap_says_the_route_is_why() {
+    // What's past the cap here is the way round, not the target: the same
+    // field drafts in one hop without the route.
+    let sdl = "\
+        type Query { node(id: ID!): Node, a: A }\n\
+        interface Node { id: ID! }\n\
+        type A { b: B }\n\
+        type B { c: C }\n\
+        type C { d: D }\n\
+        type D { e: E }\n\
+        type E { f: F }\n\
+        type F { g: G }\n\
+        type G implements Node { id: ID! deep: String! }\n";
+    assert_eq!(
+        drafted_via(sdl, "G.deep", "").via.as_deref(),
+        Some("Query.node")
+    );
+
+    let err = refused_via(sdl, "G.deep", "Query.a");
+    assert!(err.contains("7 hops"), "{err}");
+    assert!(err.contains("6-hop cap"), "{err}");
+    assert!(err.contains("Query.a"), "{err}");
+}
+
+#[test]
+fn a_route_is_honoured_for_an_input_a_root_field_takes() {
+    // The one chain that never enters the walk, and so the one edge where a
+    // route could be applied everywhere else and quietly ignored here.
+    let sdl = "\
+        type Query { ping: String }\n\
+        type Mutation { star(input: StarInput!): String, unstar(input: StarInput!): String }\n\
+        input StarInput { id: ID! }\n";
+    assert_eq!(
+        drafted_via(sdl, "StarInput", "").via.as_deref(),
+        Some("Mutation.star(input:)")
+    );
+
+    // named with the `(arg:)` the path carries, so a printed path goes back in
+    let ex = drafted_via(sdl, "StarInput", "Mutation.unstar(input:)");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert_eq!(ex.via.as_deref(), Some("Mutation.unstar(input:)"));
+
+    let err = refused_via(sdl, "StarInput", "Query.ping");
+    assert!(err.contains("Query.ping"), "{err}");
+    assert!(err.contains("StarInput"), "{err}");
+}
+
 #[test]
 fn drafts_a_root_query_with_typed_variables() {
     let ex = draft("Query.user");

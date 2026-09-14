@@ -127,7 +127,25 @@ pub fn build(
     records: &[SchemaRecord],
     depth: Option<usize>,
 ) -> Result<Example> {
-    let schema = Schema::index(records);
+    build_via(target, records, depth, "")
+}
+
+/// [`build`], with the route pinned to one starting where `via` says — the
+/// `# paths` notation, `Query.repository > Repository.issues`. An empty `via`
+/// names no route and is the same call as [`build`].
+pub fn build_via(
+    target: &SchemaRecord,
+    records: &[SchemaRecord],
+    depth: Option<usize>,
+    via: &str,
+) -> Result<Example> {
+    let schema = Schema::index(records, Corridor::parse(via));
+
+    // A route naming a field nothing has is the same mistake whichever edge the
+    // target's kind then picks, so it's diagnosed once, here.
+    if let Some(hop) = schema.bad_segment() {
+        bail!("{}", schema.corridor.dead_end(hop));
+    }
 
     // The input actually carried by an argument, when the one asked about only
     // rides inside it. Set by the input arm below.
@@ -137,15 +155,33 @@ pub fn build(
     // input, in which case the argument carrying it must be supplied even where
     // the schema calls it optional.
     let (chain, via, alternatives, required) = match target.kind {
-        Kind::Query | Kind::Mutation | Kind::Subscription => (vec![target], None, Vec::new(), None),
+        Kind::Query | Kind::Mutation | Kind::Subscription => {
+            // A root field is the whole route by itself. Checked rather than
+            // ignored: quietly drafting a different route is the bug `--via`
+            // exists to fix, and it doesn't get a pass here.
+            if !schema.corridor.follows(&[target]) {
+                bail!(
+                    "{} is a root field: it is the whole route, and `--via {}` names a \
+                     different one.",
+                    target.path,
+                    schema.corridor
+                );
+            }
+            (vec![target], None, Vec::new(), None)
+        }
         Kind::Field => {
             let parent = target
                 .parent
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("{} has no enclosing type", target.path))?;
             let (hops, mut chains) = schema.chains_reaching(parent, false);
+            chains.retain(|c| schema.corridor.follows(c));
             if chains.is_empty() {
-                bail!("{} {}", target.path, out_of_reach(parent, hops));
+                bail!(
+                    "{} {}",
+                    target.path,
+                    out_of_reach(parent, hops, &schema.corridor)
+                );
             }
             let mut chain = chains.remove(0);
             let via = Some(label(&chain));
@@ -169,7 +205,7 @@ pub fn build(
             };
             let (levels, mut chains) = schema.chains_passing(input);
             if chains.is_empty() {
-                bail!("{}", unpassable(input, levels));
+                bail!("{}", unpassable(input, levels, &schema.corridor));
             }
             let best = chains.remove(0);
             through = (best.held != input).then(|| best.held.to_string());
@@ -181,8 +217,13 @@ pub fn build(
         // where the root returns something broader.
         Kind::Object | Kind::Interface | Kind::Union => {
             let (hops, mut chains) = schema.chains_reaching(&target.name, true);
+            chains.retain(|c| schema.corridor.follows(c));
             if chains.is_empty() {
-                bail!("{} {}", target.name, out_of_reach(&target.name, hops));
+                bail!(
+                    "{} {}",
+                    target.name,
+                    out_of_reach(&target.name, hops, &schema.corridor)
+                );
             }
             let chain = chains.remove(0);
             let via = Some(label(&chain));
@@ -368,6 +409,8 @@ struct Schema<'a> {
     types: HashMap<&'a str, &'a SchemaRecord>,
     fields: HashMap<&'a str, Vec<&'a SchemaRecord>>,
     roots: Vec<&'a SchemaRecord>,
+    /// The route `--via` named; empty when it named none.
+    corridor: Corridor,
     /// Filled by [`reach`](Schema::reach) the first time a draft asks how to
     /// get somewhere. A root target never asks, and the walk is the only part
     /// of drafting that touches the whole schema.
@@ -375,7 +418,7 @@ struct Schema<'a> {
 }
 
 impl<'a> Schema<'a> {
-    fn index(records: &'a [SchemaRecord]) -> Self {
+    fn index(records: &'a [SchemaRecord], corridor: Corridor) -> Self {
         let mut kinds = HashMap::new();
         let mut types = HashMap::new();
         let mut fields: HashMap<&str, Vec<&SchemaRecord>> = HashMap::new();
@@ -404,6 +447,7 @@ impl<'a> Schema<'a> {
             types,
             fields,
             roots,
+            corridor,
             reached: OnceCell::new(),
         }
     }
@@ -590,6 +634,12 @@ impl<'a> Schema<'a> {
                     _ => continue,
                 };
                 chain.push(r);
+                // A root consumer is a whole chain on its own and never enters
+                // the walk, so without this check `--via` would be honoured for
+                // every input except the ones a root field takes directly.
+                if !self.corridor.follows(&chain) {
+                    continue;
+                }
                 // The argument is carried alongside, not just the path: it's
                 // half the answer to "where does this input go".
                 chains.push((arg, chain));
@@ -692,11 +742,23 @@ impl<'a> Schema<'a> {
         }
         frontier.sort_unstable();
         let mut depth = 0;
+        let mut matched = 0;
         while !frontier.is_empty() {
             depth += 1;
             let mut next: Vec<&'a str> = Vec::new();
             for &from in &frontier {
                 for field in self.outgoing(from) {
+                    // Inside the named route, only the field it names is an
+                    // edge. This is where a route has to be applied rather than
+                    // sorted for afterwards: a type is settled at its nearest
+                    // hop and every later edge into it is dropped, so a longer
+                    // way round isn't ranked low, it was never a candidate.
+                    // A route of any length costs one comparison per candidate
+                    // edge, because at hop i the frontier is already narrowed.
+                    if !self.corridor.allows(depth - 1, field) {
+                        continue;
+                    }
+                    matched = depth;
                     let Some(base) = field.base_type() else {
                         continue;
                     };
@@ -725,7 +787,23 @@ impl<'a> Schema<'a> {
         for into in edges.values_mut() {
             into.sort_by_key(|(_, field)| root_order(field));
         }
-        Reach { hops, edges }
+        Reach {
+            hops,
+            edges,
+            matched,
+        }
+    }
+
+    /// The 1-based `--via` segment that named no field, if any. A segment
+    /// matching nothing empties the frontier, so the walk stops one hop short
+    /// of it — which is what separates "you named a field that isn't there"
+    /// from "the route is real and leads nowhere near this".
+    fn bad_segment(&self) -> Option<usize> {
+        if self.corridor.is_empty() {
+            return None;
+        }
+        let matched = self.reach().matched;
+        (matched < self.corridor.len()).then_some(matched + 1)
     }
 
     /// The fields selectable one hop out from `type_name`: its own, plus what
@@ -1063,6 +1141,11 @@ struct Reach<'a> {
     /// the chain got there through an abstract type and the field belongs to
     /// one of its members. Friendliest first.
     edges: HashMap<&'a str, Vec<(&'a str, &'a SchemaRecord)>>,
+    /// The deepest hop at which any field was an edge. Read only by
+    /// [`bad_segment`](Schema::bad_segment), and meaningless without a route:
+    /// with none, every field is an edge and this is just where the walk ran
+    /// out of schema.
+    matched: usize,
 }
 
 impl<'a> Reach<'a> {
@@ -1240,6 +1323,79 @@ const HOLE: &str = "{ … }";
 /// reads.
 pub const MAX_DEPTH: usize = 6;
 
+/// The route `--via` names: the fields a draft nests through, outermost first,
+/// in the `# paths` notation `-e` already prints, so a printed path can be
+/// handed straight back. Empty when none was named — which is what keeps
+/// `--via ''` from being a special case, and the walk free of "was a route
+/// named" branches.
+///
+/// A segment names a **field**: `Type.field` to pin the owner, or a bare field
+/// name, matched case-insensitively the way every other query this tool takes
+/// is. A bare name several fields share keeps them all, and `# paths` says
+/// which one the draft took — a route stays a route rather than growing an
+/// ambiguity rule of its own. A trailing `(arg:)`, which the path for an input
+/// target carries, is dropped.
+#[derive(Default)]
+struct Corridor(Vec<String>);
+
+impl Corridor {
+    fn parse(spec: &str) -> Self {
+        Corridor(
+            spec.split('>')
+                .map(|s| s.split('(').next().unwrap_or_default().trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+        )
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Is `field` what the route names at `hop` (0-based)? Past the route's
+    /// end it names nothing, so everything is allowed.
+    fn allows(&self, hop: usize, field: &SchemaRecord) -> bool {
+        let Some(named) = self.0.get(hop) else {
+            return true;
+        };
+        field.path.eq_ignore_ascii_case(named) || field.name.eq_ignore_ascii_case(named)
+    }
+
+    /// Does `chain` nest through this route? Every segment has to land on a
+    /// field, so a chain shorter than the route doesn't follow it.
+    fn follows(&self, chain: &[&SchemaRecord]) -> bool {
+        self.len() <= chain.len() && chain.iter().enumerate().all(|(i, f)| self.allows(i, f))
+    }
+
+    /// Why the route stops at `hop` (1-based): nothing there is called what the
+    /// segment calls it. Says what *did* work, so the reader knows where to look.
+    fn dead_end(&self, hop: usize) -> String {
+        let named = &self.0[hop - 1];
+        let there = match hop {
+            1 => "no root field is".to_string(),
+            _ => format!(
+                "nothing reachable through `{}` is",
+                self.0[..hop - 1].join(" > ")
+            ),
+        };
+        let listing = named
+            .split_once('.')
+            .map(|(ty, _)| format!(" Try `gqls {ty}.` to see what's there."))
+            .unwrap_or_default();
+        format!("--via names `{named}` at hop {hop}, and {there} called that.{listing}")
+    }
+}
+
+impl std::fmt::Display for Corridor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.join(" > "))
+    }
+}
+
 /// A chain as one readable path: `Query.early_pay > EarlyPayQueryRoot.status`.
 /// One form in text and in `--json` both, since a path is several fields now
 /// and naming only its first says almost nothing.
@@ -1264,19 +1420,33 @@ fn chain_order(chain: &[&SchemaRecord]) -> (usize, usize, usize, String) {
     )
 }
 
-/// Why a target can't be drafted through: too deep to be worth it, or not
-/// there at all. Different news — one says trim the question, the other says
-/// ask a different one — so they don't share a sentence.
-fn out_of_reach(type_name: &str, hops: Option<usize>) -> String {
+/// Why a target can't be drafted through: too deep to be worth it, not there
+/// at all, or — with a route named — either of those along that route. All
+/// different news, so they don't share a sentence: trim the question, ask a
+/// different one, or fix the route.
+fn out_of_reach(type_name: &str, hops: Option<usize>, corridor: &Corridor) -> String {
+    // Without a route, `hops` is only ever set past the cap. With one, chains
+    // are also dropped for not following it, and reporting *those* as too deep
+    // is the lie this filter exists to prevent.
+    let deep = hops.filter(|&h| h > MAX_HOPS);
     let close = format!("Try `gqls --returns {type_name}` to see what's close.");
-    match hops {
-        Some(hops) => format!(
+    match (corridor.is_empty(), deep) {
+        (true, Some(hops)) => format!(
             "is {hops} hops from a root field, past the {MAX_HOPS}-hop cap — that much \
              nesting is more query than help. {close}"
         ),
-        None => format!(
+        (true, None) => format!(
             "isn't reachable from a root field — nothing returns {type_name}, or \
              anything it narrows from. {close}"
+        ),
+        (false, Some(hops)) => format!(
+            "is {hops} hops from a root field through `{corridor}`, past the \
+             {MAX_HOPS}-hop cap — that much nesting is more query than help. Drop --via \
+             for the shortest route there is."
+        ),
+        (false, None) => format!(
+            "isn't reachable through `{corridor}` — that route is real, but nothing \
+             along it leads to {type_name}. Drop --via to see the routes there are."
         ),
     }
 }
@@ -1286,8 +1456,15 @@ fn out_of_reach(type_name: &str, hops: Option<usize>) -> String {
 /// reaches. Different news — one says nothing passes this, the other says a
 /// draft naming it would print variables that never mention it — so they don't
 /// share a sentence.
-fn unpassable(input: &str, levels: Option<usize>) -> String {
+fn unpassable(input: &str, levels: Option<usize>, corridor: &Corridor) -> String {
     let refer = format!("Try `gqls {input}` to see what references it.");
+    if levels.is_none() && !corridor.is_empty() {
+        return format!(
+            "nothing reachable through `{corridor}` takes an argument of type {input}, \
+             and no input that holds one is taken there either. Drop --via to see where \
+             it does go."
+        );
+    }
     match levels {
         Some(levels) => format!(
             "{input} sits {levels} levels inside the nearest input anything takes, past \
