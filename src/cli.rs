@@ -60,6 +60,7 @@ macro_rules! example_tail {
     () => {
         "  gqls Mutation.createUser -e         draft an operation to paste
   gqls CreateUserInput -e             ...or draft through the field taking it
+  gqls Post.title -e --via posts      ...or pick from the routes it lists
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
 "
