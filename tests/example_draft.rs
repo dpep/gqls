@@ -45,7 +45,7 @@ const GLOBAL_ID: &str = "\
     type Query { node(id: ID!): Node, repository(name: String!): Repository, viewer: User }\n\
     interface Node { id: ID! }\n\
     type User { login: String! }\n\
-    type Repository implements Node { id: ID! issue(number: Int!): Issue issues: IssueConnection! }\n\
+    type Repository implements Node { id: ID! name: String! issue(number: Int!): Issue issues: IssueConnection! }\n\
     type IssueConnection { nodes: [Issue!]! }\n\
     type Issue implements Node { id: ID! title: String! }\n";
 
@@ -163,6 +163,20 @@ fn a_route_leading_nowhere_near_the_target_says_that_and_not_that_nothing_does()
     assert!(err.contains("Query.viewer"), "{err}");
     assert!(err.contains("--via"), "{err}");
     assert!(!err.contains("nothing returns Issue"), "{err}");
+}
+
+#[test]
+fn a_route_the_draft_outruns_is_refused_rather_than_half_applied() {
+    // Repository is reached at the first hop, so the second segment has
+    // nothing left to land on. Drafting `repository { name }` and saying
+    // nothing would be answering a question that wasn't asked.
+    let err = refused_via(
+        GLOBAL_ID,
+        "Repository.name",
+        "Query.repository > Repository.issues",
+    );
+    assert!(err.contains("Repository.issues"), "{err}");
+    assert!(err.contains("--via"), "{err}");
 }
 
 #[test]

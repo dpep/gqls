@@ -1451,8 +1451,8 @@ fn out_of_reach(type_name: &str, hops: Option<usize>, corridor: &Corridor) -> St
              for the shortest route there is."
         ),
         (false, None) => format!(
-            "isn't reachable through `{corridor}` — that route is real, but nothing \
-             along it leads to {type_name}. Drop --via to see the routes there are."
+            "isn't reachable through `{corridor}` — that route is real, but it isn't \
+             a route to {type_name}. Drop --via to see the routes there are."
         ),
     }
 }
