@@ -6,7 +6,7 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
-## Unreleased
+## 0.24.0 — 2026-09-13
 
 ### Changed
 - **`-e` says when a draft is too large to paste.** A selection set fans out by
