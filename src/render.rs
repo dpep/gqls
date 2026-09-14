@@ -401,7 +401,8 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, d
         .iter()
         .map(|f| style::columns(&name(f)))
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(FIELD_NAME_WIDTH);
     // The default rides in the type cell, `Role = MEMBER`, the way the schema
     // writes it — it belongs to the type, and a column of its own would be
     // empty for most rows.
@@ -413,12 +414,9 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, d
         .iter()
         .map(|f| style::columns(&signature(f)))
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(FIELD_TYPE_WIDTH);
     for field in fields {
-        let indent = 4 + name_w + 2 + type_w + 2;
-        let budget = style::width()
-            .saturating_sub(indent)
-            .max(MIN_DESCRIPTION_WIDTH);
         let marker = match field.deprecated {
             Some("") => "(deprecated)".to_string(),
             Some(reason) => format!("(deprecated: {reason})"),
@@ -443,29 +441,34 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, d
             }
             text.push_str(d);
         }
-        let mut lines = wrap(&text, budget, usize::MAX).into_iter();
-        let first = lines.next().unwrap_or_default();
-
         let mut line = style::Line::default();
         line.push("    ", style::answer);
         line.push(&name(field), style::name);
         line.pad_to(4 + name_w);
         line.gap();
         line.push(&signature(field), style::answer);
-        if !first.is_empty() {
-            // Relative to the cell the type opened, not the line — `pad_to`
-            // measures a column width.
-            line.pad_to(type_w);
-            line.gap();
-            // Same as an enum value: the marker is styled apart only when it
-            // fits whole on this line, or a wrapped reason dangles its colour.
-            match first.starts_with(&marker) && !marker.is_empty() {
-                true => {
-                    line.push(&marker, style::warning);
-                    line.push(&first[marker.len()..], style::muted);
-                }
-                false => line.push(&first, style::muted),
+        // Relative to the cell the type opened, not the line — `pad_to`
+        // measures a column width. Unconditional: a row with nothing in its
+        // third cell has the padding trimmed off the end again.
+        line.pad_to(type_w);
+        line.gap();
+        // Measured rather than computed from the column widths, so a row whose
+        // capped cell overflowed wraps inside what's left of *its* line and
+        // hangs its tail under its own text. Same shape as a search row.
+        let indent = line.width();
+        let budget = style::width()
+            .saturating_sub(indent)
+            .max(MIN_DESCRIPTION_WIDTH);
+        let mut lines = wrap(&text, budget, usize::MAX).into_iter();
+        let first = lines.next().unwrap_or_default();
+        // Same as an enum value: the marker is styled apart only when it fits
+        // whole on this line, or a wrapped reason dangles its colour.
+        match first.starts_with(&marker) && !marker.is_empty() {
+            true => {
+                line.push(&marker, style::warning);
+                line.push(&first[marker.len()..], style::muted);
             }
+            false => line.push(&first, style::muted),
         }
         println!("{}", line.finish());
         for cont in lines {
@@ -534,6 +537,28 @@ const PATH_WIDTH: usize = 48;
 /// still aligns; narrow enough that with both caps the kind tag can't be pushed
 /// past about 84 columns whatever the schema does.
 const RETURN_WIDTH: usize = 32;
+
+/// The same rule again for the two columns of a fields block, where one
+/// generated name sets the width for every row beneath it — a 35-column field
+/// name and a 38-column type gave every line of
+/// `EarlyPayDataExpansionIosLocationOptions` an 81-column indent.
+///
+/// The block needs the cap more than the search table does, not less. Up there
+/// a row whose columns have eaten the terminal drops its description; here the
+/// third cell holds directives and a deprecation reason, which are facts rather
+/// than prose and so wrap at [`MIN_DESCRIPTION_WIDTH`] instead of being
+/// dropped. Wide columns therefore guarantee an overflowing line rather than
+/// risking one, and a fields block taxed more rows than a search page: a type
+/// with forty fields is forty rows set by one of them.
+///
+/// The two sum to 52, which is what leaves that minimum inside the fallback
+/// width once the indent and the two gaps are paid — an ordinary row lands on
+/// 80 columns exactly, and only a row that overflowed a cap runs past it.
+/// Split 24/28 because both halves have to clear the ninetieth percentile on
+/// the two production schemas measured, where field names reach 22 columns and
+/// signatures 27.
+const FIELD_NAME_WIDTH: usize = 24;
+const FIELD_TYPE_WIDTH: usize = 28;
 
 /// A row's cells, kept as plain text so the column widths can be measured, and
 /// styled only on the way out.

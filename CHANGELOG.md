@@ -105,6 +105,16 @@ early entries are terser than what follows.
   when nothing takes the query as an argument either, and an argument still
   never outranks a name: `first` returns the fields named for it, not the 348
   that take one.
+- **One long field name no longer indents every other row of a fields block.**
+  The search table's columns were capped last round and the block you get by
+  *naming* a type wasn't, so a single generated name or return type set the
+  width for every row under it — a 35-column name and a 38-column type gave
+  every line of one real type an 81-column indent against an 80-column
+  terminal. Both columns are now capped the way the table's are (24 and 28,
+  the ninetieth percentile on two production schemas), and a cell wider than
+  its column overflows its own line instead of moving everyone else's. Across
+  those schemas the share of field rows running past 80 columns falls from 14%
+  and 24% to 5%. A schema with no outlying names renders unchanged.
 - **The introspection cache ignored the credentials that fetched a schema.** It
   keyed on the URL alone, so the first response to succeed was replayed for every
   later run against that URL whatever headers were supplied — or not supplied.

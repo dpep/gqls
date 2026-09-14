@@ -503,6 +503,81 @@ fn an_object_lists_its_fields_and_says_which_take_arguments() {
     );
 }
 
+/// Rows of the block introduced by `header`, each with its own wrapped
+/// continuations. A continuation is indented past the row it belongs to, so
+/// counting it as a row of its own measures a column that isn't there.
+fn section<'a>(out: &'a str, header: &str) -> Vec<Vec<&'a str>> {
+    let mut rows: Vec<Vec<&str>> = Vec::new();
+    for line in out
+        .lines()
+        .skip_while(|l| l.trim() != header)
+        .skip(1)
+        .take_while(|l| l.starts_with("    "))
+    {
+        match line.starts_with("     ") {
+            true => rows
+                .last_mut()
+                .expect("a continuation needs a row")
+                .push(line),
+            false => rows.push(vec![line]),
+        }
+    }
+    rows
+}
+
+#[test]
+fn one_pathological_field_does_not_tax_every_other_row() {
+    // The search table's columns were capped for exactly this reason and the
+    // fields block's weren't, so a 50-column field name and a 44-column type
+    // set the width for every row under them — and unlike a search row, which
+    // drops a description it has no room for, this block wraps its directives
+    // and deprecation reasons at a floor, so the overflow was guaranteed.
+    const LONG_NAME: &str = "see_35_dollar_promotion_widget_eligibility_override";
+    const LONG_TYPE: &str = "EarlyPayAvailableEarningsTransferWithFeesData";
+    let out = run_against("tests/fixtures/wide_fields.graphql", &["Widget"]);
+    let block = section(&out, "fields");
+    assert_eq!(block.len(), 4, "expected four field rows:\n{out}");
+    let outlying = |r: &Vec<&str>| r[0].contains(LONG_NAME) || r[0].contains(LONG_TYPE);
+
+    let ordinary: Vec<&Vec<&str>> = block.iter().filter(|r| !outlying(r)).collect();
+    assert_eq!(ordinary.len(), 2, "need ordinary rows to compare:\n{out}");
+    for line in ordinary.iter().flat_map(|r| r.iter()) {
+        assert!(
+            line.width() <= 80,
+            "an outlier pushed an ordinary row past the fallback width: {line}"
+        );
+    }
+    // And they still align: one description column across the ordinary rows.
+    let column = column_of(ordinary[0][0], "Whether").expect("a description column");
+    assert_eq!(
+        column_of(ordinary[1][0], "Whether"),
+        Some(column),
+        "descriptions should share a column:\n{out}"
+    );
+
+    // Each outlier overflows its own line rather than being cut — the point is
+    // that it stops taxing its neighbours, not that it gets hidden — and its
+    // wrapped tail hangs under its own cell rather than to the left of it.
+    for row in block.iter().filter(|r| outlying(r)) {
+        assert!(
+            row[0].width() > 80,
+            "expected an outlier to run long: {row:?}"
+        );
+        let start = column_of(row[0], "Whether").expect("an outlier keeps its description");
+        assert!(
+            start > column,
+            "an outlier should sit past the column:\n{out}"
+        );
+        for cont in &row[1..] {
+            assert_eq!(
+                cont.width() - cont.trim_start().width(),
+                start,
+                "a continuation broke to the left of the row it continues:\n{out}"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_interface_lists_its_own_fields() {
     let out = run(&["Commentable"]);

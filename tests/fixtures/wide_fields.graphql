@@ -1,0 +1,21 @@
+# One pathological field name and one pathological field type in the same
+# object — the fields-block equivalent of the long return type that
+# RETURN_WIDTH exists to contain. Both names are real, from the schema where
+# the uncapped columns pushed every row past 170 columns. The descriptions are
+# long enough to wrap, so the third cell's column is visible on every row.
+type Query { widget: Widget }
+
+type Widget {
+  """Whether the promotion widget is shown to this member on the home screen."""
+  id: ID
+  """Whether the promotion widget is shown to this member on the home screen."""
+  name: String
+  """Whether the promotion widget is shown to this member on the home screen."""
+  see_35_dollar_promotion_widget_eligibility_override: Boolean
+  """Whether the promotion widget is shown to this member on the home screen."""
+  earnings: EarlyPayAvailableEarningsTransferWithFeesData
+}
+
+type EarlyPayAvailableEarningsTransferWithFeesData {
+  ok: Boolean
+}
