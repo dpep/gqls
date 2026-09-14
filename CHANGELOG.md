@@ -84,6 +84,18 @@ early entries are terser than what follows.
   just `Payload { errors: Payload }`) recursed until the process aborted with
   exit 134. The convention still expands; it just no longer re-opens a type
   open above it, which is a cycle with no level left to spend.
+- **`gqls` announced "no matches" over rows it had just printed.** The miss
+  message was decided by the fuzzy match count, but the default ranking also
+  prints rows that matched by meaning alone — so stderr said the schema had
+  nothing while stdout listed fields, and an agent reading one reached the
+  opposite conclusion of an agent reading the other. Rows now get a message
+  that says what they are.
+- **A single `-J` query that matched nothing printed nothing at all.** Zero rows
+  on a row-per-line stream is zero bytes, so the caller could not tell a miss
+  from a query that never ran, and the `degraded` flag marking weak ranking had
+  nowhere to ride. It now emits `{"status":"no_matches"}` — with `degraded` when
+  it applies — the way a batch always has. `-j` is unchanged: an empty array was
+  already a complete answer.
 - **An argument answers when nothing matched a *name*, not when nothing matched
   at all.** The first pass matches names *and* qualified paths, so a weak
   subsequence of someone else's path counted as an answer and suppressed the

@@ -817,17 +817,30 @@ pub fn run() -> Result<()> {
         // gqls's own wildcard, not anything the caller typed — so that case
         // reports the filter they actually gave.
         if total == 0 && explained.is_none() {
-            crate::status!(
-                "{}",
-                no_matches(
-                    query,
-                    kind,
-                    returns,
-                    filters,
-                    &records,
-                    discovered_source.as_deref(),
-                )
-            );
+            // `total` counts what matched the *name*; the combine also prints
+            // rows no name matched, ranked by meaning alone. Announcing "no
+            // matches" over those left stderr and stdout contradicting each
+            // other — an agent reading one concluded the schema lacked the
+            // thing, an agent reading the other took two unrelated fields for
+            // the answer. Whether there are rows is what separates the cases.
+            match matches.is_empty() {
+                true => crate::status!(
+                    "{}",
+                    no_matches(
+                        query,
+                        kind,
+                        returns,
+                        filters,
+                        &records,
+                        discovered_source.as_deref(),
+                    )
+                ),
+                false => crate::status!(
+                    "nothing named {query:?} — the {} row{} below are the closest by meaning",
+                    matches.len(),
+                    if matches.len() == 1 { "" } else { "s" }
+                ),
+            }
         }
         let explained = explained.map(|(_, m)| m);
         // Only a session that actually ranked these matches can degrade them:
@@ -977,22 +990,27 @@ impl Output {
             })
         };
         // A query that matched nothing would otherwise vanish from the stream,
-        // leaving the consumer unable to tell it was even asked. Structured
-        // output says so explicitly; text mode already says it on stderr.
-        if matches.is_empty() {
-            if let Some(q) = label {
-                let mut miss = serde_json::json!({ "query": q, "status": "no_matches" });
-                if degraded {
-                    // Why nothing matched is exactly what a caller needs here.
-                    miss["degraded"] = true.into();
-                }
-                match self {
-                    Output::Json => println!("{}", serde_json::to_string_pretty(&miss)?),
-                    Output::Ndjson => println!("{}", serde_json::to_string(&miss)?),
-                    Output::Text { .. } => {}
-                }
-                return Ok(());
+        // leaving the consumer unable to tell it was even asked — zero rows on
+        // a row-per-line stream is zero bytes. So the miss is a row of its own,
+        // carrying the same `degraded` a real row would: a caller who gets
+        // nothing back most needs to know the ranking was the weak one.
+        //
+        // Only here. `-j` emits one array, and an empty one is already a
+        // complete answer; a batch can't reach it at all, since concatenated
+        // documents don't parse and the batch refuses `-j` up front. Text says
+        // it on stderr.
+        if matches.is_empty() && matches!(self, Output::Ndjson) {
+            // `query` only in a batch, matching the rows, which carry it only
+            // there — with one query there's nothing to tell apart.
+            let mut miss = match label {
+                Some(q) => serde_json::json!({ "query": q, "status": "no_matches" }),
+                None => serde_json::json!({ "status": "no_matches" }),
+            };
+            if degraded {
+                miss["degraded"] = true.into();
             }
+            println!("{}", serde_json::to_string(&miss)?);
+            return Ok(());
         }
         match self {
             Output::Json => println!(
