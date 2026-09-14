@@ -46,6 +46,16 @@
 //!   nothing takes it, to the fields taking the nearest inputs that *hold* it.
 //!   Every such holder is offered, not just the drafted one: two inputs holding
 //!   the same thing are two different things to pass, so the path names which.
+//! * **A named route beats the shortest one.** Shortest is the wrong answer
+//!   wherever a root field takes an opaque ID: `node(id:)` puts every type one
+//!   hop out, so the way anyone would really query an issue — through its
+//!   repository — isn't ranked low, it was never a candidate, because the walk
+//!   settles a type at its nearest hop and drops every later edge into it.
+//!   `--via` names a prefix of the route, in the notation the paths listing
+//!   prints, and the walk then takes only the field named at each of those
+//!   hops. It repairs the answer for someone who noticed it was wrong — the
+//!   paths listing four generic lookups is the tell. Fixing the *default* is a
+//!   weighted walk rather than a sort key, and is not what this is.
 
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
