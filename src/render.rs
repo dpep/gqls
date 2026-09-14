@@ -554,9 +554,15 @@ const RETURN_WIDTH: usize = 32;
 /// The two sum to 52, which is what leaves that minimum inside the fallback
 /// width once the indent and the two gaps are paid — an ordinary row lands on
 /// 80 columns exactly, and only a row that overflowed a cap runs past it.
-/// Split 24/28 because both halves have to clear the ninetieth percentile on
-/// the two production schemas measured, where field names reach 22 columns and
-/// signatures 27.
+///
+/// The split is the part worth not re-deriving. A cap buys width by breaking
+/// alignment on the rows that exceed it, so the pair to want is the one that
+/// breaks fewest; swept across that sum on two production schemas, 24/28 is
+/// the minimum, and it beats every looser pair tried on *both* counts at once
+/// — 32/24 leaves more rows past 80 columns *and* knocks more of them out of
+/// column. Field names cluster tighter than signatures do (ninetieth
+/// percentile 22 against 27), so the type column is the one that wants the
+/// slack.
 const FIELD_NAME_WIDTH: usize = 24;
 const FIELD_TYPE_WIDTH: usize = 28;
 
