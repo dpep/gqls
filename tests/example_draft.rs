@@ -214,6 +214,28 @@ fn a_route_is_honoured_for_an_input_a_root_field_takes() {
 }
 
 #[test]
+fn a_deprecated_field_is_reported_once_however_often_it_is_selected() {
+    // Two routes to the same type flag it inline twice, which is right — the
+    // draft really does select it twice. The warning is a list of what's
+    // deprecated, not of where.
+    let sdl = "\
+        type Query { user: User }\n\
+        type User { home: Address, work: Address }\n\
+        type Address { street: String! zip: String @deprecated(reason: \"use postcode\") }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.user").unwrap();
+    let ex = example::build(target, &records, Some(2)).expect("drafting should succeed");
+
+    assert_eq!(ex.deprecated, ["Address.zip".to_string()]);
+    assert_eq!(
+        ex.operation.matches("# deprecated").count(),
+        2,
+        "{}",
+        ex.operation
+    );
+}
+
+#[test]
 fn drafts_a_root_query_with_typed_variables() {
     let ex = draft("Query.user");
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");

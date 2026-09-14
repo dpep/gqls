@@ -382,6 +382,12 @@ pub fn build_via(
     }
     operation.push_str("}\n");
 
+    // One entry per deprecated field, not per place the draft selects it: a
+    // type selected under two fields is flagged inline twice, which is right,
+    // but the caller's warning is a list of what's deprecated.
+    let mut listed = HashSet::new();
+    deprecated.retain(|d| listed.insert(d.clone()));
+
     let placeholders = vars.placeholders(&schema);
     Ok(Example {
         arguments: described_args(&chain),
