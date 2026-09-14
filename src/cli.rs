@@ -202,6 +202,8 @@ struct Cli {
     /// Deeper levels expand the object-valued fields level 1 leaves as markers.
     /// Defaults to one level, or to the barest valid selection when the query
     /// names an input object — that draft is about the argument, not the reply.
+    /// Capped: a selection set fans out geometrically, and past the cap a draft
+    /// is bigger than anything you could paste.
     #[arg(long, value_name = "N")]
     depth: Option<usize>,
 
@@ -1246,6 +1248,15 @@ fn run_example(
     let hits = search::search(query, records, filters);
     let (target, also_named) = one_named_record(query, &hits, "draft", limit, output)?;
     crate::detail!("drafting an operation for {}", target.path);
+    // Said out loud rather than clamped quietly: the draft that comes back is
+    // not the one that was asked for, and a silent cap reads as a bug in the
+    // flag.
+    if depth.is_some_and(|d| d > crate::example::MAX_DEPTH) {
+        crate::status!(
+            "--depth capped at {} (deeper drafts run to hundreds of megabytes)",
+            crate::example::MAX_DEPTH
+        );
+    }
     let example = crate::example::build(target, records, depth)?;
     if !example.deprecated.is_empty() {
         // Selected anyway and marked inline, but worth saying out loud —

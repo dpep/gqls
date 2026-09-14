@@ -53,6 +53,12 @@ early entries are terser than what follows.
 - **`-e` says when one level of selection reaches no leaf at all.** A Relay
   connection has nothing but object-valued fields, so the default draft runs and
   fetches nothing; the note points at `--depth`. The draft itself is unchanged.
+- **`--depth` is capped at 6.** A selection set fans out geometrically, so a
+  mistyped depth was a stack overflow or a gigabyte of stdout rather than a slow
+  answer: GitHub's `Repository` drafts 1.8MB at depth 4 and 877MB at 7, chime's
+  `User` 90MB at 12. Past the cap nothing is a document you could paste. A
+  `--depth` above it now drafts at 6 and says so on stderr; scripts passing a
+  larger number get a smaller draft instead of a crash.
 
 ### Added
 - **`--resolve` follows a namespaced root.** A field on `CardMutationRoot` looks
@@ -68,6 +74,13 @@ early entries are terser than what follows.
   `@deprecated` is the exception and is reconstructed.
 
 ### Fixed
+- **`-e` could overflow the stack on a legal schema, at the default depth.** The
+  payload/errors convention expands an `errors` field at the last level too, and
+  did it unconditionally — so a schema where the errors chain returns to a type
+  already being selected (`Payload.errors -> UserError.errors -> Payload`, or
+  just `Payload { errors: Payload }`) recursed until the process aborted with
+  exit 134. The convention still expands; it just no longer re-opens a type
+  open above it, which is a cycle with no level left to spend.
 - **An argument answers when nothing matched a *name*, not when nothing matched
   at all.** The first pass matches names *and* qualified paths, so a weak
   subsequence of someone else's path counted as an answer and suppressed the

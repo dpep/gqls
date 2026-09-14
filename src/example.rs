@@ -266,11 +266,13 @@ pub fn build(
     // draws the barest selection the server will accept and leaves the payload
     // to `--depth` — the eight lines of leaf fields were burying the one line
     // the draft exists to show.
-    let depth = depth.unwrap_or(match required {
-        Some(_) => 0,
-        None => 1,
-    });
-    let mut body = schema.selection(&selected, depth, &mut deprecated);
+    let depth = depth
+        .unwrap_or(match required {
+            Some(_) => 0,
+            None => 1,
+        })
+        .min(MAX_DEPTH);
+    let mut body = schema.selection(&selected, depth, &mut deprecated, &mut Vec::new());
     if body.is_empty() && !selected.is_empty() && !schema.is_leaf(&selected) {
         // A selection set is mandatory on an object return, so depth 0 takes
         // the one field that is always valid rather than emitting a parse error.
@@ -796,23 +798,70 @@ impl<'a> Schema<'a> {
         )
     }
 
+    /// The depth to expand `f` at, or `None` to leave it as a marker.
+    ///
+    /// Two ways in. A level of `depth` buys the ordinary one, and spending it
+    /// is what guarantees the recursion ends. The payload/errors convention
+    /// gets in free at the last level — a mutation drafted without its errors
+    /// block reads wrong — and pays for that by not re-opening a type already
+    /// being selected above it, which would be a cycle with nothing left to
+    /// spend. Every recursion therefore either shortens `depth` or lengthens
+    /// `open` with a type not already in it, and both are bounded.
+    fn expands(
+        &self,
+        f: &SchemaRecord,
+        base: &str,
+        depth: usize,
+        open: &[String],
+    ) -> Option<usize> {
+        if depth > 1 {
+            return Some(depth - 1);
+        }
+        let convention =
+            f.name.eq_ignore_ascii_case("errors") && !open.iter().any(|open| open == base);
+        convention.then_some(depth)
+    }
+
     /// The selection set for `type_name`: its leaf fields, plus a marker for
     /// each object-valued field so the hole is visible. Empty for a leaf type.
+    ///
+    /// `depth` is the termination measure and every recursion below spends a
+    /// level of it — except the payload/errors convention, which expands at the
+    /// last level too. `open` is what bounds that one: the types already being
+    /// selected above this point, carried the way [`skeleton`](Self::skeleton)
+    /// carries `ancestors`. A free level into a type already open is what made
+    /// `Payload { errors: Payload }` recurse until the stack ran out.
     fn selection(
         &self,
         type_name: &str,
         depth: usize,
         deprecated: &mut Vec<String>,
+        open: &mut Vec<String>,
     ) -> Vec<String> {
         if type_name.is_empty() || self.is_leaf(type_name) || depth == 0 {
             return Vec::new();
         }
+        open.push(type_name.to_string());
+        let lines = self.selection_of(type_name, depth, deprecated, open);
+        open.pop();
+        lines
+    }
+
+    /// [`selection`](Self::selection)'s body, with `type_name` already on
+    /// `open` — split out so every exit pops it exactly once.
+    fn selection_of(
+        &self,
+        type_name: &str,
+        depth: usize,
+        deprecated: &mut Vec<String>,
+        open: &mut Vec<String>,
+    ) -> Vec<String> {
         // An abstract type has no fields of its own to select — a union never,
         // an interface only the common ones — so what the caller actually wants
         // is spelled with inline fragments over the concrete types.
         if let Some(rec) = self.types.get(type_name) {
             if rec.kind == Kind::Union {
-                return self.inline_fragments(rec, depth, deprecated, &[]);
+                return self.inline_fragments(rec, depth, deprecated, &[], open);
             }
         }
 
@@ -842,10 +891,8 @@ impl<'a> Schema<'a> {
             };
             if self.is_leaf(base) {
                 lines.push(format!("{}{note}", f.name));
-            } else if depth > 1 || f.name.eq_ignore_ascii_case("errors") {
-                // Deeper levels on request; the payload/errors convention is
-                // always expanded, because a mutation without it reads wrong.
-                let inner = self.selection(base, depth.saturating_sub(1).max(1), deprecated);
+            } else if let Some(inner_depth) = self.expands(f, base, depth, open) {
+                let inner = self.selection(base, inner_depth, deprecated, open);
                 // After the brace, never before it: a note is a `#` comment,
                 // and everything past it on the line — the `{` included — is
                 // comment too, which leaves the document unbalanced.
@@ -871,7 +918,7 @@ impl<'a> Schema<'a> {
                     .flatten()
                     .map(|f| f.name.as_str())
                     .collect();
-                self.inline_fragments(rec, depth, deprecated, &common)
+                self.inline_fragments(rec, depth, deprecated, &common, open)
             }
             _ => Vec::new(),
         };
@@ -898,6 +945,7 @@ impl<'a> Schema<'a> {
         depth: usize,
         deprecated: &mut Vec<String>,
         skip: &[&str],
+        open: &mut Vec<String>,
     ) -> Vec<String> {
         /// Enough to show the shape without burying the query; a big union
         /// lists the rest as a comment instead.
@@ -933,7 +981,7 @@ impl<'a> Schema<'a> {
             // nothing but markers, and vanished with nothing saying it exists.
             let mut inner: Vec<String> = Vec::new();
             let mut dropping = false;
-            for line in self.selection(member, depth, deprecated) {
+            for line in self.selection(member, depth, deprecated, open) {
                 if dropping {
                     dropping = line != "}";
                     continue;
@@ -1167,6 +1215,16 @@ const MAX_HOPS: usize = 6;
 /// deepest the skeleton will still name. Any deeper and a draft announcing
 /// "X is passed inside Y" would print variables that never mention X.
 const MAX_NESTING: usize = 6;
+
+/// The ceiling on `--depth`. A selection set fans out by the branching factor
+/// of the schema, so the draft grows geometrically: on GitHub's schema
+/// `Repository` drafts 6KB at depth 1, 1.8MB at 4 and 877MB at 7, and on
+/// chime's `User` 1.6KB at 1 and 90MB at 12. Nothing past this is a document
+/// anyone can paste, and a mistyped `--depth` used to mean a stack overflow or
+/// a gigabyte of stdout. A guard on the typo, not an opinion about the draft —
+/// which is why it's this far out rather than at the handful of levels anyone
+/// reads.
+pub const MAX_DEPTH: usize = 6;
 
 /// A chain as one readable path: `Query.early_pay > EarlyPayQueryRoot.status`.
 /// One form in text and in `--json` both, since a path is several fields now

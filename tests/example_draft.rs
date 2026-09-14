@@ -923,3 +923,53 @@ fn an_input_held_deeper_than_the_skeleton_reaches_is_refused() {
         ex.variables
     );
 }
+
+#[test]
+fn an_errors_cycle_ends_the_selection_instead_of_the_process() {
+    // The payload/errors convention expands at the last level too, and used to
+    // do it unconditionally — so `Payload.errors -> UserError.errors -> Payload`
+    // recursed until the stack ran out, on default flags and a legal schema.
+    let sdl = "\
+        type Query { go: Payload }\n\
+        type Payload { ok: Boolean  errors: [UserError!]! }\n\
+        type UserError { message: String!  errors: [Payload!]! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.go").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    // The convention still has to fire: a draft without its errors block is
+    // the thing the convention exists to prevent.
+    assert!(ex.operation.contains("errors {"), "{}", ex.operation);
+    assert!(ex.operation.contains("message"), "{}", ex.operation);
+    // …and the hop back into a type already open above is a marker, not a
+    // level — there is no depth left to spend on it.
+    assert!(
+        ex.operation.contains("# errors: Payload { … }"),
+        "{}",
+        ex.operation
+    );
+}
+
+#[test]
+fn a_recursive_type_is_drafted_to_the_cap_not_to_the_depth_asked_for() {
+    // `--depth` took any usize. A self-referential type turned a typo into a
+    // stack overflow, and a merely large one into tens of millions of lines.
+    let sdl = "type Query { widget: Widget }\ntype Widget { name: String  self: Widget }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.widget").unwrap();
+
+    let asked = example::build(target, &records, Some(100_000)).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&asked.operation).expect("drafted invalid GraphQL");
+
+    let capped =
+        example::build(target, &records, Some(example::MAX_DEPTH)).expect("the cap itself drafts");
+    assert_eq!(asked.operation, capped.operation);
+    // The last level has no depth left, so it leaves the marker.
+    assert_eq!(
+        asked.operation.matches("self {").count(),
+        example::MAX_DEPTH - 1,
+        "{}",
+        asked.operation
+    );
+}
