@@ -9,6 +9,14 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
+- **`-e` says when a draft is too large to paste.** A selection set fans out by
+  the branching factor of the schema, so `--depth` is cheap to type and
+  expensive to render — GitHub's `Repository` is 6KB at depth 1 and 200KB at
+  depth 3. The size is invisible until it has scrolled past, so a draft over
+  32KB now says how big it is, and names `--depth` when that's what got you
+  there. Not a cap: a large schema can legitimately want a large draft. The
+  threshold is measured — across four schemas every draft anyone would paste
+  came in under 9KB, and the smallest unusable one was 88KB.
 - **A fuzzy score is now the fraction of a perfect match**, where perfect means
   the query *is* the name — one scale, meaning the same thing whatever the
   query's length, the name's length, or which branch produced it. A clean word

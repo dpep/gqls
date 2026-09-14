@@ -1,0 +1,36 @@
+# Fan-out wide enough that a modest --depth crosses the size threshold the CLI
+# warns at. Eight object-valued fields per level, four levels: the shape a
+# generated or Relay-style schema has, where depth is cheap to type and
+# expensive to render.
+type Query { root: A }
+type A {
+  f1: [B!]!
+  f2: [B!]!
+  f3: [B!]!
+  f4: [B!]!
+  f5: [B!]!
+  f6: [B!]!
+  f7: [B!]!
+  f8: [B!]!
+}
+type B {
+  f1: [C!]!
+  f2: [C!]!
+  f3: [C!]!
+  f4: [C!]!
+  f5: [C!]!
+  f6: [C!]!
+  f7: [C!]!
+  f8: [C!]!
+}
+type C {
+  f1: [D!]!
+  f2: [D!]!
+  f3: [D!]!
+  f4: [D!]!
+  f5: [D!]!
+  f6: [D!]!
+  f7: [D!]!
+  f8: [D!]!
+}
+type D { id: ID!  name: String  note: String }

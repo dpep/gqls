@@ -1255,6 +1255,12 @@ impl std::fmt::Display for Handled {
 impl std::error::Error for Handled {}
 
 /// Find the field, then draft an operation that calls it.
+/// A drafted operation past this many bytes is one nobody will paste. Measured
+/// across four schemas: the largest draft anyone would use was 8.5KB
+/// (`countries` at `--depth 6`), the smallest unusable one 88KB (chime's `User`
+/// at `--depth 4`). Anywhere in that decade works; this sits clear of both ends.
+const HUGE_DRAFT: usize = 32 * 1024;
+
 fn run_example(
     query: &str,
     records: &[SchemaRecord],
@@ -1283,6 +1289,22 @@ fn run_example(
             "deprecated: {} (flagged inline)",
             example.deprecated.join(", ")
         );
+    }
+    // A draft nobody can paste is a draft that didn't answer the question, and
+    // the size is invisible until it has already scrolled past. Measured rather
+    // than guessed: across four schemas every draft anyone would use came in
+    // under 9KB, while the smallest unusable one — chime's `User` at depth 4 —
+    // was 88KB. The threshold sits in the order of magnitude between them.
+    //
+    // Not a cap. A big draft is still the honest answer to what was asked, and a
+    // large schema can want one; this only makes the size visible. `--depth` is
+    // named only when it was raised, since it's the lever that got you here.
+    if example.operation.len() > HUGE_DRAFT {
+        let lever = match depth {
+            Some(d) if d > 1 => " — a smaller --depth narrows it",
+            _ => "",
+        };
+        crate::status!("this draft is {}KB{lever}", example.operation.len() / 1024);
     }
     if example.no_leaves {
         // The markers name the holes, but nothing says the flag that fills

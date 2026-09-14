@@ -28,6 +28,17 @@ fn run(args: &[&str]) -> String {
     run_both(args).1
 }
 
+/// stderr for a run against a schema other than the bundled one.
+fn run_against(schema: &str, args: &[&str]) -> String {
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args(args)
+        .args(["--fuzzy", "--refresh", schema])
+        .output()
+        .expect("gqls should be runnable");
+    String::from_utf8(out.stderr).expect("stderr should be utf-8")
+}
+
 #[test]
 fn a_miss_names_the_filter_that_emptied_it() {
     // "nothing returns Post" is a claim about the schema, and it's false —
@@ -148,4 +159,29 @@ fn a_miss_names_a_schema_nobody_chose() {
     );
     // …and a schema the caller named needs no introduction
     assert!(!run(&["zzzz"]).contains(" in "), "{stderr}");
+}
+
+#[test]
+fn a_draft_too_large_to_paste_says_so() {
+    // A draft nobody can paste didn't answer the question, and its size is
+    // invisible until it has already scrolled past. Keyed off the rendered
+    // size rather than off `--depth`, because depth alone says nothing: a
+    // small schema drafts usefully at the cap, and a wide one blows past it
+    // in three levels.
+    let stderr = run_against(
+        "tests/fixtures/wide_fanout.graphql",
+        &["Query.root", "-e", "--depth", "4"],
+    );
+    assert!(
+        stderr.contains("this draft is") && stderr.contains("--depth"),
+        "expected a size warning naming the lever, got: {stderr:?}"
+    );
+
+    // The same schema one level shallower is an ordinary draft; silence there
+    // is what stops the warning becoming noise everyone learns to ignore.
+    let quiet = run_against(
+        "tests/fixtures/wide_fanout.graphql",
+        &["Query.root", "-e", "--depth", "2"],
+    );
+    assert!(!quiet.contains("this draft is"), "{quiet:?}");
 }
