@@ -557,6 +557,32 @@ fn a_selection_with_no_leaf_in_it_says_so() {
 }
 
 #[test]
+fn a_selection_only_arguments_could_fill_does_not_point_at_depth() {
+    // The other way a level draws no leaf: a namespace container whose fields
+    // every one needs arguments. It looks like the connection above — markers
+    // and a `__typename` — but `--depth` can't select through a field that
+    // needs arguments, so the note sent the reader after a flag that does
+    // nothing. The markers say "needs arguments" for themselves.
+    let sdl = "\
+        type Query { ping: String }\n\
+        type Mutation { card: CardMutations }\n\
+        type CardMutations { activate(id: ID!): Boolean! reorder(id: ID!): Boolean! }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Mutation.card").unwrap();
+
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+    assert!(
+        ex.operation.contains("— needs arguments"),
+        "{}",
+        ex.operation
+    );
+    assert!(!ex.no_leaves, "{}", ex.operation);
+    // …and deeper doesn't change that, which is the whole point.
+    assert!(!example::build(target, &records, Some(3)).unwrap().no_leaves);
+}
+
+#[test]
 fn an_implementor_that_only_adds_object_fields_still_appears() {
     // Its additions are all object-valued, so it has nothing but markers —
     // and dropping every marker inside an interface's fragments dropped the

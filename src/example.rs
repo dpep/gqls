@@ -287,9 +287,18 @@ pub fn build(
     //
     // Only where a level was actually asked for: an input target draws depth 0
     // deliberately, and its payload's leaves are hidden rather than absent.
+    //
+    // And only where the flag can do something. A marker is one of two holes,
+    // and `--depth` fills only the first: an object-valued field, or a field
+    // that needs arguments and so can't be selected bare at any depth. A
+    // namespace container is all of the second — `Mutation.card`'s ten fields
+    // every one — and pointing at `--depth` there sent the reader after a flag
+    // that changes nothing. That marker says "needs arguments" for itself,
+    // which is why it gets no note rather than a different one.
     let no_leaves = depth > 0
         && !body.is_empty()
-        && body.iter().all(|l| l == "__typename" || l.starts_with('#'));
+        && body.iter().all(|l| l == "__typename" || l.starts_with('#'))
+        && body.iter().any(|l| l.ends_with(HOLE));
 
     for (depth, field) in chain.iter().enumerate().rev() {
         // Innermost first, so the fragment is wrapped before the field that
@@ -903,7 +912,7 @@ impl<'a> Schema<'a> {
                 // `{ … }`, not `...`: inside a selection set that would read as
                 // a fragment spread. Commented because there's no valid empty
                 // selection set (see the module doc).
-                deferred.push(format!("# {}: {} {{ … }}", f.name, base));
+                deferred.push(format!("# {}: {} {HOLE}", f.name, base));
             }
         }
         // An interface's own fields are only the common ones. Its implementors
@@ -1215,6 +1224,11 @@ const MAX_HOPS: usize = 6;
 /// deepest the skeleton will still name. Any deeper and a draft announcing
 /// "X is passed inside Y" would print variables that never mention X.
 const MAX_NESTING: usize = 6;
+
+/// How an object-valued marker ends — the one hole `--depth` fills. Stated
+/// once because two places depend on it: the marker is written with it, and
+/// whether a draft is worth pointing at `--depth` is read back off it.
+const HOLE: &str = "{ … }";
 
 /// The ceiling on `--depth`. A selection set fans out by the branching factor
 /// of the schema, so the draft grows geometrically: on GitHub's schema

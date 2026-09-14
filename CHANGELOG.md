@@ -53,6 +53,9 @@ early entries are terser than what follows.
 - **`-e` says when one level of selection reaches no leaf at all.** A Relay
   connection has nothing but object-valued fields, so the default draft runs and
   fetches nothing; the note points at `--depth`. The draft itself is unchanged.
+  Said only where `--depth` can actually help: a namespace container whose
+  fields every one takes required arguments draws the same empty-looking
+  selection, but no depth selects through them — draft the inner field by name.
 - **`--depth` is capped at 6.** A selection set fans out geometrically, so a
   mistyped depth was a stack overflow or a gigabyte of stdout rather than a slow
   answer: GitHub's `Repository` drafts 1.8MB at depth 4 and 877MB at 7, chime's
