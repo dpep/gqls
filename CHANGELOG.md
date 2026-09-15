@@ -6,6 +6,22 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **`-e` warns only about deprecated fields the draft selects.** A field left as
+  a commented `# name: Type { … }` hole, or dropped from an implementor's
+  fragment because the interface already selected it, was named in the
+  `deprecated:` line with nothing in the draft to find. On the GitHub schema at
+  `--depth 2`, 125 of 300 root drafts (42%) named at least one such field; none
+  do now. Fields that really are selected keep both their inline `# deprecated:`
+  flag and their place in the line.
+- **The `deprecated:` line no longer says `(flagged inline)`.** The drafted field
+  itself is deprecated often enough to matter and never carries an inline note —
+  a note goes on a selection, and the target is the operation. It reads
+  `(drafted anyway)` now, which says the thing worth saying: nothing was
+  silently dropped.
+
 ## 0.25.0 — 2026-09-14
 
 ### Added
