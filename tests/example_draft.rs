@@ -878,6 +878,49 @@ fn a_field_the_interface_already_selected_is_dropped_whole() {
 }
 
 #[test]
+fn a_field_dropped_from_a_fragment_is_not_reported_as_deprecated() {
+    // The interface selects `name` once and the fragments drop their copy, so
+    // `Widget.name` is nowhere in the draft — the warning named it anyway and
+    // sent the reader hunting through `... on Widget` for a flag that isn't
+    // there. What the draft selects is the interface's `name`, which the schema
+    // does not deprecate.
+    let sdl = "\
+        type Query { things: [Thing!]! }\n\
+        interface Thing { name: String }\n\
+        type Widget implements Thing { name: String @deprecated(reason: \"use label\") size: Int }\n\
+        type Gadget implements Thing { name: String weight: Int }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.things").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert!(ex.operation.contains("... on Widget {"), "{}", ex.operation);
+    assert!(!ex.operation.contains("# deprecated"), "{}", ex.operation);
+    assert!(ex.deprecated.is_empty(), "{:?}", ex.deprecated);
+}
+
+#[test]
+fn a_deprecated_field_a_fragment_keeps_is_still_reported() {
+    // The other side of the drop: an implementor's *own* field is in the
+    // fragment, flagged there, and has to stay in the warning.
+    let sdl = "\
+        type Query { things: [Thing!]! }\n\
+        interface Thing { name: String }\n\
+        type Widget implements Thing { name: String size: Int @deprecated(reason: \"use volume\") }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.things").unwrap();
+    let ex = example::build(target, &records, None).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    assert!(
+        ex.operation.contains("size  # deprecated: use volume"),
+        "{}",
+        ex.operation
+    );
+    assert_eq!(ex.deprecated, ["Widget.size".to_string()]);
+}
+
+#[test]
 fn fields_that_clash_across_members_are_aliased_apart() {
     // `email: String` beside `email: String!` under one response name is a
     // shape the spec forbids, whatever a given server currently tolerates.

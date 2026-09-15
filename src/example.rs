@@ -1099,7 +1099,11 @@ impl<'a> Schema<'a> {
             // nothing but markers, and vanished with nothing saying it exists.
             let mut inner: Vec<String> = Vec::new();
             let mut dropping = false;
-            for line in self.selection(member, depth, deprecated, open) {
+            // Held back rather than pushed straight through, because what this
+            // loop drops takes its deprecation with it.
+            let mut selected = Vec::new();
+            let mut dropped = Vec::new();
+            for line in self.selection(member, depth, &mut selected, open) {
                 if dropping {
                     dropping = line != "}";
                     continue;
@@ -1107,6 +1111,7 @@ impl<'a> Schema<'a> {
                 let named = line.strip_prefix("# ").unwrap_or(&line);
                 let name = named.split([' ', '{', ':']).next().unwrap_or(named);
                 if skip.contains(&name) {
+                    dropped.push(format!("{member}.{name}"));
                     // Measured on the code, not the whole line: a deprecated
                     // field carries its note past the brace.
                     let code = line.split('#').next().unwrap_or_default();
@@ -1118,6 +1123,12 @@ impl<'a> Schema<'a> {
             if inner.is_empty() {
                 continue; // this implementor adds nothing of its own
             }
+            // What the interface already selected is not in this fragment, so
+            // warning about the implementor's copy sent the reader looking for
+            // a line that isn't there. The field is still selected — on the
+            // interface, under the interface's own deprecation.
+            selected.retain(|path| !dropped.contains(path));
+            deprecated.append(&mut selected);
             // A marker is a comment, so markers alone are an empty selection
             // set, which no server parses.
             if inner.iter().all(|l| l.starts_with('#')) {
