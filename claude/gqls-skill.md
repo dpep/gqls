@@ -364,6 +364,12 @@ back. Don't reach for `-e` to see what's *in* an input object — naming it plai
 (`gqls PostFilter`) lists its fields with their types, which is the cheaper
 answer.
 
+`--via <path>` routes the draft: `gqls <schema> Issue.title -e --via Query.repository`.
+Use it when `# paths` shows the draft went through a generic `node(id:)`-style
+lookup — hand back any path the listing prints, or a prefix of one
+(`'Query.repository > Repository.issues'`). Segments are field names,
+case-insensitive; it requires `-e`.
+
 `-e` and `-R` only act on a field the query names outright (or misspells
 slightly — `Did you mean X?` on stderr says which, and is worth passing on).
 A looser query — `crtusr`, `User.`, a wildcard — answers `Did you mean:`

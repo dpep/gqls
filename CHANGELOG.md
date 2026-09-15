@@ -6,6 +6,29 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Added
+- **`--via` picks the route `-e` draws.** The walk settles each type at its
+  nearest hop, so on a schema with a global-ID lookup every type is one hop from
+  `Query.node` and `gqls <gh> Issue.title -e` drafts
+  `node(id:) { … on Issue { title } }` — the route through a repository wasn't
+  ranked low, it was never a candidate. `--via` names a prefix of the route in
+  the notation `# paths` prints, and the walk takes only the field named at each
+  of those hops: `-e --via Query.repository` gives
+  `repository(owner:, name:) { issue(number:) { title } }`, and
+  `--via 'Query.repository > Repository.issues'` goes through the connection.
+  Hand back any path the listing prints, at any length, including an input's
+  `Mutation.addStar(input:)`. It repairs a draft for someone who noticed the
+  route was silly — `# paths` listing four generic ID lookups is the only tell —
+  and does nothing for someone who pastes the first answer. Fixing that default
+  is a weighted walk rather than a sort key, and is not this.
+
+### Fixed
+- **A deprecated field is named once in the `-e` warning**, not once per place
+  the draft selects it. A type selected under two fields was listed twice; the
+  inline flags were right, the summary line wasn't.
+
 ## 0.24.0 — 2026-09-13
 
 ### Changed
