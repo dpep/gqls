@@ -975,11 +975,30 @@ impl<'a> Schema<'a> {
                 continue;
             }
             let Some(base) = f.base_type() else { continue };
+            // Both holes are settled before the note, because a marker is not a
+            // selection: it carries no inline flag, so it must not reach
+            // `deprecated` either, or the warning names a field the reader then
+            // can't find in the draft.
+            //
             // A field with required arguments can't be selected bare.
             if f.args.iter().any(|a| a.trim_end().ends_with('!')) {
                 deferred.push(format!("# {}: {} — needs arguments", f.name, base));
                 continue;
             }
+            // `None` on a leaf too: it takes no selection set of its own.
+            let inner_depth = match self.is_leaf(base) {
+                true => None,
+                false => match self.expands(f, base, depth, open) {
+                    Some(inner_depth) => Some(inner_depth),
+                    // `{ … }`, not `...`: inside a selection set that would
+                    // read as a fragment spread. Commented because there's no
+                    // valid empty selection set (see the module doc).
+                    None => {
+                        deferred.push(format!("# {}: {} {HOLE}", f.name, base));
+                        continue;
+                    }
+                },
+            };
             let note = match &f.deprecated {
                 // Flagged, not dropped (see the module doc). The caller warns too.
                 Some(reason) if reason.is_empty() => {
@@ -992,21 +1011,17 @@ impl<'a> Schema<'a> {
                 }
                 None => String::new(),
             };
-            if self.is_leaf(base) {
-                lines.push(format!("{}{note}", f.name));
-            } else if let Some(inner_depth) = self.expands(f, base, depth, open) {
-                let inner = self.selection(base, inner_depth, deprecated, open);
-                // After the brace, never before it: a note is a `#` comment,
-                // and everything past it on the line — the `{` included — is
-                // comment too, which leaves the document unbalanced.
-                lines.push(format!("{} {{{note}", f.name));
-                lines.extend(inner.into_iter().map(|l| format!("  {l}")));
-                lines.push("}".to_string());
-            } else {
-                // `{ … }`, not `...`: inside a selection set that would read as
-                // a fragment spread. Commented because there's no valid empty
-                // selection set (see the module doc).
-                deferred.push(format!("# {}: {} {HOLE}", f.name, base));
+            match inner_depth {
+                None => lines.push(format!("{}{note}", f.name)),
+                Some(inner_depth) => {
+                    let inner = self.selection(base, inner_depth, deprecated, open);
+                    // After the brace, never before it: a note is a `#` comment,
+                    // and everything past it on the line — the `{` included — is
+                    // comment too, which leaves the document unbalanced.
+                    lines.push(format!("{} {{{note}", f.name));
+                    lines.extend(inner.into_iter().map(|l| format!("  {l}")));
+                    lines.push("}".to_string());
+                }
             }
         }
         // An interface's own fields are only the common ones. Its implementors

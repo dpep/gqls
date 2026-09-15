@@ -250,6 +250,36 @@ fn a_deprecated_field_is_reported_once_however_often_it_is_selected() {
 }
 
 #[test]
+fn a_field_left_as_a_marker_is_not_reported_as_deprecated() {
+    // `Mutation.addBlockedBy -e --depth 2` named Issue.projectCards and
+    // Issue.timeline, which the draft only ever left as commented holes: the
+    // reader went looking for an inline flag that was never printed. Both kinds
+    // of marker count — past the depth, and needing arguments.
+    let sdl = "\
+        type Query { user: User }\n\
+        type User { name: String @deprecated(reason: \"use handle\") \
+        home: Address @deprecated(reason: \"use postal\") \
+        badge(id: ID!): Badge @deprecated(reason: \"gone\") }\n\
+        type Address { zip: String }\n\
+        type Badge { code: String }\n";
+    let records = gqls::load::sdl::from_sdl(sdl).expect("should parse");
+    let target = records.iter().find(|r| r.path == "Query.user").unwrap();
+    let ex = example::build(target, &records, Some(1)).expect("drafting should succeed");
+    graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
+
+    // `home` is past the depth and `badge` needs an argument, so both are holes
+    assert!(ex.operation.contains("# home: Address"), "{}", ex.operation);
+    assert!(ex.operation.contains("# badge: Badge"), "{}", ex.operation);
+    // only the one the draft really selects, and it keeps its inline flag
+    assert_eq!(ex.deprecated, ["User.name".to_string()]);
+    assert!(
+        ex.operation.contains("name  # deprecated: use handle"),
+        "{}",
+        ex.operation
+    );
+}
+
+#[test]
 fn drafts_a_root_query_with_typed_variables() {
     let ex = draft("Query.user");
     graphql_parser::parse_query::<String>(&ex.operation).expect("drafted invalid GraphQL");
