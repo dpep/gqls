@@ -25,7 +25,10 @@
 //!   form a server will accept.
 //! * **Deprecated fields are flagged, not dropped.** They're still selected and
 //!   marked `# deprecated: reason`, because silently omitting a field the schema
-//!   still serves is its own surprise.
+//!   still serves is its own surprise. The warning that names them covers what
+//!   the draft *selects*, and nothing else: a hole is a comment and a line a
+//!   fragment dropped isn't in that fragment, so neither is a field anyone
+//!   pastes.
 //! * **Schema prose in a draft is flattened to one line.** A `#` comment ends
 //!   at the next line terminator, so a deprecation reason that spans lines
 //!   would spill its tail into the selection set, where a server reads it as
@@ -97,8 +100,11 @@ pub struct Example {
     /// no way to hold "one of these", so the choice is listed beside the block
     /// rather than inside it.
     pub enums: Vec<String>,
-    /// Deprecated fields the draft touched — the target itself, or anything
-    /// selected. Flagged inline too; this is for the caller to warn about.
+    /// Deprecated fields the draft *selects* — the target itself, or anything
+    /// in the selection set. A commented hole is not a selection and neither is
+    /// a line a fragment dropped; both were named here once, and the reader who
+    /// went looking for them found nothing. Everything but the target is
+    /// flagged inline as well; this is for the caller to warn about.
     pub deprecated: Vec<String>,
     /// The root field a nested target was reached through, if it needed one.
     pub via: Option<String>,

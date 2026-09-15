@@ -173,3 +173,21 @@ fn listing_a_types_fields_is_a_list_not_a_draft() {
     assert!(!out.status.success(), "should not exit clean: {out:?}");
     assert!(stdout(&out).contains("User.email"), "{}", stdout(&out));
 }
+
+#[test]
+fn the_deprecation_warning_does_not_promise_an_inline_flag() {
+    // The message used to end "(flagged inline)", which the drafted field
+    // itself can never honour: a note goes on a selection, and the target is
+    // the operation. Mutation.deleteUser is deprecated and its draft carries no
+    // note anywhere, so the reader was sent looking for nothing.
+    let out = run("-e", "Mutation.deleteUser");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let (warning, draft) = (stderr(&out), stdout(&out));
+
+    assert!(
+        warning.contains("deprecated: Mutation.deleteUser (use archiveUser)"),
+        "{warning}"
+    );
+    assert!(!draft.contains("# deprecated"), "{draft}");
+    assert!(!warning.contains("inline"), "{warning}");
+}

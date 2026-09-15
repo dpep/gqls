@@ -1295,10 +1295,15 @@ fn run_example(
     }
     let example = crate::example::build_via(target, records, depth, via)?;
     if !example.deprecated.is_empty() {
-        // Selected anyway and marked inline, but worth saying out loud —
-        // pasting a deprecated field is the kind of thing you want to know now.
+        // Drafted anyway, but worth saying out loud — pasting a deprecated
+        // field is the kind of thing you want to know now.
+        //
+        // Not "flagged inline": the drafted field itself is the one thing here
+        // that never carries a note, because the note goes on a selection and
+        // the target is the operation. Saying where to look was a promise the
+        // output couldn't keep; saying it wasn't dropped is one it can.
         crate::status!(
-            "deprecated: {} (flagged inline)",
+            "deprecated: {} (drafted anyway)",
             example.deprecated.join(", ")
         );
     }
