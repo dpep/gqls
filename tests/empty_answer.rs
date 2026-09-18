@@ -49,8 +49,9 @@ fn a_miss_names_the_filter_that_emptied_it() {
 
     let stderr = run(&["--returns", "Post", "-k", "mutation"]);
     assert!(stderr.contains("-k mutation"), "{stderr}");
+    let noun = if without == 1 { "match" } else { "matches" };
     assert!(
-        stderr.contains(&format!("{without} match without it")),
+        stderr.contains(&format!("{without} {noun} without it")),
         "should report what dropping the filter finds: {stderr}"
     );
 }

@@ -71,7 +71,7 @@ Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson` pipe cleanly
 into `jq`. A miss means it: nothing in the schema matched, and gqls doesn't pad
 an empty answer with its closest noise. The message says what made it a miss —
 the filters in play and what dropping them would find (`nothing returns Issue
-with -k query — 43 match without it`), and the schema when gqls discovered one
+with -k query — 43 matches without it`), and the schema when gqls discovered one
 rather than being handed it (`no matches for "country" in
 examples/schema.graphql`). Read that last part before retrying: a miss against
 a schema you didn't choose is often the wrong schema, not an absent field.
@@ -331,7 +331,9 @@ lookup — hand back any path the listing prints, or a prefix of one
 case-insensitive; it requires `-e`.
 
 `-e` and `-R` only act on a field the query names outright (or misspells
-slightly — `Did you mean X?` on stderr says which, and is worth passing on).
+slightly — `Did you mean X?` on stderr says which, and is worth passing on). A
+word the schema already uses is never treated as a misspelling: `star` sits
+whole in `addStar`, so it isn't corrected to `start`.
 A looser query — `crtusr`, `User.`, a wildcard — answers `Did you mean:`
 with the matches and exits nonzero instead; re-run with the path you meant, or
 show the user the list if it isn't obvious which one they want. Both respect

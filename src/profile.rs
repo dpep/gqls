@@ -176,18 +176,24 @@ pub(crate) fn report(total: Duration) -> Vec<String> {
 pub(crate) fn json(total: Duration) -> serde_json::Value {
     let phases = phases();
     serde_json::json!({
-        "total_ms": total.as_secs_f64() * 1000.0,
-        "unaccounted_ms": unaccounted(&phases, total).as_secs_f64() * 1000.0,
+        "total_ms": ms_f64(total),
+        "unaccounted_ms": ms_f64(unaccounted(&phases, total)),
         "phases": phases
             .iter()
             .map(|p| serde_json::json!({
                 "name": p.name,
-                "ms": p.elapsed.as_secs_f64() * 1000.0,
+                "ms": ms_f64(p.elapsed),
                 "note": p.note,
                 "depth": p.depth,
             }))
             .collect::<Vec<_>>(),
     })
+}
+
+/// Milliseconds to the hundredth — a clock read around a phase isn't good for
+/// more, and the JSON shouldn't claim digits the text report rounds away.
+fn ms_f64(d: Duration) -> f64 {
+    (d.as_secs_f64() * 100_000.0).round() / 100.0
 }
 
 fn ms(d: Duration) -> String {
@@ -201,6 +207,12 @@ mod tests {
     /// `ENABLED` and `PHASES` are process-wide, so these two tests can't run at
     /// the same time — without this the enabled one flips the flag under the
     /// other, which then fails on a machine-speed coincidence.
+    #[test]
+    fn json_milliseconds_carry_two_decimals_not_float_noise() {
+        assert_eq!(ms_f64(Duration::from_nanos(105_792)), 0.11);
+        assert_eq!(ms_f64(Duration::from_micros(5_823)), 5.82);
+    }
+
     static SERIAL: Mutex<()> = Mutex::new(());
 
     fn serialize() -> std::sync::MutexGuard<'static, ()> {

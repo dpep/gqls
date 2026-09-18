@@ -1,0 +1,9 @@
+type Query {
+  "When the run started."
+  start: Int
+}
+
+type Mutation {
+  "Star a repository."
+  addStar(id: ID!): Boolean
+}

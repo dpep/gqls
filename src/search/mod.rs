@@ -126,6 +126,27 @@ pub(crate) fn names_the_record_exactly(query: &str, record: &SchemaRecord) -> bo
         }
 }
 
+/// Whether `word` is already a whole word of some name — `star` in `addStar`,
+/// bounded on both sides. A spelling that is one isn't a misspelling, so it's
+/// never corrected into a lookalike (`star` → `start`).
+/// (GraphQL names are ASCII by spec, so byte and char indices agree.)
+pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
+    let leaf = word.to_ascii_lowercase();
+    if leaf.is_empty() {
+        return false;
+    }
+    names.iter().any(|name| {
+        let chars: Vec<char> = name.chars().collect();
+        let boundary = score::boundaries(&chars);
+        name.to_ascii_lowercase()
+            .match_indices(&leaf)
+            .any(|(i, _)| {
+                let end = i + leaf.len();
+                boundary[i] && (end == chars.len() || boundary[end])
+            })
+    })
+}
+
 /// Case-insensitively equal, or within the scorer's typo budget of it.
 fn near_exact(query: &str, name: &str) -> Option<NameMatch> {
     let (q, n) = (query.to_ascii_lowercase(), name.to_ascii_lowercase());

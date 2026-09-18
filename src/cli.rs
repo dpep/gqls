@@ -194,16 +194,52 @@ fn fuzzy_matches<'a>(
         .collect()
 }
 
-/// A flag that went with semantic search, if the arguments carry one. Caught
-/// before clap, whose unknown-flag tip suggests `-- --fuzzy` — a search for
-/// the flag's own text that exits 0. Not declared as hidden args, since those
-/// still show up in shell completions.
-fn removed_flag(args: impl Iterator<Item = String>) -> Option<String> {
-    const REMOVED: [&str; 4] = ["semantic", "fuzzy", "warm", "model"];
-    args.take_while(|a| a != "--").find_map(|a| {
-        let name = a.strip_prefix("--")?.split('=').next()?.to_string();
-        REMOVED.contains(&name.as_str()).then_some(name)
-    })
+/// Flags that went with semantic search, each with why it can't be honoured.
+/// `--fuzzy` isn't here: it asked for what every query now gets, so it's
+/// dropped with a warning instead. Caught before clap, whose unknown-flag tip
+/// suggests `-- --fuzzy` — a search for the flag's own text that exits 0 —
+/// and not declared as hidden args, which clap still lists in completions.
+const REMOVED: [(&str, &str); 3] = [
+    (
+        "semantic",
+        "gqls ranks by name only now; search a word the name is likely to contain",
+    ),
+    (
+        "model",
+        "semantic search is gone, so there's no model to choose",
+    ),
+    (
+        "warm",
+        "semantic search is gone, so there's nothing to pre-build",
+    ),
+];
+
+/// The process arguments with any removed flag dealt with: a failing one exits
+/// 2 saying why, and `--fuzzy` is dropped, reported by the returned `bool`.
+/// Anything after `--` is a query, however it's spelled.
+fn without_removed_flags() -> (Vec<String>, bool) {
+    let mut args: Vec<String> = std::env::args().collect();
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    for arg in &args[1..end] {
+        let Some(name) = arg.strip_prefix("--").and_then(|a| a.split('=').next()) else {
+            continue;
+        };
+        if let Some((flag, why)) = REMOVED.iter().find(|(f, _)| *f == name) {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::UnknownArgument,
+                    format!("--{flag} was removed: {why}"),
+                )
+                .exit();
+        }
+    }
+    let fuzzy = args[..end].iter().any(|a| a == "--fuzzy");
+    let mut i = 0;
+    args.retain(|a| {
+        i += 1;
+        i > end || a != "--fuzzy"
+    });
+    (args, fuzzy)
 }
 
 /// Parse `-H "Name: Value"` strings into `(name, value)` pairs.
@@ -220,19 +256,12 @@ fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>> {
 
 pub fn run() -> Result<()> {
     let started = std::time::Instant::now();
-    if let Some(flag) = removed_flag(std::env::args().skip(1)) {
-        Cli::command()
-            .error(
-                clap::error::ErrorKind::UnknownArgument,
-                format!(
-                    "--{flag} was removed along with semantic search — every query is fuzzy \
-                     now; drop the flag"
-                ),
-            )
-            .exit();
-    }
-    let cli = Cli::parse();
+    let (args, fuzzy) = without_removed_flags();
+    let cli = Cli::parse_from(args);
     crate::logging::init(cli.verbose, cli.quiet);
+    if fuzzy {
+        crate::status!("--fuzzy does nothing now — every query is fuzzy; drop the flag");
+    }
     if cli.profile {
         crate::profile::enable();
     }
@@ -682,8 +711,11 @@ fn explained_match<'a>(
     query: &str,
     records: impl Iterator<Item = &'a SchemaRecord>,
 ) -> Option<(&'a SchemaRecord, search::NameMatch)> {
+    let records: Vec<&SchemaRecord> = records.collect();
+    let names = schema_names(records.iter().copied());
     let named: Vec<&SchemaRecord> = records
-        .filter(|r| search::names_the_record(query, r).is_some())
+        .into_iter()
+        .filter(|r| naming(query, r, &names).is_some())
         .collect();
     let cased: Vec<&SchemaRecord> = named
         .iter()
@@ -692,11 +724,33 @@ fn explained_match<'a>(
         .collect();
     let candidates = if cased.is_empty() { named } else { cased };
     match candidates.as_slice() {
-        [only] => search::names_the_record(query, only).map(|m| (*only, m)),
+        [only] => naming(query, only, &names).map(|m| (*only, m)),
         _ => None,
     }
 }
 
+/// How `query` names `record`, where a correction only counts when the part
+/// it corrected isn't itself a word of the schema's `names` — `star` sits whole
+/// in `addStar`, so it names nothing rather than `start`. `Usr.email` still
+/// corrects: `email` is a word, but `Usr` is what was misspelled.
+fn naming(query: &str, record: &SchemaRecord, names: &[&str]) -> Option<search::NameMatch> {
+    let m = search::names_the_record(query, record)?;
+    let (leaf, qualifier) = search::score::parse_qualified(query);
+    let fixed = |typed: &str, actual: Option<&str>| {
+        !actual.is_some_and(|a| a.eq_ignore_ascii_case(typed))
+            && search::is_a_schema_word(typed, names)
+    };
+    let word_corrected = fixed(leaf, Some(&record.name))
+        || qualifier.is_some_and(|q| fixed(q, record.parent.as_deref()));
+    (!word_corrected).then_some(m)
+}
+
+/// Every name and parent in `records`, for [`naming`]'s word check.
+fn schema_names<'a>(records: impl Iterator<Item = &'a SchemaRecord>) -> Vec<&'a str> {
+    records
+        .flat_map(|r| std::iter::once(r.name.as_str()).chain(r.parent.as_deref()))
+        .collect()
+}
 /// Why an empty answer was empty.
 ///
 /// A miss is about the filters as much as the query. "nothing returns Issue"
@@ -757,7 +811,7 @@ fn no_matches(
         0 => format!("{subject} with {listed}"),
         n => format!(
             "{subject} with {listed} — {n} match{} without {}",
-            if n == 1 { "es" } else { "" },
+            if n == 1 { "" } else { "es" },
             if unnamed.len() == 1 { "it" } else { "them" },
         ),
     }
@@ -799,9 +853,10 @@ fn one_named_record<'a>(
         anyhow::bail!("no schema entity matches {query:?} to {action}");
     };
     let mut also = Vec::new();
+    let names = schema_names(hits.iter().map(|h| h.record));
     // Both messages are part of the answer rather than commentary on it, so
     // they print unprefixed, above what they introduce.
-    match search::names_the_record(query, top.record) {
+    match naming(query, top.record, &names) {
         Some(search::NameMatch::Exact) => {
             also = named_peers(query, hits, top.record);
             // A caveat on an answer still being given, so it goes where the
