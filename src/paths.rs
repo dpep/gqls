@@ -4,30 +4,46 @@
 
 use std::path::PathBuf;
 
-/// Base cache directory, or `None` if neither `XDG_CACHE_HOME` nor `HOME` is set.
+/// Base cache directory, or `None` without a usable `XDG_CACHE_HOME` or
+/// `HOME`. Only an absolute path counts, as the XDG spec says: an empty or
+/// relative one resolves against the cwd, and `--clear-cache` would then
+/// sweep whatever project directory happens to be called `gqls`.
 pub(crate) fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    let absolute = |var| {
+        std::env::var_os(var)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let base = absolute("XDG_CACHE_HOME").or_else(|| Some(absolute("HOME")?.join(".cache")))?;
     Some(base.join("gqls"))
 }
 
-/// Delete every file under the cache dir, including ones an older release
-/// wrote and this one no longer knows; returns how many were removed. The dir
-/// is gqls's alone, so nothing in it is someone else's.
+/// Delete gqls's cache files — every kind it writes, and the embedding vectors
+/// releases before 0.26 wrote — returning how many were removed. Only regular
+/// files are touched and no symlink is followed, so nothing outside the cache,
+/// and nothing gqls didn't write, can go.
 pub(crate) fn clear_cache() -> usize {
-    fn clear(dir: &std::path::Path) -> usize {
+    fn clear(dir: &std::path::Path, kinds: &[&str]) -> usize {
+        // A symlinked dir is left alone, like a symlinked file.
+        if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
+            return 0;
+        }
         let Ok(rd) = std::fs::read_dir(dir) else {
             return 0;
         };
+        let ours = |p: &std::path::Path| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| kinds.contains(&x) || x.starts_with("tmp"))
+        };
         rd.flatten()
-            .map(|e| match e.path() {
-                p if p.is_dir() => clear(&p),
-                p => usize::from(std::fs::remove_file(p).is_ok()),
-            })
-            .sum()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()) && ours(&e.path()))
+            .filter(|e| std::fs::remove_file(e.path()).is_ok())
+            .count()
     }
-    cache_dir().map_or(0, |d| clear(&d))
+    cache_dir().map_or(0, |d| {
+        clear(&d, &["rcds", "disc", "vecs"]) + clear(&d.join("introspect"), &["json"])
+    })
 }
 
 /// Render a path for display, shortening the home directory to `~`.
