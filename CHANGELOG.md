@@ -14,12 +14,15 @@ early entries are terser than what follows.
   intent queries against GitHub's schema, the default fuzzy+semantic combine
   ranked the right record *lower* than fuzzy alone (MRR 0.37 vs 0.42), and
   semantic on its own only tied fuzzy on the synonym-style queries it existed
-  for. `--semantic`, `--fuzzy`, `--model` and `--warm` are now usage errors —
-  drop them from scripts. Dropping `--fuzzy` loses nothing, since every query
-  is fuzzy now. The `semantic` / `semantic-dynamic` cargo features and
-  `GQLS_NO_AUTOWARM` are gone too, and JSON rows no longer carry `degraded`.
-  Old embedding vectors are no longer cleaned up by `--clear-cache`; reclaim
-  the space with `rm ~/.cache/gqls/*.vecs` (or under `$XDG_CACHE_HOME/gqls`).
+  for. `--semantic`, `--fuzzy`, `--model` and `--warm` are now usage errors
+  (exit 2) that say the flag was removed — drop them from scripts. Dropping
+  `--fuzzy` loses nothing, since every query is fuzzy now. The `semantic` /
+  `semantic-dynamic` cargo features and the `GQLS_NO_AUTOWARM`,
+  `GQLS_MODEL_DIR` and `GQLS_SEMANTIC_FLOOR` variables are gone too, and JSON
+  rows no longer carry `degraded`. Run `gqls --clear-cache` once to reclaim the
+  embedding vectors an earlier release cached — it now empties the whole cache
+  directory, files it no longer writes included. The embedding model under
+  `~/.cache/huggingface` is left alone, since other tools may share it.
 
 ### Fixed
 - **`-e` warns only about deprecated fields the draft selects.** A field left as

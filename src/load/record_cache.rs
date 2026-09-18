@@ -75,24 +75,6 @@ pub(crate) fn store(source: &[u8], records: &[SchemaRecord]) {
     prune(MAX_FILES);
 }
 
-/// Delete every record cache file; returns how many were removed.
-pub fn clear() -> usize {
-    let Some(dir) = crate::paths::cache_dir() else {
-        return 0;
-    };
-    let mut removed = 0;
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            if e.path().extension().is_some_and(|x| x == "rcds")
-                && std::fs::remove_file(e.path()).is_ok()
-            {
-                removed += 1;
-            }
-        }
-    }
-    removed
-}
-
 fn path(source: &[u8]) -> Option<PathBuf> {
     // `DefaultHasher` is unspecified across Rust releases, so a toolchain bump
     // can silently rename every file here. Fine: a miss costs a re-parse, and

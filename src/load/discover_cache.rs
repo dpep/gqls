@@ -91,22 +91,6 @@ fn write(file: &Path, dir: &Path, schema: &Path) -> bool {
     std::fs::write(file, format!("{d}\n{s}\n")).is_ok()
 }
 
-/// Delete every remembered answer; returns how many were removed.
-pub fn clear() -> usize {
-    let Some(dir) = crate::paths::cache_dir() else {
-        return 0;
-    };
-    let mut removed = 0;
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            if is_ours(&e.path()) && std::fs::remove_file(e.path()).is_ok() {
-                removed += 1;
-            }
-        }
-    }
-    removed
-}
-
 fn path(dir: &Path) -> Option<PathBuf> {
     let mut h = DefaultHasher::new();
     // The walk's rules live in this crate, so an upgrade that changes what wins

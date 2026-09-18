@@ -335,18 +335,6 @@ fn is_localhost(url: &str) -> bool {
         || host.starts_with("127.")
 }
 
-/// Delete all cached introspection responses; returns how many were removed.
-pub(crate) fn clear_cache() -> usize {
-    let Some(dir) = cache_dir() else { return 0 };
-    let Ok(rd) = std::fs::read_dir(&dir) else {
-        return 0;
-    };
-    rd.flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter(|e| std::fs::remove_file(e.path()).is_ok())
-        .count()
-}
-
 fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {
     let roots = Roots {
         query: root_name(schema, "queryType"),

@@ -106,7 +106,7 @@ struct Cli {
     refresh: bool,
 
     /// Delete every cached file — introspection responses, parsed records,
-    /// and discovered schema paths — then exit.
+    /// discovered schema paths, and anything an older release left — then exit.
     #[arg(long)]
     clear_cache: bool,
 
@@ -194,6 +194,18 @@ fn fuzzy_matches<'a>(
         .collect()
 }
 
+/// A flag that went with semantic search, if the arguments carry one. Caught
+/// before clap, whose unknown-flag tip suggests `-- --fuzzy` — a search for
+/// the flag's own text that exits 0. Not declared as hidden args, since those
+/// still show up in shell completions.
+fn removed_flag(args: impl Iterator<Item = String>) -> Option<String> {
+    const REMOVED: [&str; 4] = ["semantic", "fuzzy", "warm", "model"];
+    args.take_while(|a| a != "--").find_map(|a| {
+        let name = a.strip_prefix("--")?.split('=').next()?.to_string();
+        REMOVED.contains(&name.as_str()).then_some(name)
+    })
+}
+
 /// Parse `-H "Name: Value"` strings into `(name, value)` pairs.
 fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>> {
     raw.iter()
@@ -208,6 +220,17 @@ fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>> {
 
 pub fn run() -> Result<()> {
     let started = std::time::Instant::now();
+    if let Some(flag) = removed_flag(std::env::args().skip(1)) {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::UnknownArgument,
+                format!(
+                    "--{flag} was removed along with semantic search — every query is fuzzy \
+                     now; drop the flag"
+                ),
+            )
+            .exit();
+    }
     let cli = Cli::parse();
     crate::logging::init(cli.verbose, cli.quiet);
     if cli.profile {
@@ -222,13 +245,7 @@ pub fn run() -> Result<()> {
     }
 
     if cli.clear_cache {
-        let introspect = crate::load::introspect::clear_cache();
-        let records = crate::load::record_cache::clear();
-        let discoveries = crate::load::discover_cache::clear();
-        crate::status!(
-            "cleared {} cached file(s)",
-            introspect + records + discoveries
-        );
+        crate::status!("cleared {} cached file(s)", crate::paths::clear_cache());
         return Ok(());
     }
 

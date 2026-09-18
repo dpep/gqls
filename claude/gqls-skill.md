@@ -55,9 +55,12 @@ Each result is an object:
 type, `args` the argument signatures, `description` the schema doc when the
 schema has one — usually enough to confirm a match without opening the schema.
 
-**`score` orders results within one query.** It is the fraction of a perfect
-match times 1000, so 1000 means the query *is* the name (plus up to 300 more
-when a `Type.` qualifier names the right parent). It is `null` when a record was
+**`score` orders results within one query and nothing else. Never threshold on
+it.** For a one-word query it is the fraction of a perfect name match times
+1000, plus up to 300 when a `Type.` qualifier names the right parent. A phrase
+sums its words' scores (`close issue` puts `Mutation.closeIssue` at 1622), and a
+query that matched only an argument name scores the argument (`followRenames`
+gives `Query.repository` 1000) — so 1000 doesn't mean "the name". It is `null` when a record was
 explained without ranking having scored it — the key is always present. Read the
 order, not the number.
 
