@@ -6,6 +6,14 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **`--returns` given a field says so.** `gqls --returns User.name` answered
+  `nothing returns User.name` — a claim about the schema, when the flag takes a
+  type. It now exits 1 naming what the field returns and pointing at
+  `gqls User.name -e`, which drafts a query that fetches it.
+
 ## 0.26.0 — 2026-09-18
 
 ### Removed
