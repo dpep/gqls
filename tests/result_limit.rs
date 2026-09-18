@@ -9,13 +9,12 @@ use std::process::Command;
 
 const SCHEMA: &str = "examples/schema.graphql";
 
-/// `(stdout, stderr)` for a fuzzy run — off the embedding model, since what's
-/// under test is the count, not the ranking.
+/// `(stdout, stderr)` for a run against the example schema.
 fn run(args: &[&str]) -> (String, String) {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
         .args(args)
-        .args(["--fuzzy", SCHEMA])
+        .arg(SCHEMA)
         .output()
         .expect("gqls should be runnable");
     (

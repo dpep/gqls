@@ -197,9 +197,9 @@ fn store_response(path: &Path, bytes: &[u8]) {
 /// budget. Age alone stopped bounding this when credentials entered the key: an
 /// endpoint queried with a rotating token — CI with short-lived credentials —
 /// now leaves one megabytes-sized file per token until they age out a week
-/// later. Same two-limit shape as the vector cache: a count can't bound disk
-/// when file size follows schema size. The newest always survives, since
-/// evicting what was just written guarantees an immediate refetch.
+/// later. Two limits because a count can't bound disk when file size follows
+/// schema size. The newest always survives, since evicting what was just
+/// written guarantees an immediate refetch.
 fn prune(dir: &Path, keep: usize, max_bytes: u64) {
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = match std::fs::read_dir(dir) {
         Ok(rd) => rd

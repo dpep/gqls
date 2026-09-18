@@ -112,7 +112,7 @@ struct Run {
 fn gqls(url: &str, cache: &Path, query: &str, header: Option<&str>) -> Run {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gqls"));
-    cmd.arg(url).arg(query).arg("--fuzzy").arg("-q");
+    cmd.arg(url).arg(query).arg("-q");
     if let Some(h) = header {
         cmd.arg("-H").arg(h);
     }
@@ -120,8 +120,6 @@ fn gqls(url: &str, cache: &Path, query: &str, header: Option<&str>) -> Run {
         .env("XDG_CACHE_HOME", cache)
         // Loopback is TTL-0 on purpose; this is the whole point of the knob.
         .env("GQLS_INTROSPECT_TTL", "3600")
-        // A background warm would introspect again and muddy the request log.
-        .env("GQLS_NO_AUTOWARM", "1")
         .output()
         .expect("gqls should be runnable");
     Run {

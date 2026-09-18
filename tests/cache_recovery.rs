@@ -16,9 +16,7 @@ fn gqls(cache: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_gqls"))
         .args(args)
         .arg(SCHEMA)
-        .arg("--fuzzy")
         .env("XDG_CACHE_HOME", cache)
-        .env("GQLS_NO_AUTOWARM", "1")
         .output()
         .expect("gqls should be runnable")
 }

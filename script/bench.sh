@@ -26,14 +26,14 @@ GQLS="target/release/gqls"
 # `flags|query` — the query stays quoted so a multi-word one isn't split into
 # a query plus a source, while the flags are meant to word-split.
 #
-# Wildcards and qualified forms take different paths through search, and the
-# semantic combine is the slowest thing gqls does — cover each.
+# Wildcards, qualified forms and phrases take different paths through search —
+# cover each.
 QUERIES=(
-  "--fuzzy|user"
-  "--fuzzy|usre"
-  "--fuzzy|AdminUserAdmin.email"
-  "--fuzzy|AdminUserAdmin."
-  "--fuzzy|*.employees"
+  "|user"
+  "|usre"
+  "|AdminUserAdmin.email"
+  "|AdminUserAdmin."
+  "|*.employees"
   "|employee data"
 )
 
@@ -66,11 +66,9 @@ fi
 
 [ -x "$GQLS" ] || { echo "build first: cargo build --release" >&2; exit 1; }
 
-export GQLS_NO_AUTOWARM=1
-
 # Warm the caches once so the numbers measure steady state, not first-run
 # parsing — the cold path is a separate question from "is a query fast".
-$GQLS user "$SCHEMA" --fuzzy -q -l 1 >/dev/null 2>&1 || true
+$GQLS user "$SCHEMA" -q -l 1 >/dev/null 2>&1 || true
 
 results=$(
   for entry in "${QUERIES[@]}"; do

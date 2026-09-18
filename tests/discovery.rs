@@ -21,7 +21,7 @@ fn discover_in(dir: &PathBuf) -> String {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
         // --refresh so the answer is walked, not remembered from a previous run
-        .args(["a", "--fuzzy", "-v", "--refresh"])
+        .args(["a", "-v", "--refresh"])
         .current_dir(dir)
         .output()
         .expect("gqls should be runnable");

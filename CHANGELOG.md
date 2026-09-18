@@ -8,6 +8,19 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Removed
+- **Semantic search.** gqls is fuzzy-only now: one build, no ONNX Runtime, no
+  model download, no background embedding. It wasn't earning its keep: on 50
+  intent queries against GitHub's schema, the default fuzzy+semantic combine
+  ranked the right record *lower* than fuzzy alone (MRR 0.37 vs 0.42), and
+  semantic on its own only tied fuzzy on the synonym-style queries it existed
+  for. `--semantic`, `--fuzzy`, `--model` and `--warm` are now usage errors —
+  drop them from scripts. Dropping `--fuzzy` loses nothing, since every query
+  is fuzzy now. The `semantic` / `semantic-dynamic` cargo features and
+  `GQLS_NO_AUTOWARM` are gone too, and JSON rows no longer carry `degraded`.
+  Old embedding vectors are no longer cleaned up by `--clear-cache`; reclaim
+  the space with `rm ~/.cache/gqls/*.vecs` (or under `$XDG_CACHE_HOME/gqls`).
+
 ### Fixed
 - **`-e` warns only about deprecated fields the draft selects.** A field left as
   a commented `# name: Type { … }` hole, or dropped from an implementor's

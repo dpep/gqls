@@ -23,9 +23,6 @@ fn run(args: &[&str]) -> String {
 fn run_against(schema: &str, args: &[&str]) -> String {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
-        // Keep this off the embedding model: layout is about the columns, not
-        // the ranking, and a semantic build shouldn't change what's measured.
-        .arg("--fuzzy")
         .args(args)
         .arg(schema)
         .output()

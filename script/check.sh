@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# The pre-push gate: formatting, lints, and tests at every feature
-# configuration gqls ships. Stops at the first failure with a nonzero status.
+# The pre-push gate: formatting, lints, and tests. Stops at the first failure
+# with a nonzero status.
 #
 #     script/check.sh
 #
@@ -14,7 +14,7 @@
 # If a build ever fails with an error that contradicts the source — an arity
 # mismatch pointing at a signature that plainly has the right number of
 # parameters — the target dir has a stale artifact. `cargo clean -p gqls-cli`
-# clears it; a full `cargo clean` re-downloads ONNX Runtime, so avoid that.
+# clears it.
 
 set -euo pipefail
 
@@ -35,19 +35,10 @@ cargo clean -p gqls-cli
 step "fmt"
 cargo fmt --check
 
-step "clippy — default features (semantic)"
+step "clippy"
 cargo clippy --all-targets -- -D warnings
 
-step "clippy — fuzzy-only build"
-cargo clippy --all-targets --no-default-features -- -D warnings
-
-step "check — semantic-dynamic (what Homebrew builds)"
-cargo check --no-default-features --features semantic-dynamic
-
-step "tests — default features"
+step "tests"
 cargo test
-
-step "tests — fuzzy-only build"
-cargo test --no-default-features
 
 printf '\nall green\n'

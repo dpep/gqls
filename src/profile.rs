@@ -6,7 +6,7 @@
 //! left on the hot path is one relaxed atomic load per phase.
 //!
 //! Phases are a flat list — names carry their own structure
-//! (`semantic: model load`) rather than a nesting scheme, because the report is
+//! (`cache: decode`) rather than a nesting scheme, because the report is
 //! read top to bottom and the total is wall time, not a sum.
 //!
 //! A span tracks how deeply it nests so the report can end with the time *no*

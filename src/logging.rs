@@ -1,12 +1,9 @@
 //! Stderr verbosity, set once from `-q`/`-v` and shared across the CLI.
 //!
 //! Three levels: **quiet** (results + hard errors only), **normal** (status
-//! chatter — a corrected kind or qualifier, warming, no-matches), **verbose**
-//! (adds diagnostics
-//! — cache hits, rq candidates, why the embedding model loaded or fell back).
-//! Status text goes through [`status!`]/[`detail!`]; under the semantic feature
-//! we also route the borrowed `log::` macros here, so `-v` surfaces the
-//! otherwise-silent model-load `debug!`/`warn!` lines from `ae`'s pipeline.
+//! chatter — a corrected kind or qualifier, no-matches), **verbose** (adds
+//! diagnostics — cache hits, rq candidates). Status text goes through
+//! [`status!`]/[`detail!`].
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -27,8 +24,6 @@ pub(crate) fn init(verbose: bool, quiet: bool) {
         NORMAL
     };
     LEVEL.store(level, Ordering::Relaxed);
-    #[cfg(feature = "_semantic")]
-    init_log_backend(level);
 }
 
 pub(crate) fn level() -> u8 {
@@ -61,49 +56,4 @@ macro_rules! detail {
             eprintln!("gqls: {}", format_args!($($arg)*));
         }
     };
-}
-
-/// Route the `log::` macros from the borrowed embedding code to stderr, gated by
-/// our level: quiet silences them, normal shows warnings (real failures like a
-/// failed tokenize/inference), verbose shows the debug lines that explain *why*
-/// the ONNX model loaded or fell back to the hash embedder.
-#[cfg(feature = "_semantic")]
-fn init_log_backend(level: u8) {
-    use log::LevelFilter;
-
-    static LOGGER: StderrLogger = StderrLogger;
-    let filter = match level {
-        QUIET => LevelFilter::Off,
-        VERBOSE => LevelFilter::Debug,
-        _ => LevelFilter::Warn,
-    };
-    // Only the first call can install the logger; ignore a repeat (e.g. tests).
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(filter);
-}
-
-#[cfg(feature = "_semantic")]
-struct StderrLogger;
-
-#[cfg(feature = "_semantic")]
-impl log::Log for StderrLogger {
-    fn enabled(&self, meta: &log::Metadata) -> bool {
-        // Only our own crate's diagnostics (including the borrowed `ae` embedding
-        // code, which compiles under the `gqls` crate). Without this, `-v` would
-        // also dump ureq/rustls TLS-handshake debug spam when introspecting a URL.
-        let t = meta.target();
-        t == "gqls" || t.starts_with("gqls::")
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!(
-                "gqls: [{}] {}",
-                record.level().as_str().to_ascii_lowercase(),
-                record.args()
-            );
-        }
-    }
-
-    fn flush(&self) {}
 }

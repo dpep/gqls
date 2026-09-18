@@ -3,7 +3,7 @@ name = "gqls-cli"  # crates.io name (`gqls` is taken); the binary is still `gqls
 version = "0.25.0"
 edition = "2021"
 rust-version = "1.82"  # `Option::is_none_or`
-description = "Fuzzy and semantic search over a GraphQL schema (SDL, introspection JSON, or a live endpoint), plus a field-to-resolver jump."
+description = "Fuzzy search over a GraphQL schema (SDL, introspection JSON, or a live endpoint), plus a field-to-resolver jump."
 license = "MIT"
 repository = "https://github.com/dpep/gqls"
 homepage = "https://github.com/dpep/gqls"
@@ -39,24 +39,12 @@ serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
 ureq = { version = "2", features = ["json"] }  # URL introspection
 
-# Semantic search (opt-in via the `semantic` feature): local all-MiniLM-L6-v2
-# through ONNX Runtime, borrowed from ae (~/code/lib/rust/ae) with the same
-# pins so the copied onnx.rs matches the ort API. `semantic` statically
-# downloads ORT at build time; the model is fetched from the HuggingFace Hub
-# on first run, then cached offline (falls back to a hash embedder if it can't).
-ort = { version = "=2.0.0-rc.12", default-features = false, optional = true }
-tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"], optional = true }
-hf-hub = { version = "0.5", default-features = false, features = ["ureq"], optional = true }
-log = { version = "0.4", optional = true }
-
-# Parallel fuzzy scoring scan (and the cold embed pass under `semantic`).
+# Parallel fuzzy scoring scan.
 rayon = "1"
 terminal_size = "0.4"
 # Column widths. `.chars().count()` is Unicode scalars, which is the terminal's
 # column count only for ASCII — CJK is two columns per scalar and an emoji ZWJ
-# sequence is many scalars and one glyph. Zero transitive dependencies, so the
-# lean `--no-default-features` build stays lean; the default build already had
-# it via hf-hub's progress bars.
+# sequence is many scalars and one glyph.
 unicode-width = "0.2"
 
 [dev-dependencies]
@@ -66,26 +54,6 @@ unicode-width = "0.2"
 graphql-parser = "0.4"
 serde_json = { version = "1", features = ["preserve_order"] }
 ureq = { version = "2", features = ["json"] }
-
-[features]
-# Semantic search is on by default so `cargo install gqls-cli` includes it
-# (downloads ONNX Runtime at build time). Opt out with `--no-default-features`
-# for a lean fuzzy-only build; Homebrew uses `semantic-dynamic` instead.
-default = ["semantic"]
-
-# Internal: the semantic embedding code + deps, minus the ORT linking strategy.
-# Not selected directly — pick `semantic` or `semantic-dynamic` below.
-_semantic = [
-  "dep:ort", "dep:tokenizers", "dep:hf-hub", "dep:log",
-  "ort/std", "ort/ndarray", "ort/tracing", "ort/api-24",
-]
-# Semantic search with ONNX Runtime downloaded + statically linked at build
-# time — the convenient default: `cargo install gqls-cli --features semantic`.
-semantic = ["_semantic", "ort/download-binaries", "ort/tls-native", "ort/copy-dylibs"]
-# Semantic search with ONNX Runtime dlopen'd from a system install at runtime:
-# smaller binary, no build-time download. Used by the Homebrew formula, which
-# `depends_on "onnxruntime"` (the same keg `ae` uses).
-semantic-dynamic = ["_semantic", "ort/load-dynamic"]
 
 [profile.release]
 strip = true
