@@ -54,6 +54,9 @@ Each result is an object:
 `path` is the qualified location (`Type.field`), `type_ref` the return/field
 type, `args` the argument signatures, `description` the schema doc when the
 schema has one — usually enough to confirm a match without opening the schema.
+Keys the schema gives no value for are left out: `default` appears on an input
+field with a schema default, and `arg_descriptions` (argument name → its doc)
+on a field whose arguments are documented.
 
 **`score` orders results within one query and nothing else. Never threshold on
 it.** For a one-word query it is the fraction of a perfect name match times
@@ -81,8 +84,9 @@ an empty result is an answer — a miss exits `0`, so don't read a zero exit as
 "found something", and don't read a miss as a tool failure worth retrying
 differently. `1` means a mode couldn't deliver what it promises: `-e`/`-R` given
 a query that names no one record, a schema that won't load, a kind that isn't a
-kind. `2` is a usage error the argument parser rejected — you got the flags
-wrong, fix the command. Check the code before parsing stdout.
+kind, a path that isn't a schema source, `--returns` given something that
+isn't a type. `2` is a usage error the argument parser rejected — you got the
+flags wrong, fix the command. Check the code before parsing stdout.
 
 When the query *names* exactly one of its matches — the leaf is that record's
 name, not merely its best fuzzy match — gqls stops listing and explains it
@@ -165,7 +169,8 @@ form.
 - Qualified: `gqls User.email` — when `User` names a schema type (any case,
   misspellings snap to the unique closest type), results are hard-filtered to
   that type's members; otherwise it falls back to fuzzy-matching the whole
-  query. Members includes enum values, so `gqls join__Graph.PRODUCTS` is how you
+  query, and says so on stderr (`no type named "Repo" — matching … against every
+  type's members`) — the list is then unscoped. Members includes enum values, so `gqls join__Graph.PRODUCTS` is how you
   look up one value and its directives.
 - Two bare words become that qualified form when the first names a type, and
   the rewrite has **no fallback**: `gqls Post role` says
@@ -247,7 +252,10 @@ concatenated is nothing a parser reads, so a batch refuses it and says so.
 
 Each row carries the `query` that produced it, so one stream stays
 attributable, and a query that matched nothing still reports
-`{"query": …, "status": "no_matches"}` rather than dropping out. A single
+`{"query": …, "status": "no_matches"}` rather than dropping out. `query` is the
+query as searched — a two-word `User name` comes back as `User.name` — so
+correlate by order when you need the exact input line. Blank lines are skipped
+and produce no row. A single
 query's output is unchanged, so existing parsing is unaffected. A piped query
 that names one record explains it, the same as one typed as an argument —
 so a batch is a way to ask for several explanations at once, not a weaker
