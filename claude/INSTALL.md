@@ -6,14 +6,13 @@ which teaches Claude to drive it. You need both, and they install independently.
 ## The binary
 
 ```sh
-brew install dpep/tools/gqls    # macOS/Homebrew — includes semantic search
+brew install dpep/tools/gqls    # macOS/Homebrew
 ```
 
 No Homebrew:
 
 ```sh
-cargo install gqls-cli                          # semantic search included
-cargo install gqls-cli --no-default-features    # lean, fuzzy-only
+cargo install gqls-cli
 ```
 
 Update with `brew upgrade dpep/tools/gqls`, or re-run the `cargo install` line.

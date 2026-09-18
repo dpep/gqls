@@ -21,10 +21,7 @@ fn run_with(flag: &str, query: &str, extra: &[&str]) -> Output {
     // swear it's current; without this the failures look like real bugs.
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     Command::new(env!("CARGO_BIN_EXE_gqls"))
-        // --fuzzy keeps this off the embedding model — the guard is about the
-        // name typed, not about ranking, and a semantic build shouldn't make
-        // the test slower or dependent on a downloaded model.
-        .args([query, flag, "--fuzzy", SCHEMA])
+        .args([query, flag, SCHEMA])
         .args(extra)
         .output()
         .expect("gqls should be runnable")

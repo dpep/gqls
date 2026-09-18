@@ -8,7 +8,35 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Removed
+- **Semantic search.** gqls is fuzzy-only now: one build, no ONNX Runtime, no
+  model download, no background embedding. It wasn't earning its keep: on 50
+  intent queries against GitHub's schema, the default fuzzy+semantic combine
+  ranked the right record *lower* than fuzzy alone (MRR 0.37 vs 0.42), and
+  semantic on its own only tied fuzzy on the synonym-style queries it existed
+  for. `--semantic`, `--model` and `--warm` are now usage errors (exit 2)
+  that say why — drop them from scripts. `--fuzzy` still runs, since every
+  query is fuzzy now, but warns that it does nothing. The `semantic` /
+  `semantic-dynamic` cargo features and the `GQLS_NO_AUTOWARM`,
+  `GQLS_MODEL_DIR` and `GQLS_SEMANTIC_FLOOR` variables are gone too, and JSON
+  rows no longer carry `degraded`. Run `gqls --clear-cache` once to reclaim the
+  embedding vectors an earlier release cached — it now empties the whole cache
+  directory, files it no longer writes included. The embedding model under
+  `~/.cache/huggingface` is left alone, since other tools may share it.
+
 ### Fixed
+- **A word the schema already uses is no longer "corrected" into a lookalike.**
+  `gqls star` explained `CheckAnnotationSpan.start` as a misspelling and hid
+  `addStar` behind "76 other matches"; `gqls star -e` drafted against it.
+  Across every word in GitHub's schema, 83 were corrected this way — `host` to
+  `RateLimit.cost`, `the` to the country code `TH` — and a few more, like
+  `bot`, stopped explaining the record they named exactly because a bogus
+  correction tied with it. A correction now applies only where the part it
+  corrects isn't a word of some name; `strat` and `Usr.email` still correct.
+- **A miss that a filter caused counts its matches in plain English.** It said
+  `43 match without it`, and `1 matches` for one.
+- **`--profile` JSON rounds milliseconds to two decimals** rather than printing
+  float noise like `0.10579200000000001`.
 - **`-e` warns only about deprecated fields the draft selects.** A field left as
   a commented `# name: Type { … }` hole, or dropped from an implementor's
   fragment because the interface already selected it, was named in the

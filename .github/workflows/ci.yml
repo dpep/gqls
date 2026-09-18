@@ -21,14 +21,11 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      # ort downloads ONNX Runtime into target/ for the default feature set, so
-      # caching is what keeps a run from re-fetching it every time.
       - name: cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # The repo's own gate, not a copy of its steps: it covers three feature
-      # configurations (default, fuzzy-only, and the semantic-dynamic one
-      # Homebrew builds), and a second inline copy here would drift from it.
+      # The repo's own gate, not a copy of its steps — an inline copy here
+      # would drift from it.
       # `cargo test` stays offline — the live-endpoint test is `#[ignore]`d.
       - name: gate
         run: script/check.sh

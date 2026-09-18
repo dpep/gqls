@@ -105,17 +105,17 @@ fn applied_directives_are_the_one_thing_a_dump_cannot_say() {
 fn the_dumps_blind_spot_is_disclosed_under_v() {
     let caveat = "introspection reports no applied directives";
 
-    let dump = run(&["secret", "tests/fixtures/parity.json", "--fuzzy", "-v"]);
+    let dump = run(&["secret", "tests/fixtures/parity.json", "-v"]);
     assert!(dump.contains(caveat), "{dump}");
     assert!(dump.contains("@auth"), "it names the evidence: {dump}");
 
     // The SDL of the same schema has nothing to disclose…
-    let sdl = run(&["secret", "tests/fixtures/parity.graphql", "--fuzzy", "-v"]);
+    let sdl = run(&["secret", "tests/fixtures/parity.graphql", "-v"]);
     assert!(!sdl.contains(caveat), "{sdl}");
 
     // …and neither has a normal run: it's a diagnostic, and a federated
     // endpoint would otherwise carry this line all day.
-    let quiet = run(&["secret", "tests/fixtures/parity.json", "--fuzzy"]);
+    let quiet = run(&["secret", "tests/fixtures/parity.json"]);
     assert!(!quiet.contains(caveat), "{quiet}");
 }
 

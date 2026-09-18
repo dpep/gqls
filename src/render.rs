@@ -16,8 +16,7 @@ use serde::Serialize;
 use crate::model::{Kind, SchemaRecord};
 use crate::style;
 
-/// A ranked result — from either the fuzzy scorer or the semantic ranker, so
-/// both flow through one output path.
+/// A ranked result, or the one record a query named.
 #[derive(Clone, Copy)]
 pub(crate) struct Match<'a> {
     pub record: &'a SchemaRecord,

@@ -10,38 +10,19 @@ use crate::model::{Kind, SchemaRecord};
 use crate::render::{self, Extras, Match};
 use crate::search;
 
-/// The semantic-only flags (--semantic, --model, --refresh, --clear-cache) are
-/// hidden from --help on builds without the feature, where they'd only error.
-const HIDE_SEMANTIC: bool = !cfg!(feature = "_semantic");
+const ABOUT: &str = "Search a GraphQL schema — fuzzy, or straight to the resolver.";
 
-/// The help text, assembled per feature configuration from shared pieces.
-///
-/// Hand-maintained copies drift — a fuzzy-only build was advertising semantic
-/// search in `long_about` and disclaiming it in `EXAMPLES`, forty lines apart —
-/// and nothing in the test suite reads help text, so drift is silent. Written
-/// as macros because `concat!` takes literals, and a macro expanding to one
-/// counts.
-macro_rules! about_head {
-    () => {
-        "Find the types, fields and directives in a GraphQL schema from the terminal. \
-         The source is an SDL file, a local introspection JSON dump, or a live http(s) \
-         endpoint; with none given, gqls discovers a schema in the current tree. "
-    };
-}
+const LONG_ABOUT: &str =
+    "Find the types, fields and directives in a GraphQL schema from the terminal. \
+     The source is an SDL file, a local introspection JSON dump, or a live http(s) \
+     endpoint; with none given, gqls discovers a schema in the current tree. \
+     Name one record and gqls explains it rather than listing: its description in full, \
+     deprecation, directives, an abstract type's members, an enum's values, a \
+     type's fields, and what references it. --example drafts an operation to paste, \
+     --resolve jumps to the graphql-ruby resolver via rq. All modes support -j/--json \
+     and -J/--ndjson.";
 
-macro_rules! about_tail {
-    () => {
-        "Name one record and gqls explains it rather than listing: its description in full, \
-         deprecation, directives, an abstract type's members, an enum's values, a \
-         type's fields, and what references it. --example drafts an operation to paste, \
-         --resolve jumps to the graphql-ruby resolver via rq. All modes support -j/--json \
-         and -J/--ndjson."
-    };
-}
-
-macro_rules! example_body {
-    () => {
-        "EXAMPLES:
+const EXAMPLES: &str = "EXAMPLES:
   gqls user schema.graphql            fuzzy search an SDL file
   gqls Role                           name one record, get it explained in full
   gqls createUser -k mutation         restrict to a kind (schema auto-discovered)
@@ -52,53 +33,13 @@ macro_rules! example_body {
   gqls --returns Company -k query     find fields by return type, not name
   gqls repo schema.json               search a local introspection dump
   gqls repo https://api/graphql       introspect a live endpoint
-"
-    };
-}
-
-macro_rules! example_tail {
-    () => {
-        "  gqls Mutation.createUser -e         draft an operation to paste
+  gqls cancel a subscription          several words are one query
+  gqls Mutation.createUser -e         draft an operation to paste
   gqls CreateUserInput -e             ...or draft through the field taking it
   gqls Post.title -e --via posts      ...or pick from the routes it lists
   gqls Query.user -R --code ./app     jump to the graphql-ruby resolver
   gqls user schema.graphql -j         JSON output (-J for ndjson)
-"
-    };
-}
-
-#[cfg(feature = "_semantic")]
-const ABOUT: &str = "Search a GraphQL schema — fuzzy, semantic, or straight to the resolver.";
-#[cfg(not(feature = "_semantic"))]
-const ABOUT: &str = "Search a GraphQL schema — fuzzy, or straight to the resolver.";
-
-#[cfg(feature = "_semantic")]
-const LONG_ABOUT: &str = concat!(
-    about_head!(),
-    "Fuzzy and semantic results are ranked together by default (--semantic or --fuzzy forces \
-     one). ",
-    about_tail!()
-);
-#[cfg(not(feature = "_semantic"))]
-const LONG_ABOUT: &str = concat!(about_head!(), about_tail!());
-
-#[cfg(feature = "_semantic")]
-const EXAMPLES: &str = concat!(
-    example_body!(),
-    "  gqls cancel a subscription          rank by meaning — no quotes needed\n",
-    example_tail!()
-);
-
-#[cfg(not(feature = "_semantic"))]
-const EXAMPLES: &str = concat!(
-    example_body!(),
-    "  gqls cancel a subscription          several words are one query\n",
-    example_tail!(),
-    "\nSemantic search (--semantic, rank by meaning) is not compiled into this build. Enable it:
-  cargo install gqls-cli --features semantic
-  brew install dpep/tools/gqls
-"
-);
+";
 
 #[derive(Parser)]
 #[command(
@@ -111,7 +52,7 @@ const EXAMPLES: &str = concat!(
 struct Cli {
     /// Search query, then optionally the schema source.
     ///
-    /// The query is fuzzy by default; abbreviations like `usr` match `User`,
+    /// The query is fuzzy-matched: abbreviations like `usr` match `User`,
     /// and `Type.field` queries match against the qualified path. A trailing
     /// dot lists a type's fields (`User.`); the general wildcards (`*` any
     /// run, `?` one char, `{a,b}` alternatives) enumerate too, but quote them
@@ -159,34 +100,15 @@ struct Cli {
     #[arg(long)]
     no_explain: bool,
 
-    /// Force semantic-only search. By default fuzzy and semantic results are
-    /// combined once the schema's vectors are cached.
-    #[arg(long, hide = HIDE_SEMANTIC)]
-    semantic: bool,
-
-    /// Force fuzzy-only search — skip the semantic combine.
-    #[arg(long, conflicts_with = "semantic", hide = HIDE_SEMANTIC)]
-    fuzzy: bool,
-
-    /// Embedding model for --semantic: a local dir / `.onnx` path, or a
-    /// HuggingFace `org/name` id. Defaults to all-MiniLM-L6-v2.
-    #[arg(long, hide = HIDE_SEMANTIC)]
-    model: Option<String>,
-
-    /// Bypass every cache: re-walk for the schema, re-fetch a URL, re-embed.
-    /// Schema edits already re-embed on their own; use this for changes a cache
-    /// can't see — a new model, or a schema that moved.
+    /// Bypass every cache: re-walk for the schema and re-fetch a URL — for a
+    /// change a cache can't see, like a schema that moved.
     #[arg(long)]
     refresh: bool,
 
     /// Delete every cached file — introspection responses, parsed records,
-    /// discovered schema paths, and embedding vectors — then exit.
+    /// discovered schema paths, and anything an older release left — then exit.
     #[arg(long)]
     clear_cache: bool,
-
-    /// Pre-embed the schema's vectors (warm the cache), then exit.
-    #[arg(long, hide = HIDE_SEMANTIC)]
-    warm: bool,
 
     /// Print a shell completion script (bash, zsh, fish, ...) to stdout, then exit.
     #[arg(long, value_name = "SHELL")]
@@ -236,8 +158,7 @@ struct Cli {
     #[arg(long)]
     profile: bool,
 
-    /// Verbose stderr diagnostics: cache hits, the rq candidates -R tried, and
-    /// (on a semantic build) why the embedding model loaded or fell back.
+    /// Verbose stderr diagnostics: cache hits and the rq candidates -R tried.
     #[arg(short, long, conflicts_with = "quiet")]
     verbose: bool,
 
@@ -256,150 +177,69 @@ enum Output {
 }
 
 /// All fuzzy hits above the quality cutoff, best first — the caller truncates
-/// to the display limit, so the length is the true match count. The `bool` is
-/// [`search::named_hit`]: whether some hit names the query's leaf.
+/// to the display limit, so the length is the true match count.
 fn fuzzy_matches<'a>(
     query: &str,
     records: &'a [SchemaRecord],
     filters: search::Filters<'_>,
-) -> (Vec<Match<'a>>, bool) {
+) -> Vec<Match<'a>> {
     let mut span = crate::profile::span("fuzzy scan");
     let hits = search::search(query, records, filters);
     span.note(|| format!("{} of {} records matched", hits.len(), records.len()));
-    let named = search::named_hit(query, &hits);
-    let matches = hits
-        .into_iter()
+    hits.into_iter()
         .map(|h| Match {
             record: h.record,
             score: Some(h.score as f64),
         })
-        .collect();
-    (matches, named)
-}
-
-/// Rank by meaning, building the session on first use and holding it in
-/// `session` for the queries that follow. One query pays the model load either
-/// way; a batch pays it once instead of once per line.
-#[cfg(feature = "_semantic")]
-fn semantic_matches<'a>(
-    query: &str,
-    records: &'a [SchemaRecord],
-    filters: search::Filters<'_>,
-    cli: &Cli,
-    session: &mut Option<crate::semantic::Session>,
-    schema_key: u64,
-    workload: crate::semantic::Workload,
-) -> Vec<Match<'a>> {
-    let session = session.get_or_insert_with(|| {
-        crate::semantic::Session::new(
-            records,
-            cli.model.as_deref(),
-            cli.refresh,
-            schema_key,
-            workload,
-        )
-    });
-    session
-        .rank(query, records, filters, cli.limit)
-        .into_iter()
-        .map(|(score, record)| Match {
-            record,
-            score: Some(score),
-        })
         .collect()
 }
 
-/// Merge the fuzzy and semantic rankings via Reciprocal Rank Fusion — precise
-/// name matches and meaning matches both surface, and a record strong in both
-/// rises to the top. Fuzzy is weighted a touch higher so an exact-name hit
-/// keeps the lead; scale-free, so the two score systems needn't be normalized.
-#[cfg(feature = "_semantic")]
-fn combine<'a>(fuzzy: Vec<Match<'a>>, semantic: Vec<Match<'a>>, limit: usize) -> Vec<Match<'a>> {
-    use std::collections::HashMap;
-    const K: f64 = 60.0;
-    // Key on the record's stable qualified path (unique per entity) rather than
-    // pointer identity, so fusion stays correct even if a ranker ever returned
-    // records not borrowed from the same slice.
-    let mut scored: HashMap<&str, (f64, &SchemaRecord)> = HashMap::new();
-    for (rank, m) in fuzzy.iter().enumerate() {
-        scored
-            .entry(m.record.path.as_str())
-            .or_insert((0.0, m.record))
-            .0 += 1.0 / (K + rank as f64 + 1.0);
-    }
-    for (rank, m) in semantic.iter().enumerate() {
-        scored
-            .entry(m.record.path.as_str())
-            .or_insert((0.0, m.record))
-            .0 += 0.7 / (K + rank as f64 + 1.0);
-    }
-    let mut merged: Vec<(f64, &SchemaRecord)> = scored.into_values().collect();
-    merged.sort_by(|a, b| b.0.total_cmp(&a.0));
-    merged.truncate(limit);
-    merged
-        .into_iter()
-        .map(|(score, record)| Match {
-            record,
-            score: Some(score),
-        })
-        .collect()
-}
+/// Flags that went with semantic search, each with why it can't be honoured.
+/// `--fuzzy` isn't here: it asked for what every query now gets, so it's
+/// dropped with a warning instead. Caught before clap, whose unknown-flag tip
+/// suggests `-- --fuzzy` — a search for the flag's own text that exits 0 —
+/// and not declared as hidden args, which clap still lists in completions.
+const REMOVED: [(&str, &str); 3] = [
+    (
+        "semantic",
+        "gqls ranks by name only now; search a word the name is likely to contain",
+    ),
+    (
+        "model",
+        "semantic search is gone, so there's no model to choose",
+    ),
+    (
+        "warm",
+        "semantic search is gone, so there's nothing to pre-build",
+    ),
+];
 
-/// Spawn a detached `gqls --warm <source>` so the schema's vectors embed in the
-/// background — the next run gets combined fuzzy+semantic results with no wait.
-/// Opt out with `GQLS_NO_AUTOWARM`. Best-effort; failures are ignored.
-#[cfg(feature = "_semantic")]
-fn spawn_background_warm(source: &str, headers: &[String]) -> bool {
-    if std::env::var_os("GQLS_NO_AUTOWARM").is_some() {
-        return false;
-    }
-    // Single-flight: a detached warm for this source may already be running.
-    // A short-lived lockfile keeps a burst of cold queries from spawning a herd
-    // that all embed the same schema and race the cache.
-    if !claim_warm_lock(source) {
-        // Someone else holds it, so a warm is running either way.
-        return true;
-    }
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--warm").arg(source);
-    for h in headers {
-        cmd.arg("--header").arg(h);
-    }
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
-}
-
-/// Best-effort single-flight guard for background warming: returns true (and
-/// stakes a claim) when no recent warm for `source` is in flight, false when one
-/// likely is. The lockfile self-expires by mtime, so a crashed warm can't wedge
-/// warming forever, and a failed warm won't be retried in a tight loop.
-#[cfg(feature = "_semantic")]
-fn claim_warm_lock(source: &str) -> bool {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::Duration;
-
-    const LOCK_TTL: Duration = Duration::from_secs(10 * 60);
-    // Lockfiles live in the system temp dir so the OS auto-reaps them.
-    let dir = crate::paths::temp_dir();
-    let mut h = DefaultHasher::new();
-    source.hash(&mut h);
-    let lock = dir.join(format!("warming-{:016x}.lock", h.finish()));
-    if let Ok(meta) = std::fs::metadata(&lock) {
-        if let Ok(modified) = meta.modified() {
-            if modified.elapsed().is_ok_and(|age| age < LOCK_TTL) {
-                return false; // a recent warm is presumably still running
-            }
+/// The process arguments with any removed flag dealt with: a failing one exits
+/// 2 saying why, and `--fuzzy` is dropped, reported by the returned `bool`.
+/// Anything after `--` is a query, however it's spelled.
+fn without_removed_flags() -> (Vec<String>, bool) {
+    let mut args: Vec<String> = std::env::args().collect();
+    let end = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    for arg in &args[1..end] {
+        let Some(name) = arg.strip_prefix("--").and_then(|a| a.split('=').next()) else {
+            continue;
+        };
+        if let Some((flag, why)) = REMOVED.iter().find(|(f, _)| *f == name) {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::UnknownArgument,
+                    format!("--{flag} was removed: {why}"),
+                )
+                .exit();
         }
     }
-    let _ = std::fs::create_dir_all(&dir);
-    std::fs::write(&lock, []).is_ok()
+    let fuzzy = args[..end].iter().any(|a| a == "--fuzzy");
+    let mut i = 0;
+    args.retain(|a| {
+        i += 1;
+        i > end || a != "--fuzzy"
+    });
+    (args, fuzzy)
 }
 
 /// Parse `-H "Name: Value"` strings into `(name, value)` pairs.
@@ -416,8 +256,12 @@ fn parse_headers(raw: &[String]) -> Result<Vec<(String, String)>> {
 
 pub fn run() -> Result<()> {
     let started = std::time::Instant::now();
-    let cli = Cli::parse();
+    let (args, fuzzy) = without_removed_flags();
+    let cli = Cli::parse_from(args);
     crate::logging::init(cli.verbose, cli.quiet);
+    if fuzzy {
+        crate::status!("--fuzzy does nothing now — every query is fuzzy; drop the flag");
+    }
     if cli.profile {
         crate::profile::enable();
     }
@@ -430,17 +274,7 @@ pub fn run() -> Result<()> {
     }
 
     if cli.clear_cache {
-        let introspect = crate::load::introspect::clear_cache();
-        let records = crate::load::record_cache::clear();
-        let discoveries = crate::load::discover_cache::clear();
-        #[cfg(feature = "_semantic")]
-        let vectors = crate::semantic::clear_cache();
-        #[cfg(not(feature = "_semantic"))]
-        let vectors = 0;
-        crate::status!(
-            "cleared {} cached file(s)",
-            introspect + records + discoveries + vectors
-        );
+        crate::status!("cleared {} cached file(s)", crate::paths::clear_cache());
         return Ok(());
     }
 
@@ -459,14 +293,10 @@ pub fn run() -> Result<()> {
         None => None,
     };
 
-    // The schema source. With `--warm` and no explicit source, the sole
-    // positional is the schema (there's no query to warm), so `gqls --warm
-    // schema.graphql` — and the background spawn — target the right file.
-    // `--returns` needs no QUERY of its own, so a lone positional beside it is
-    // the schema rather than a query — `gqls --returns Company schema.graphql`
-    // reads the way it looks. Same shape as the `--warm` rule.
-    // Queries arriving on stdin leave the sole positional nothing to be but the
-    // schema — the same shape as the `--warm` and `--returns` rules above. A
+    // The schema source. `--returns` needs no QUERY of its own, so a lone
+    // positional beside it is the schema rather than a query — `gqls --returns
+    // Company schema.graphql` reads the way it looks. Queries arriving on stdin
+    // leave the sole positional nothing to be but the schema, the same way. A
     // positional that doesn't look like a source stays a query, so an explicit
     // query still beats a pipe rather than being silently ignored.
     let piped = {
@@ -474,7 +304,7 @@ pub fn run() -> Result<()> {
         !std::io::stdin().is_terminal()
     };
     let (positional_query, positional_source) =
-        split_positionals(&cli.args, cli.warm || cli.returns.is_some() || piped);
+        split_positionals(&cli.args, cli.returns.is_some() || piped);
 
     // Which schema answered is only worth saying when nobody chose it — see
     // [`no_matches`]. Named the way `-v` names it: the walk starts at the cwd,
@@ -505,30 +335,10 @@ pub fn run() -> Result<()> {
         t_load.elapsed()
     );
 
-    // --warm: embed + cache the schema's vectors, then exit (no query needed).
-    // Also the primitive the background auto-warm spawns.
-    if cli.warm {
-        #[cfg(feature = "_semantic")]
-        {
-            let n = crate::semantic::warm(&records, cli.model.as_deref(), cli.refresh);
-            crate::status!("cached vectors for {n} record(s)");
-            return Ok(());
-        }
-        #[cfg(not(feature = "_semantic"))]
-        {
-            let _ = (&cli.model, cli.refresh);
-            anyhow::bail!(
-                "--warm needs a semantic build — install one with \
-                 `cargo install gqls-cli --features semantic` or \
-                 `brew install dpep/tools/gqls`"
-            );
-        }
-    }
-
     // No query and no pipe is an error, bailed on below — the positionals are
     // `num_args = 0..`, so nothing upstream requires one. With a pipe, every
-    // line is a query: the schema, the model and the vectors load once and
-    // answer all of them, which is the point of the batch form.
+    // line is a query: the schema loads once and answers all of them, which is
+    // the point of the batch form.
     let batch = positional_query.is_none() && cli.returns.is_none() && piped;
     // A kind the query led with, unless `-k` already said one.
     let (kind, positional_query) = match (explicit_kind, positional_query) {
@@ -577,16 +387,6 @@ pub fn run() -> Result<()> {
         );
     }
 
-    // Built on the first query that needs it, then reused: loading the model is
-    // the dominant cost of a semantic query, and paying it per line would undo
-    // the batch entirely. Same for the schema's cache identity — hashing every
-    // record's embedding text is ~10ms on a 10k-record schema, and it's the
-    // same answer for every query in the run.
-    #[cfg(feature = "_semantic")]
-    let mut session: Option<crate::semantic::Session> = None;
-    #[cfg(feature = "_semantic")]
-    let mut schema_key: Option<u64> = None;
-
     let mut answered = 0usize;
     for query in queries {
         let query = query?;
@@ -598,22 +398,19 @@ pub fn run() -> Result<()> {
 
         // A wildcard query (`User.*`) enumerates rather than searches: the pattern
         // does its own scoping and every match is exact, so the qualifier rewrites
-        // and the semantic combine below are both bypassed.
+        // below are bypassed.
         let pattern = search::glob::is_pattern(query);
         if pattern {
             crate::detail!("wildcard query — enumerating matches for {query:?}");
         }
 
         // `User name` — a two-word query whose first word exactly names a type —
-        // is the qualified form typed with a space. Rewrite it, but remember the
-        // loose intent: unlike the dot form, an exact hit here keeps the semantic
-        // combine on ("around this", not "exactly this").
+        // is the qualified form typed with a space.
         let spaced = (!pattern)
             .then(|| search::spaced_qualifier(query, &records))
             .flatten();
-        let loose = spaced.is_some();
         let query = spaced.as_deref().unwrap_or(query);
-        if loose {
+        if spaced.is_some() {
             crate::detail!("two-word query names a type — searching as {query:?}");
         }
 
@@ -676,110 +473,12 @@ pub fn run() -> Result<()> {
             return done;
         }
 
-        // `total` is the fuzzy match count before the display limit, so the footer
-        // can say how much a raised -l would reveal. Semantic-only mode has no
-        // meaningful total (cosine ranks every record), so it never shows one.
+        // `total` is the match count before the display limit, so the footer
+        // can say how much a raised -l would reveal.
         let t_rank = std::time::Instant::now();
-        let (mut matches, total): (Vec<Match>, usize) = if cli.fuzzy {
-            let (mut fuzzy, _) = fuzzy_matches(query, &records, filters);
-            let total = fuzzy.len();
-            fuzzy.truncate(cli.limit);
-            (fuzzy, total)
-        } else if cli.semantic {
-            #[cfg(feature = "_semantic")]
-            {
-                if pattern {
-                    crate::status!(
-                        "--semantic ranks by meaning and ignores wildcards in {query:?}"
-                    );
-                }
-                let key = *schema_key.get_or_insert_with(|| crate::semantic::schema_key(&records));
-                // A cold cache means this session embeds the whole schema
-                // before it answers anything, and that fill wants the cores
-                // for rayon rather than for one model.
-                let workload =
-                    match !cli.refresh && crate::semantic::is_cached(key, cli.model.as_deref()) {
-                        true => crate::semantic::Workload::Query,
-                        false => crate::semantic::Workload::Bulk,
-                    };
-                let matches =
-                    semantic_matches(query, &records, filters, &cli, &mut session, key, workload);
-                let total = matches.len();
-                (matches, total)
-            }
-            #[cfg(not(feature = "_semantic"))]
-            {
-                let _ = (&cli.model, cli.refresh);
-                anyhow::bail!(
-                    "this build has no semantic search — install it with \
-                 `cargo install gqls-cli --features semantic` or `brew install dpep/tools/gqls`"
-                );
-            }
-        } else {
-            // Default: combine fuzzy + semantic when the cache is warm; when cold,
-            // return fuzzy now and warm the vectors in the background for next time.
-            // A strong name hit (exact, or the leaf whole at a word boundary —
-            // `name` → `lastName`) skips the combine outright: the user typed a
-            // word that exists, so semantic ranking would only append lookalike
-            // filler below it (and cost the model load).
-            let (mut fuzzy, named) = fuzzy_matches(query, &records, filters);
-            let total = fuzzy.len();
-            fuzzy.truncate(cli.limit);
-            #[cfg(feature = "_semantic")]
-            {
-                // A wildcard enumerates exact matches, and a strong name hit means
-                // fuzzy already found the word typed — neither wants meaning-based
-                // lookalikes appended (nor the model load they cost).
-                let skip = if pattern {
-                    Some("wildcard enumeration")
-                } else if named && !loose {
-                    Some("strong name match")
-                } else {
-                    None
-                };
-                if let Some(why) = skip {
-                    crate::detail!("{why} — semantic ranking skipped (--semantic to force)");
-                    (fuzzy, total)
-                } else if crate::semantic::is_cached(
-                    *schema_key.get_or_insert_with(|| crate::semantic::schema_key(&records)),
-                    cli.model.as_deref(),
-                ) {
-                    let key = schema_key.expect("computed by the check above");
-                    // Warm by the check above, so this session only answers
-                    // queries — it can have the cores.
-                    let semantic = semantic_matches(
-                        query,
-                        &records,
-                        filters,
-                        &cli,
-                        &mut session,
-                        key,
-                        crate::semantic::Workload::Query,
-                    );
-                    (combine(fuzzy, semantic, cli.limit), total)
-                } else {
-                    // Only promise the index when one is actually being built:
-                    // opted out with GQLS_NO_AUTOWARM, or unable to spawn, the
-                    // old message repeated the same false claim every run.
-                    match spawn_background_warm(&source, &cli.header) {
-                        true => crate::status!(
-                            "building the semantic index in the background; next run ranks by \
-                             meaning (--semantic to wait, --fuzzy to skip)"
-                        ),
-                        false => crate::detail!(
-                            "no semantic index, and none being built — ranking by name \
-                             (--semantic to build one now)"
-                        ),
-                    }
-                    (fuzzy, total)
-                }
-            }
-            #[cfg(not(feature = "_semantic"))]
-            {
-                let _ = (&cli.model, cli.refresh, named, loose);
-                (fuzzy, total)
-            }
-        };
+        let mut matches = fuzzy_matches(query, &records, filters);
+        let total = matches.len();
+        matches.truncate(cli.limit);
 
         crate::detail!("ranked in {:.1?}", t_rank.elapsed());
         let out_span = crate::profile::span("output");
@@ -828,45 +527,20 @@ pub fn run() -> Result<()> {
         // gqls's own wildcard, not anything the caller typed — so that case
         // reports the filter they actually gave.
         if total == 0 && explained.is_none() {
-            // `total` counts what matched the *name*; the combine also prints
-            // rows no name matched, ranked by meaning alone. Announcing "no
-            // matches" over those left stderr and stdout contradicting each
-            // other — an agent reading one concluded the schema lacked the
-            // thing, an agent reading the other took two unrelated fields for
-            // the answer. Whether there are rows is what separates the cases.
-            match matches.is_empty() {
-                true => crate::status!(
-                    "{}",
-                    no_matches(
-                        query,
-                        kind,
-                        returns,
-                        filters,
-                        &records,
-                        discovered_source.as_deref(),
-                    )
-                ),
-                false => crate::status!(
-                    "nothing named {query:?} — the {} row{} below are the closest by meaning",
-                    matches.len(),
-                    if matches.len() == 1 { "" } else { "s" }
-                ),
-            }
+            crate::status!(
+                "{}",
+                no_matches(
+                    query,
+                    kind,
+                    returns,
+                    filters,
+                    &records,
+                    discovered_source.as_deref(),
+                )
+            );
         }
         let explained = explained.map(|(_, m)| m);
-        // Only a session that actually ranked these matches can degrade them:
-        // without one the rows are fuzzy, which is unaffected by the model.
-        #[cfg(feature = "_semantic")]
-        let degraded = session.as_ref().is_some_and(|s| s.degraded());
-        #[cfg(not(feature = "_semantic"))]
-        let degraded = false;
-        output.write_matches(
-            &matches,
-            batch.then_some(query),
-            explained,
-            &records,
-            degraded,
-        )?;
+        output.write_matches(&matches, batch.then_some(query), explained, &records)?;
         drop(out_span);
         // Status, not a -v diagnostic: matches were dropped, and a list that
         // simply stops at -l reads as the whole answer. An explanation isn't a
@@ -937,11 +611,6 @@ fn read_queries() -> impl Iterator<Item = Result<String>> {
         })
 }
 
-/// `skip_serializing_if` for a flag that means something only when set.
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 impl Output {
     /// `label` is the originating query, set only in batch mode: with many
     /// queries answered on one stream a consumer can't otherwise tell whose
@@ -953,7 +622,6 @@ impl Output {
         label: Option<&str>,
         explained: Option<search::NameMatch>,
         records: &[SchemaRecord],
-        degraded: bool,
     ) -> Result<()> {
         #[derive(Serialize)]
         struct Row<'a> {
@@ -976,13 +644,6 @@ impl Output {
             /// fields, since to a consumer they're all just what gqls knows.
             #[serde(flatten)]
             extras: Extras<'a>,
-            /// Present (and true) only when semantic ranking fell back to the
-            /// hash embedder. Stderr says so, which serves a human and nothing
-            /// else — most of this tool's JSON is read by an agent that never
-            /// sees it. Omitted on the good path, so the usual shape is
-            /// unchanged.
-            #[serde(skip_serializing_if = "is_false")]
-            degraded: bool,
         }
         let rows = || {
             matches.iter().map(|m| Row {
@@ -997,14 +658,11 @@ impl Output {
                     Some(_) => render::extras(m.record, records),
                     None => Extras::default(),
                 },
-                degraded,
             })
         };
         // A query that matched nothing would otherwise vanish from the stream,
         // leaving the consumer unable to tell it was even asked — zero rows on
-        // a row-per-line stream is zero bytes. So the miss is a row of its own,
-        // carrying the same `degraded` a real row would: a caller who gets
-        // nothing back most needs to know the ranking was the weak one.
+        // a row-per-line stream is zero bytes. So the miss is a row of its own.
         //
         // Only here. `-j` emits one array, and an empty one is already a
         // complete answer; a batch can't reach it at all, since concatenated
@@ -1013,13 +671,10 @@ impl Output {
         if matches.is_empty() && matches!(self, Output::Ndjson) {
             // `query` only in a batch, matching the rows, which carry it only
             // there — with one query there's nothing to tell apart.
-            let mut miss = match label {
+            let miss = match label {
                 Some(q) => serde_json::json!({ "query": q, "status": "no_matches" }),
                 None => serde_json::json!({ "status": "no_matches" }),
             };
-            if degraded {
-                miss["degraded"] = true.into();
-            }
             println!("{}", serde_json::to_string(&miss)?);
             return Ok(());
         }
@@ -1056,8 +711,11 @@ fn explained_match<'a>(
     query: &str,
     records: impl Iterator<Item = &'a SchemaRecord>,
 ) -> Option<(&'a SchemaRecord, search::NameMatch)> {
+    let records: Vec<&SchemaRecord> = records.collect();
+    let names = schema_names(records.iter().copied());
     let named: Vec<&SchemaRecord> = records
-        .filter(|r| search::names_the_record(query, r).is_some())
+        .into_iter()
+        .filter(|r| naming(query, r, &names).is_some())
         .collect();
     let cased: Vec<&SchemaRecord> = named
         .iter()
@@ -1066,11 +724,33 @@ fn explained_match<'a>(
         .collect();
     let candidates = if cased.is_empty() { named } else { cased };
     match candidates.as_slice() {
-        [only] => search::names_the_record(query, only).map(|m| (*only, m)),
+        [only] => naming(query, only, &names).map(|m| (*only, m)),
         _ => None,
     }
 }
 
+/// How `query` names `record`, where a correction only counts when the part
+/// it corrected isn't itself a word of the schema's `names` — `star` sits whole
+/// in `addStar`, so it names nothing rather than `start`. `Usr.email` still
+/// corrects: `email` is a word, but `Usr` is what was misspelled.
+fn naming(query: &str, record: &SchemaRecord, names: &[&str]) -> Option<search::NameMatch> {
+    let m = search::names_the_record(query, record)?;
+    let (leaf, qualifier) = search::score::parse_qualified(query);
+    let fixed = |typed: &str, actual: Option<&str>| {
+        !actual.is_some_and(|a| a.eq_ignore_ascii_case(typed))
+            && search::is_a_schema_word(typed, names)
+    };
+    let word_corrected = fixed(leaf, Some(&record.name))
+        || qualifier.is_some_and(|q| fixed(q, record.parent.as_deref()));
+    (!word_corrected).then_some(m)
+}
+
+/// Every name and parent in `records`, for [`naming`]'s word check.
+fn schema_names<'a>(records: impl Iterator<Item = &'a SchemaRecord>) -> Vec<&'a str> {
+    records
+        .flat_map(|r| std::iter::once(r.name.as_str()).chain(r.parent.as_deref()))
+        .collect()
+}
 /// Why an empty answer was empty.
 ///
 /// A miss is about the filters as much as the query. "nothing returns Issue"
@@ -1131,7 +811,7 @@ fn no_matches(
         0 => format!("{subject} with {listed}"),
         n => format!(
             "{subject} with {listed} — {n} match{} without {}",
-            if n == 1 { "es" } else { "" },
+            if n == 1 { "" } else { "es" },
             if unnamed.len() == 1 { "it" } else { "them" },
         ),
     }
@@ -1173,9 +853,10 @@ fn one_named_record<'a>(
         anyhow::bail!("no schema entity matches {query:?} to {action}");
     };
     let mut also = Vec::new();
+    let names = schema_names(hits.iter().map(|h| h.record));
     // Both messages are part of the answer rather than commentary on it, so
     // they print unprefixed, above what they introduce.
-    match search::names_the_record(query, top.record) {
+    match naming(query, top.record, &names) {
         Some(search::NameMatch::Exact) => {
             also = named_peers(query, hits, top.record);
             // A caveat on an answer still being given, so it goes where the
@@ -1209,7 +890,7 @@ fn one_named_record<'a>(
                 .collect();
             // A candidate list by construction: this path exists because the
             // query did *not* name a record, so there's nothing to explain.
-            output.write_matches(&matches, None, None, &[], false)?;
+            output.write_matches(&matches, None, None, &[])?;
             return Err(Handled.into());
         }
     }
@@ -1437,7 +1118,7 @@ fn run_resolve(
 ///
 /// `lone_is_source` decides the one genuinely ambiguous case: a single
 /// positional that looks like a schema. It's the source when something else
-/// supplies the query (`--warm`, `--returns`, a pipe) and the query otherwise,
+/// supplies the query (`--returns`, a pipe) and the query otherwise,
 /// because `gqls schema.graphql` with nothing else is a search for that text.
 fn split_positionals(args: &[String], lone_is_source: bool) -> (Option<String>, Option<String>) {
     let source_at = args.iter().rposition(|a| looks_like_source(a));
@@ -1466,8 +1147,8 @@ fn split_positionals(args: &[String], lone_is_source: bool) -> (Option<String>, 
 /// only when something follows: `gqls query` stays a search for the word.
 ///
 /// This does collide with prose. `gqls input validation` reads `input` as a
-/// kind, which is not what a semantic search of that phrase would mean — so the
-/// caller says on stderr that it did, and `-k` set explicitly wins outright.
+/// kind, which is not what the phrase means — so the caller says on stderr
+/// that it did, and `-k` set explicitly wins outright.
 fn leading_kind(query: &str) -> Option<(Kind, &str)> {
     let (first, rest) = query.split_once(char::is_whitespace)?;
     let rest = rest.trim_start();

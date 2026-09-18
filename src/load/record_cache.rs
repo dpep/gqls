@@ -1,12 +1,11 @@
 //! On-disk cache of parsed schema records.
 //!
-//! Parsing dominates the fuzzy path on a large schema (~28ms of a ~45ms query
-//! at 48k records for SDL; more for introspection JSON), and the records
-//! depend only on the source bytes — SDL text or an introspection response —
-//! so cache them keyed by a hash of those bytes. Same idea and same house
-//! format rules as the vector cache: a small length-prefixed binary layout,
-//! dependency-free. A miss (schema edited, format bumped) simply re-parses
-//! and overwrites.
+//! Parsing dominates a query on a large schema (~28ms of a ~45ms query at 48k
+//! records for SDL; more for introspection JSON), and the records depend only
+//! on the source bytes — SDL text or an introspection response — so cache them
+//! keyed by a hash of those bytes, in a small length-prefixed binary layout,
+//! dependency-free. A miss (schema edited, format bumped) simply re-parses and
+//! overwrites.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -27,9 +26,9 @@ const MAGIC: u32 = 0x4751_5234; // "GQR4"
 const CHUNK: usize = 4096;
 
 /// Keep at most this many cache files (LRU by mtime, pruned on write). Small
-/// on purpose: unlike the vector cache there's no consolidation here, so an
-/// actively edited schema leaves a full copy per edit, and a miss only costs a
-/// re-parse (tens of ms). Hoarding old states buys nothing worth the disk.
+/// on purpose: an actively edited schema leaves a full copy per edit, and a
+/// miss only costs a re-parse (tens of ms), so hoarding old states buys nothing
+/// worth the disk.
 const MAX_FILES: usize = 8;
 
 /// Cached records for this source (SDL text or introspection JSON bytes), or
@@ -76,30 +75,10 @@ pub(crate) fn store(source: &[u8], records: &[SchemaRecord]) {
     prune(MAX_FILES);
 }
 
-/// Delete every record cache file; returns how many were removed.
-pub fn clear() -> usize {
-    let Some(dir) = crate::paths::cache_dir() else {
-        return 0;
-    };
-    let mut removed = 0;
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            if e.path().extension().is_some_and(|x| x == "rcds")
-                && std::fs::remove_file(e.path()).is_ok()
-            {
-                removed += 1;
-            }
-        }
-    }
-    removed
-}
-
 fn path(source: &[u8]) -> Option<PathBuf> {
-    // `DefaultHasher` on purpose, where the vector cache deliberately avoids it:
-    // its algorithm is unspecified across Rust releases, so a toolchain bump can
-    // silently rename every file here. That matters there — a lost vector file
-    // costs minutes of inference — and not here, where a miss costs a re-parse.
-    // The hash is a filename, not a format. Don't "fix" this for symmetry.
+    // `DefaultHasher` is unspecified across Rust releases, so a toolchain bump
+    // can silently rename every file here. Fine: a miss costs a re-parse, and
+    // the hash is a filename, not a format.
     let mut h = DefaultHasher::new();
     MAGIC.hash(&mut h);
     // Keyed by the crate version as well as the source, because the records

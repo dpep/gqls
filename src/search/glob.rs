@@ -65,7 +65,7 @@ impl Pattern {
 ///
 /// Patterns are single tokens: a query containing whitespace is prose, so a
 /// natural-language phrase ending in `?` ("how do I cancel a subscription?")
-/// stays a semantic query instead of becoming a glob that matches nothing.
+/// stays a search instead of becoming a glob that matches nothing.
 pub(crate) fn is_pattern(query: &str) -> bool {
     if query.split_whitespace().count() != 1 {
         return false;

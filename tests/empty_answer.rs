@@ -10,12 +10,12 @@ use std::process::Command;
 
 const SCHEMA: &str = "examples/schema.graphql";
 
-/// `(stdout, stderr)` for a fuzzy run against the bundled schema.
+/// `(stdout, stderr)` for a run against the bundled schema.
 fn run_both(args: &[&str]) -> (String, String) {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
         .args(args)
-        .args(["--fuzzy", SCHEMA])
+        .arg(SCHEMA)
         .output()
         .expect("gqls should be runnable");
     (
@@ -33,7 +33,7 @@ fn run_against(schema: &str, args: &[&str]) -> String {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
         .args(args)
-        .args(["--fuzzy", "--refresh", schema])
+        .args(["--refresh", schema])
         .output()
         .expect("gqls should be runnable");
     String::from_utf8(out.stderr).expect("stderr should be utf-8")
@@ -49,8 +49,9 @@ fn a_miss_names_the_filter_that_emptied_it() {
 
     let stderr = run(&["--returns", "Post", "-k", "mutation"]);
     assert!(stderr.contains("-k mutation"), "{stderr}");
+    let noun = if without == 1 { "match" } else { "matches" };
     assert!(
-        stderr.contains(&format!("{without} match without it")),
+        stderr.contains(&format!("{without} {noun} without it")),
         "should report what dropping the filter finds: {stderr}"
     );
 }
@@ -61,53 +62,14 @@ fn a_miss_with_nothing_to_relax_stays_a_plain_no() {
     assert_eq!(stderr, "gqls: no matches for \"zzzz\"\n");
 }
 
-/// The combine can print rows no *name* matched, and the miss message was
-/// decided by the fuzzy count alone — so stderr said "no matches" over rows on
-/// stdout, and an agent reading one concluded the opposite of an agent reading
-/// the other.
-///
-/// `#[ignore]` because it needs the real embedding model, like the live-endpoint
-/// tests need the network: the hermetic hash fallback can't reproduce it, since
-/// its rows never clear the weak-tail cut when fuzzy has missed. Run it when
-/// touching the combine or the miss path:
-///
-///     cargo test --test empty_answer -- --ignored
-#[test]
-#[cfg(feature = "_semantic")]
-#[ignore = "needs the real embedding model; run with --ignored"]
-fn rows_ranked_by_meaning_are_not_announced_as_no_matches() {
-    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
-    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
-        // A name no field carries, inside a type that has fields: fuzzy finds
-        // nothing, the semantic half still ranks.
-        .args(["Post", "role", SCHEMA])
-        .output()
-        .expect("gqls should be runnable");
-    let stdout = String::from_utf8(out.stdout).expect("stdout should be utf-8");
-    let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
-
-    assert!(
-        stdout.lines().any(|l| !l.trim().is_empty()),
-        "the combine should have ranked something — without rows there is \
-         nothing to contradict: {stderr}"
-    );
-    assert!(
-        !stderr.contains("no matches"),
-        "stderr claimed nothing matched while stdout carried rows: {stderr}"
-    );
-    // And it has to say what the rows below actually are, not just stop lying.
-    assert!(stderr.contains("closest by meaning"), "{stderr}");
-}
-
 #[test]
 fn a_lone_ndjson_miss_is_a_row_rather_than_silence() {
     // Zero rows on a row-per-line stream is zero bytes, so a single `-J` query
-    // that matched nothing was indistinguishable from one that never ran — and
-    // the `degraded` flag that says *why* had nowhere to ride. A batch already
-    // got the sentinel; the lone query is the same problem.
+    // that matched nothing was indistinguishable from one that never ran. A
+    // batch already got the sentinel; the lone query is the same problem.
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
-        .args(["zzzz", "--fuzzy", SCHEMA, "-J"])
+        .args(["zzzz", SCHEMA, "-J"])
         .output()
         .expect("gqls should be runnable");
     let stdout = String::from_utf8(out.stdout).expect("stdout should be utf-8");
@@ -121,7 +83,7 @@ fn a_lone_ndjson_miss_is_a_row_rather_than_silence() {
     // `-j` says it with an empty array, which is already a whole answer — so
     // that shape stays exactly as it was.
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
-        .args(["zzzz", "--fuzzy", SCHEMA, "-j"])
+        .args(["zzzz", SCHEMA, "-j"])
         .output()
         .expect("gqls should be runnable");
     assert_eq!(
@@ -146,7 +108,7 @@ fn a_miss_names_a_schema_nobody_chose() {
     let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
         // --refresh so a remembered answer from an earlier run can't stand in
         // for the walk this is about.
-        .args(["zzzz", "--fuzzy", "--refresh"])
+        .args(["zzzz", "--refresh"])
         .current_dir(&dir)
         .output()
         .expect("gqls should be runnable");

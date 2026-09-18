@@ -197,9 +197,9 @@ fn store_response(path: &Path, bytes: &[u8]) {
 /// budget. Age alone stopped bounding this when credentials entered the key: an
 /// endpoint queried with a rotating token — CI with short-lived credentials —
 /// now leaves one megabytes-sized file per token until they age out a week
-/// later. Same two-limit shape as the vector cache: a count can't bound disk
-/// when file size follows schema size. The newest always survives, since
-/// evicting what was just written guarantees an immediate refetch.
+/// later. Two limits because a count can't bound disk when file size follows
+/// schema size. The newest always survives, since evicting what was just
+/// written guarantees an immediate refetch.
 fn prune(dir: &Path, keep: usize, max_bytes: u64) {
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = match std::fs::read_dir(dir) {
         Ok(rd) => rd
@@ -333,18 +333,6 @@ fn is_localhost(url: &str) -> bool {
         || host == "::1"
         || host == "0.0.0.0"
         || host.starts_with("127.")
-}
-
-/// Delete all cached introspection responses; returns how many were removed.
-pub(crate) fn clear_cache() -> usize {
-    let Some(dir) = cache_dir() else { return 0 };
-    let Ok(rd) = std::fs::read_dir(&dir) else {
-        return 0;
-    };
-    rd.flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter(|e| std::fs::remove_file(e.path()).is_ok())
-        .count()
 }
 
 fn from_introspection(schema: &Value) -> Result<Vec<SchemaRecord>> {

@@ -58,9 +58,7 @@ pub(crate) fn parent_filter<'a>(query: &str, records: &'a [SchemaRecord]) -> Opt
 }
 
 /// Rewrite a two-word query whose first word exactly names a schema type into
-/// the qualified form: `User name` → `User.name`. The space (vs the dot) is
-/// kept as an intent signal by the caller — it means "around this", so the
-/// semantic combine stays on where a dot-typed exact hit would skip it.
+/// the qualified form: `User name` → `User.name`.
 /// `None` for anything else (phrases, dots, no matching type).
 pub(crate) fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<String> {
     if query.contains('.') {
@@ -75,28 +73,6 @@ pub(crate) fn spaced_qualifier(query: &str, records: &[SchemaRecord]) -> Option<
         .filter_map(|r| r.parent.as_deref())
         .any(|p| p.eq_ignore_ascii_case(first))
         .then(|| format!("{first}.{second}"))
-}
-
-/// Whether some hit *names* the query's leaf: equal to it, or containing it
-/// whole at a camelCase/underscore word boundary (`name` → `lastName`,
-/// `User.name` → `User.fullName`). That's the scorer's strongest tier short
-/// of exact — the signal that the user typed a word that really exists, so
-/// meaning-based ranking would only append lookalike filler below it.
-/// (GraphQL names are ASCII by spec, so byte and char indices agree.)
-pub(crate) fn named_hit(query: &str, hits: &[Hit]) -> bool {
-    let (leaf, _) = score::parse_qualified(query);
-    let leaf = leaf.to_ascii_lowercase();
-    if leaf.is_empty() {
-        return false;
-    }
-    hits.iter().any(|h| {
-        let lower = h.record.name.to_ascii_lowercase();
-        let chars: Vec<char> = h.record.name.chars().collect();
-        let boundary = score::boundaries(&chars);
-        lower
-            .match_indices(&leaf)
-            .any(|(i, _)| boundary.get(i).copied().unwrap_or(false))
-    })
 }
 
 /// How closely a query names a record, for the commands that act on one.
@@ -148,6 +124,27 @@ pub(crate) fn names_the_record_exactly(query: &str, record: &SchemaRecord) -> bo
             Some(q) => record.parent.as_deref() == Some(q),
             None => true,
         }
+}
+
+/// Whether `word` is already a whole word of some name — `star` in `addStar`,
+/// bounded on both sides. A spelling that is one isn't a misspelling, so it's
+/// never corrected into a lookalike (`star` → `start`).
+/// (GraphQL names are ASCII by spec, so byte and char indices agree.)
+pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
+    let leaf = word.to_ascii_lowercase();
+    if leaf.is_empty() {
+        return false;
+    }
+    names.iter().any(|name| {
+        let chars: Vec<char> = name.chars().collect();
+        let boundary = score::boundaries(&chars);
+        name.to_ascii_lowercase()
+            .match_indices(&leaf)
+            .any(|(i, _)| {
+                let end = i + leaf.len();
+                boundary[i] && (end == chars.len() || boundary[end])
+            })
+    })
 }
 
 /// Case-insensitively equal, or within the scorer's typo budget of it.
@@ -554,39 +551,6 @@ mod tests {
         assert_eq!(spaced_qualifier("cancel a subscription", &records), None);
         assert_eq!(spaced_qualifier("User.name", &records), None);
         assert_eq!(spaced_qualifier("employee summary", &records), None);
-    }
-
-    #[test]
-    fn named_hit_accepts_exact_and_boundary_words() {
-        let records = vec![rec("name", Some("User"), Kind::Field)];
-        let hits = search("User.name", &records, Default::default());
-        assert!(named_hit("User.name", &hits));
-        assert!(named_hit("user.NAME", &hits));
-
-        // the leaf appearing whole at a word boundary also counts —
-        // `User.name` against a schema with only lastName/fullName
-        let variants = vec![
-            rec("lastName", Some("User"), Kind::Field),
-            rec("fullName", Some("User"), Kind::Field),
-        ];
-        let hits = search(
-            "User.name",
-            &variants,
-            Filters {
-                parent: Some("User"),
-                ..Default::default()
-            },
-        );
-        assert!(named_hit("User.name", &hits));
-    }
-
-    #[test]
-    fn named_hit_rejects_mid_word_and_scattered_matches() {
-        let records = vec![rec("accountant", Some("User"), Kind::Field)];
-        // `count` sits mid-word in accountant — a fuzzy match, not a naming
-        let hits = search("count", &records, Default::default());
-        assert!(!hits.is_empty());
-        assert!(!named_hit("count", &hits));
     }
 
     #[test]

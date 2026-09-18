@@ -1,12 +1,12 @@
 ---
 name: gqls
-description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or finding a record by meaning rather than name ("cancel a subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and sees through camelCase/snake_case and typos (spelling, not vocabulary: a synonym or a dropped word needs a phrase). Not for raw text search.
+description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or a phrase of the words a name is built from ("cancel subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and sees through camelCase/snake_case and typos (spelling, not vocabulary: a dropped word needs a phrase, a synonym needs you to try the other word). Not for raw text search.
 ---
 
 # gqls — search a GraphQL schema
 
-`gqls` is a GraphQL schema *navigation* engine: give it a name or a natural-
-language phrase and it returns the ranked match — a type, field, argument, enum
+`gqls` is a GraphQL schema *navigation* engine: give it a name, a misspelling
+or a few words and it returns the ranked match — a type, field, argument, enum
 value, or directive — not every textual hit. Reach for it whenever the question
 is "where is this in the schema?" Use `grep`/`rg` for raw text; gqls for the
 schema.
@@ -56,11 +56,11 @@ type, `args` the argument signatures, `description` the schema doc when the
 schema has one — usually enough to confirm a match without opening the schema.
 
 **`score` orders results within one query and nothing else. Never threshold on
-it.** Three different rankers write that key and they don't share a scale: a
-fuzzy match is the fraction of a perfect one times 1000, so 1000 means the query
-*is* the name (plus up to 300 more when a `Type.` qualifier names the right
-parent); a `--semantic` run reports a cosine in 0..1; and the default combine of
-the two reports a rank-fusion score around 0.03. It is `null` when a record was
+it.** For a one-word query it is the fraction of a perfect name match times
+1000, plus up to 300 when a `Type.` qualifier names the right parent. A phrase
+sums its words' scores (`close issue` puts `Mutation.closeIssue` at 1622), and a
+query that matched only an argument name scores the argument (`followRenames`
+gives `Query.repository` 1000) — so 1000 doesn't mean "the name". It is `null` when a record was
 explained without ranking having scored it — the key is always present. Read the
 order, not the number.
 
@@ -68,14 +68,13 @@ That scale changed in 0.24.0, and the old one topped out at 1060. If you are
 resuming work that compared scores against a constant, the constant is wrong.
 
 Status lines go to stderr, so `-j`/`--json` and `-J`/`--ndjson` pipe cleanly
-into `jq`. A miss means it: semantic results below a relevance floor are
-dropped, so a question the schema can't answer returns nothing rather than its
-closest noise. The message says what made it a miss — the filters in play and
-what dropping them would find (`nothing returns Issue with -k query — 43 match
-without it`), and the schema when gqls discovered one rather than being handed
-it (`no matches for "country" in examples/schema.graphql`). Read that last part
-before retrying: a miss against a schema you didn't choose is often the wrong
-schema, not an absent field.
+into `jq`. A miss means it: nothing in the schema matched, and gqls doesn't pad
+an empty answer with its closest noise. The message says what made it a miss —
+the filters in play and what dropping them would find (`nothing returns Issue
+with -k query — 43 matches without it`), and the schema when gqls discovered one
+rather than being handed it (`no matches for "country" in
+examples/schema.graphql`). Read that last part before retrying: a miss against
+a schema you didn't choose is often the wrong schema, not an absent field.
 
 **Exit codes say which kind of nothing you got.** `0` means gqls answered, and
 an empty result is an answer — a miss exits `0`, so don't read a zero exit as
@@ -161,8 +160,8 @@ form.
   name, not a mangled one: `currentUser` finds nothing when the field is `me`,
   and `updateAddress` misses `updateUserAddress` once an unrelated
   `UPDATE_ADDRESS` outranks it. When you're guessing at a name rather than
-  quoting one the user gave you, search the word you're sure of (`address`) or
-  write a phrase, which is what turns semantic ranking on.
+  quoting one the user gave you, search the word you're sure of (`address`), or
+  try the synonyms yourself — gqls won't.
 - Qualified: `gqls User.email` — when `User` names a schema type (any case,
   misspellings snap to the unique closest type), results are hard-filtered to
   that type's members; otherwise it falls back to fuzzy-matching the whole
@@ -171,19 +170,14 @@ form.
 - Two bare words become that qualified form when the first names a type, and
   the rewrite has **no fallback**: `gqls Post role` says
   `no matches for "Post.role"` on stderr, though `gqls role` alone finds four
-  records. It does not stop there — semantic ranking still answers within the
-  type filter, so stdout carries `Post.id` and `Post.author`, neither of which
-  is the field you asked for. **Check stderr before trusting these rows**: a
-  `no matches` line above a non-empty stdout means everything below it is
-  meaning-based filler. Drop the type word and retry. Quoting doesn't help.
+  records. Drop the type word and retry. Quoting doesn't help.
 - Wildcard: `gqls User.` lists every field on User — a trailing dot is
   shorthand for `.*` and needs no quoting, so prefer it. The general forms
   are `gqls '*.email'` (that field on every type), `gqls 'get*'` (names
   starting with "get"), `gqls 'User.?d'` (`?` = one character), and
   `gqls 'User.{first,last}Name'` (alternatives) — quote those, since the
   shell would expand `*`/`?`/`{}` first. `*`/`?` span `.`, patterns are
-  anchored, and semantic ranking is skipped: this enumerates, it doesn't
-  search.
+  anchored: this enumerates, it doesn't search.
 - Argument name: `gqls followRenames` finds the field that *takes* that
   argument — an argument is not a record of its own, so the field is the
   answer, and naming it then shows what the argument is for. It's a second
@@ -222,27 +216,11 @@ well as the URL, so changing a token fetches a fresh schema rather than
 replaying the one the previous credentials got — a cache hit is never evidence
 that the token you just passed works.
 
-## Semantic search (automatic)
+## Phrases
 
-gqls combines fuzzy and semantic ranking by default — meaning-based matches
-surface alongside name matches, so "what does X" phrases just work, no flag
-needed. A strong name match — exact, or the word whole at a boundary (`name`
-→ `lastName`) — skips the semantic combine (fuzzy found what you typed;
-lookalike fields would just pad the list) — `--semantic` forces it back on.
-So a query that names a real field or type never touches the semantic path.
-That's the right answer, but it means semantic ranking only shows up when you
-write a phrase, and `-v` is what tells you it was skipped.
-The space form `'User name'` is the loose variant of `User.name`: same type
-filter, but semantic stays on so nearby fields (`lastName`) surface too.
-Fuzzy matches a phrase word by word (noise words dropped, best coverage
-wins), so multi-word queries still return something when the semantic index
-is cold or the build is fuzzy-only:
-
-```sh
-gqls 'cancel a subscription' <source>     # combined fuzzy + semantic
-gqls 'delete a repository' --semantic      # force semantic-only
-gqls user --fuzzy                          # force fuzzy-only (skip semantic)
-```
+A multi-word query is matched word by word: noise words (`a`, `the`, `of`, …)
+are dropped, and the records covering the most words win outright —
+`cancelSubscription` beats the many that merely echo `subscription`.
 
 **Write the phrase as search terms, not as a question.** Noise words are dropped
 before scoring, but everything else you type is a word some record can cover, so
@@ -250,32 +228,14 @@ a full sentence pulls the ranking toward whatever echoes its incidentals:
 `user credit score` finds the field that `where do we expose a users credit
 score` buries. Trim a user's question to its content words before passing it on.
 
-Semantic ranking uses a local model (all-MiniLM-L6-v2, ONNX). The first time
-gqls sees a schema it returns fuzzy results immediately and embeds the vectors
-in the background, so the next run is combined and instant; `gqls --warm
-<source>` pre-embeds up front. That is minutes on a large schema, and how many
-depends on the machine and the build, so don't promise the user a duration —
-gqls prints its own estimate from the rate the run is achieving
-(`embedded 8076/11217 (~41s left)`), to a pipe every 15 seconds. Quote that line
-rather than guessing. Editing the schema re-embeds only the records that
-changed, so a schema under active development stays cheap. It ships in the
-default `cargo install` and the Homebrew build (a `--no-default-features` build
-is fuzzy-only).
-
-If the model can't be loaded, gqls falls back to a hash embedder and every
-`--json`/`--ndjson` row carries **`degraded: true`** (the key is absent
-otherwise). Those results are much weaker than they look. Say so rather than
-reporting them as findings.
-
 ## Many queries at once
 
 **If you have more than one question about a schema, batch them.** Pipe the
-queries on stdin, one per line, and a single run answers them all — the schema,
-the embedding model and the vectors load once instead of once per query. Against
-GitHub's 11,217-record schema, 20 meaning-based queries take 2.7s one at a time
-and 0.7s batched: **about 4x**, and it is the largest single lever you have over
-how long a schema investigation takes. Gather the questions first and ask them
-together, rather than running gqls once per thought.
+queries on stdin, one per line, and a single run answers them all — the schema
+loads once instead of once per query. Against GitHub's 11,496-record schema, 20
+queries take 0.39s one at a time and 0.18s batched: **about 2x**. Gather the
+questions first and ask them together, rather than running gqls once per
+thought.
 
 ```sh
 printf 'cancel a subscription\ndispute a transaction\n' | gqls schema.graphql -J
@@ -371,7 +331,9 @@ lookup — hand back any path the listing prints, or a prefix of one
 case-insensitive; it requires `-e`.
 
 `-e` and `-R` only act on a field the query names outright (or misspells
-slightly — `Did you mean X?` on stderr says which, and is worth passing on).
+slightly — `Did you mean X?` on stderr says which, and is worth passing on). A
+word the schema already uses is never treated as a misspelling: `star` sits
+whole in `addStar`, so it isn't corrected to `start`.
 A looser query — `crtusr`, `User.`, a wildcard — answers `Did you mean:`
 with the matches and exits nonzero instead; re-run with the path you meant, or
 show the user the list if it isn't obvious which one they want. Both respect
@@ -441,14 +403,13 @@ anything; check `rq --version` too.
 If `gqls` isn't on PATH, install it, then retry:
 
 ```sh
-brew install dpep/tools/gqls    # macOS/Homebrew — includes semantic search
+brew install dpep/tools/gqls    # macOS/Homebrew
 ```
 
 No Homebrew?
 
 ```sh
-cargo install gqls-cli                          # semantic search included
-cargo install gqls-cli --no-default-features    # lean, fuzzy-only
+cargo install gqls-cli
 ```
 
 To update: `brew upgrade dpep/tools/gqls` (or re-run the `cargo install` line).
@@ -457,8 +418,8 @@ Source + issues: <https://github.com/dpep/gqls>.
 ## Notes
 
 - The resolver jump (`-R`) is graphql-ruby-specific and shells out to `rq`.
-- `-v`/`--verbose` shows diagnostics (cache hits, rq candidates, why the model
-  loaded or fell back); `-q`/`--quiet` silences the stderr status lines.
+- `-v`/`--verbose` shows diagnostics (cache hits, rq candidates);
+  `-q`/`--quiet` silences the stderr status lines.
 - `--profile` reports where a query's time went, as a table on stderr or as
   JSON on stderr alongside `-j`. Reach for it when asked why gqls is slow on a
   schema, rather than guessing. Against a URL it times `introspect: fetch`

@@ -1,7 +1,7 @@
 //! End-to-end checks on the batch form: queries piped on stdin, one per line,
 //! answered by a single process. Drives the real binary, because the whole
 //! feature is about argument routing and stream shape — the parts a library
-//! test can't see. Fuzzy queries only, so this holds on every feature build.
+//! test can't see.
 
 mod common;
 
@@ -17,10 +17,6 @@ fn run(args: &[&str], stdin: &str) -> String {
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let mut child = Command::new(env!("CARGO_BIN_EXE_gqls"))
         .args(args)
-        // --fuzzy keeps this off the embedding model: batch routing is what's
-        // under test, and a semantic build shouldn't make the test slower or
-        // dependent on a downloaded model.
-        .arg("--fuzzy")
         .arg("-q")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -114,7 +110,7 @@ fn a_batch_answers_before_the_producer_closes() {
 
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let mut child = Command::new(env!("CARGO_BIN_EXE_gqls"))
-        .args([SCHEMA, "-J", "--fuzzy", "-q"])
+        .args([SCHEMA, "-J", "-q"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -150,7 +146,7 @@ fn a_batch_refuses_the_document_form_of_json() {
     // not a JSON document, and nothing said so — `-J` is the streaming form.
     common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
     let mut child = Command::new(env!("CARGO_BIN_EXE_gqls"))
-        .args([SCHEMA, "-j", "--fuzzy"])
+        .args([SCHEMA, "-j"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

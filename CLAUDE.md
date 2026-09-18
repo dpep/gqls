@@ -1,6 +1,6 @@
 # gqls
 
-Fuzzy and semantic search over a GraphQL schema. Everything flattens to a
+Fuzzy search over a GraphQL schema. Everything flattens to a
 `SchemaRecord`; search and output touch nothing else. See the README's "How it
 works" for the layering.
 
@@ -10,8 +10,8 @@ works" for the layering.
 the answer, not the answer itself. So: narrow fast, and once the question
 resolves to one thing, say everything known about it.
 
-That's the frame the rest of the tool hangs off. Ranking, the fuzzy/semantic
-combine and the wildcards all serve the first half; the annotations on a named
+That's the frame the rest of the tool hangs off. Ranking, multi-word matching
+and the wildcards all serve the first half; the annotations on a named
 record — its description in full, its deprecation reason, its directives, an
 abstract type's members, an enum's values, what references a type — serve the
 second. `-e` sits outside both on purpose: drafting an operation answers *how do
@@ -30,10 +30,9 @@ is why it's in the base case and not behind a flag.
 
 ## Scripts — use these, don't hand-run their steps
 
-- **`script/check.sh`** — the gate. Formatting, clippy, and tests at every
-  feature configuration gqls ships. Run before every commit or push. It cleans
-  this crate first, because cargo's fingerprint wedges "fresh" here and will
-  otherwise validate code you didn't write (`cargo clean -p gqls-cli` is the
+- **`script/check.sh`** — the gate. Formatting, clippy, and tests. Run before
+  every commit or push. It cleans this crate first, because cargo's fingerprint
+  wedges "fresh" here and will otherwise validate code you didn't write (`cargo clean -p gqls-cli` is the
   manual fix if a build reports an error that contradicts the source).
 - **`release <version> --steps`** — the release as a checklist: the ordered
   commands for this repo with ✓ on what's already done. Often the right mode —
@@ -61,9 +60,9 @@ is why it's in the base case and not behind a flag.
   would have disproved the hypothesis. Re-run unfiltered before concluding, and
   check which code path produced a number before interpreting it.
 - **A differential measured under load exaggerates whichever side is bigger.**
-  Two builds compared on a loaded machine put the semantic binary's startup tax
-  at ~20ms; measured quietly it is ~2.1ms. The 22.5MB binary pays page-in and
-  scheduling costs the 3.2MB one doesn't, inflating the *difference* about
+  Two builds compared on a loaded machine put the old semantic build's startup
+  tax at ~20ms; measured quietly it was ~2.1ms. The 22.5MB binary pays page-in
+  and scheduling costs the 3.2MB one doesn't, inflating the *difference* about
   eightfold. Also: `wall − profile.total_ms` is not a clean measure of
   pre-`main()` cost — it absorbs fork/exec, teardown and harness overhead, all
   of which grow under load. Take the slope across an increasing query count
@@ -71,15 +70,15 @@ is why it's in the base case and not behind a flag.
 
 ## Settled, don't re-propose
 
-- **The CoreML linkage in the default build stays.** It costs ~2.1ms of fixed
-  startup and is dormant — nothing calls `with_execution_providers`, so ORT runs
-  on CPU and the linkage buys nothing at runtime. Removing it is worse both
-  ways: switching the default to `semantic-dynamic` costs **+33ms on every
-  semantic query** (dlopening Homebrew's ~90-dylib ORT chain) and doesn't even
-  drop CoreML, since that build links it too; building ORT from source to
-  disable the EP trades a prebuilt download for a C++ toolchain in CI on every
-  platform. Batch mode (`-J` with queries on stdin) already reduces the 2.1ms to
-  roughly zero per query — and is 3x faster overall, which dwarfs it.
+- **No semantic search.** gqls shipped embedding-based ranking (MiniLM via
+  ONNX Runtime, fused with fuzzy by RRF) through 0.25.0 and removed it. On 50
+  intent queries against GitHub's schema, the default combined mode scored
+  *below* fuzzy alone (MRR 0.37 vs 0.42): semantic tied fuzzy on the synonym
+  queries built to favour it, and the fusion buried the few it uniquely won
+  while demoting exact name hits. It cost a 22.5MB binary, an ORT dependency
+  with three build variants, an embed cache and a background warmer. Bringing
+  it back needs a better model *and* a better fusion, shown on a measured query
+  set — not a new flag over the same pipeline.
 
 ## Changelog
 
