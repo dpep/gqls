@@ -147,3 +147,26 @@ fn a_draft_too_large_to_paste_says_so() {
     );
     assert!(!quiet.contains("this draft is"), "{quiet:?}");
 }
+
+#[test]
+fn returns_given_a_field_says_so_and_points_at_drafting_a_query() {
+    // `--returns` takes a type. A field path matched nothing and read as
+    // "nothing returns User.name" — a claim about the schema, and a dead end.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args(["--returns", "User.name", SCHEMA])
+        .output()
+        .expect("gqls should be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("User.name is a field"), "{stderr}");
+    assert!(
+        stderr.contains("String!"),
+        "should say what it returns: {stderr}"
+    );
+    assert!(
+        stderr.contains("gqls User.name -e"),
+        "should point at drafting a query: {stderr}"
+    );
+    assert!(out.stdout.is_empty());
+}

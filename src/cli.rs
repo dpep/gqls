@@ -437,6 +437,21 @@ pub fn run() -> Result<()> {
         // type as the schema writes it (`[Card!]!`) is what gets pasted back,
         // and it matched nothing. A wildcard has none to peel.
         let returns = cli.returns.as_deref().map(crate::model::base_of);
+        // A field path isn't a type, so it matched nothing and read as a fact
+        // about the schema. What the user wants is how to query the field.
+        if let Some(field) = returns.and_then(|t| {
+            records
+                .iter()
+                .find(|r| r.type_ref.is_some() && r.path.eq_ignore_ascii_case(t))
+        }) {
+            anyhow::bail!(
+                "{} is a field, not a type — it returns {}. --returns takes a type; \
+                 `gqls {} -e` drafts a query that fetches it",
+                field.path,
+                field.type_ref.as_deref().unwrap_or_default(),
+                field.path
+            );
+        }
         // A `--returns` that nothing satisfies outright is widened to what
         // narrows to the type, rather than dead-ending on a precise "no".
         let widened = returns.and_then(|t| search::widened_returns(t, &records));
