@@ -6,6 +6,43 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **A path that isn't a schema source is refused.** `gqls user
+  ./schema.grapqhl` folded the typo into the query and answered from whatever
+  schema discovery found, exit 0. A positional containing `/`, or naming an
+  existing file, that isn't a schema source now exits 1 saying what a source
+  looks like.
+- **`--returns` given an enum value or a directive says what it is**
+  (`ADMIN is a value of enum Role, not a type`), as it already did for a field;
+  the field message no longer says an input field is "fetched".
+- **A qualifier naming no type says the search went unscoped.** `gqls
+  Repo.name` fell back to matching every type's members — documented, but
+  silent, so the scope looked applied.
+- **`--fuzzy=x` is dropped with the same warning as `--fuzzy`**, rather than
+  clap's tip to search for the flag's own text.
+- **0.26.0's schema-word rule refused names it should have drafted.** It
+  stopped a correction whenever the typed word was a word of *any* name —
+  including the target's own, so `binary -e` stopped drafting `isBinary`, and
+  `published`, `stargazer` and about 45 others on GitHub's schema went the same
+  way. A word of the target's own name, or its plural, now counts as naming
+  it. And `_` now separates words, so `star` against `star_count` or
+  `STAR_COUNT` is protected from becoming `start` the way `starCount` was.
+- **`--clear-cache` could delete files gqls doesn't own.** 0.26.0 cleared
+  every file under the cache dir, and an empty or relative `XDG_CACHE_HOME` or
+  `HOME` — common in CI and containers — resolved that dir against the cwd, so
+  a project directory named `gqls` lost its files; a symlink inside the cache
+  was followed too. The cache location now needs an absolute path, as the XDG
+  spec says, and clearing deletes only the kinds of file gqls writes (and the
+  `.vecs` older releases wrote), never following a symlink. If you ran
+  `--clear-cache` on 0.26.0 with either variable empty or relative, check the
+  directory you ran it from.
+- **`--returns` given a field says so.** `gqls --returns User.name` answered
+  `nothing returns User.name` — a claim about the schema, when the flag takes a
+  type. It now exits 1 naming what the field returns and pointing at
+  `gqls User.name -e`, which drafts a query that fetches it.
+
 ## 0.26.0 — 2026-09-18
 
 ### Removed

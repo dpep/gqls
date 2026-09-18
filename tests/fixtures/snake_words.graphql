@@ -1,0 +1,13 @@
+type Query {
+  start: Int
+  repo: Repo
+  order: Order
+}
+
+type Repo {
+  star_count: Int
+}
+
+enum Order {
+  STAR_COUNT
+}
