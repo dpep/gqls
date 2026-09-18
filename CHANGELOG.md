@@ -9,6 +9,15 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **`--clear-cache` could delete files gqls doesn't own.** 0.26.0 cleared
+  every file under the cache dir, and an empty or relative `XDG_CACHE_HOME` or
+  `HOME` — common in CI and containers — resolved that dir against the cwd, so
+  a project directory named `gqls` lost its files; a symlink inside the cache
+  was followed too. The cache location now needs an absolute path, as the XDG
+  spec says, and clearing deletes only the kinds of file gqls writes (and the
+  `.vecs` older releases wrote), never following a symlink. If you ran
+  `--clear-cache` on 0.26.0 with either variable empty or relative, check the
+  directory you ran it from.
 - **`--returns` given a field says so.** `gqls --returns User.name` answered
   `nothing returns User.name` — a claim about the schema, when the flag takes a
   type. It now exits 1 naming what the field returns and pointing at

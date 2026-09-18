@@ -106,7 +106,8 @@ struct Cli {
     refresh: bool,
 
     /// Delete every cached file — introspection responses, parsed records,
-    /// discovered schema paths, and anything an older release left — then exit.
+    /// discovered schema paths, and an older release's embedding vectors — then
+    /// exit.
     #[arg(long)]
     clear_cache: bool,
 
