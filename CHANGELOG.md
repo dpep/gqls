@@ -9,6 +9,13 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **0.26.0's schema-word rule refused names it should have drafted.** It
+  stopped a correction whenever the typed word was a word of *any* name —
+  including the target's own, so `binary -e` stopped drafting `isBinary`, and
+  `published`, `stargazer` and about 45 others on GitHub's schema went the same
+  way. A word of the target's own name, or its plural, now counts as naming
+  it. And `_` now separates words, so `star` against `star_count` or
+  `STAR_COUNT` is protected from becoming `start` the way `starCount` was.
 - **`--clear-cache` could delete files gqls doesn't own.** 0.26.0 cleared
   every file under the cache dir, and an empty or relative `XDG_CACHE_HOME` or
   `HOME` — common in CI and containers — resolved that dir against the cwd, so

@@ -752,9 +752,17 @@ fn explained_match<'a>(
 fn naming(query: &str, record: &SchemaRecord, names: &[&str]) -> Option<search::NameMatch> {
     let m = search::names_the_record(query, record)?;
     let (leaf, qualifier) = search::score::parse_qualified(query);
-    let fixed = |typed: &str, actual: Option<&str>| {
-        !actual.is_some_and(|a| a.eq_ignore_ascii_case(typed))
-            && search::is_a_schema_word(typed, names)
+    // A word of the target's own name, or its plural, is the name's core
+    // word rather than a lookalike: `binary` → `isBinary`, `stargazer` →
+    // `stargazers`.
+    let own = |typed: &str, actual: &str| {
+        [typed.to_string(), format!("{typed}s"), format!("{typed}es")]
+            .iter()
+            .any(|w| search::is_a_schema_word(w, &[actual]))
+    };
+    let fixed = |typed: &str, actual: Option<&str>| match actual {
+        Some(a) if a.eq_ignore_ascii_case(typed) || own(typed, a) => false,
+        _ => search::is_a_schema_word(typed, names),
     };
     let word_corrected = fixed(leaf, Some(&record.name))
         || qualifier.is_some_and(|q| fixed(q, record.parent.as_deref()));
