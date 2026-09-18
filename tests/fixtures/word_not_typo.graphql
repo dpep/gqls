@@ -1,9 +1,20 @@
 type Query {
   "When the run started."
   start: Int
+  blob(id: ID!): Blob
 }
 
 type Mutation {
   "Star a repository."
   addStar(id: ID!): Boolean
+}
+
+type Blob {
+  isBinary: Boolean
+  publishedAt: String
+  stargazers: [String]
+}
+
+type StargazerConnection {
+  totalCount: Int
 }

@@ -138,12 +138,14 @@ pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
     names.iter().any(|name| {
         let chars: Vec<char> = name.chars().collect();
         let boundary = score::boundaries(&chars);
+        // `_` separates words too (`star_count`, `STAR_COUNT`), and the
+        // scorer's boundaries don't mark it.
+        let at = |i: usize| {
+            i == 0 || i == chars.len() || boundary[i] || chars[i] == '_' || chars[i - 1] == '_'
+        };
         name.to_ascii_lowercase()
             .match_indices(&leaf)
-            .any(|(i, _)| {
-                let end = i + leaf.len();
-                boundary[i] && (end == chars.len() || boundary[end])
-            })
+            .any(|(i, _)| at(i) && at(i + leaf.len()))
     })
 }
 
