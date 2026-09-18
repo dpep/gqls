@@ -234,11 +234,12 @@ fn without_removed_flags() -> (Vec<String>, bool) {
                 .exit();
         }
     }
-    let fuzzy = args[..end].iter().any(|a| a == "--fuzzy");
+    let is_fuzzy = |a: &str| a == "--fuzzy" || a.starts_with("--fuzzy=");
+    let fuzzy = args[..end].iter().any(|a| is_fuzzy(a));
     let mut i = 0;
     args.retain(|a| {
         i += 1;
-        i > end || a != "--fuzzy"
+        i > end || !is_fuzzy(a)
     });
     (args, fuzzy)
 }
@@ -306,6 +307,12 @@ pub fn run() -> Result<()> {
     };
     let (positional_query, positional_source) =
         split_positionals(&cli.args, cli.returns.is_some() || piped);
+    if let Some(path) = misread_path(&cli.args, positional_source.as_deref()) {
+        anyhow::bail!(
+            "{path} isn't a schema source — give a .graphql, .graphqls, .gql or \
+             introspection .json file, or an http(s) URL"
+        );
+    }
 
     // Which schema answered is only worth saying when nobody chose it — see
     // [`no_matches`]. Named the way `-v` names it: the walk starts at the cwd,
@@ -422,36 +429,29 @@ pub fn run() -> Result<()> {
         let parent = (!pattern)
             .then(|| search::parent_filter(query, &records))
             .flatten();
-        if let Some(p) = parent {
-            let (_, qualifier) = search::score::parse_qualified(query);
-            if qualifier.is_some_and(|q| q.eq_ignore_ascii_case(p)) {
-                crate::detail!("qualifier {p:?} names a type — restricting to its members");
-            } else {
-                crate::status!(
-                    "no type named {:?} — using closest match {p:?}",
-                    qualifier.unwrap_or_default()
-                );
+        let (_, qualifier) = search::score::parse_qualified(query);
+        match (parent, qualifier) {
+            (Some(p), Some(q)) if q.eq_ignore_ascii_case(p) => {
+                crate::detail!("qualifier {p:?} names a type — restricting to its members")
             }
+            (Some(p), q) => crate::status!(
+                "no type named {:?} — using closest match {p:?}",
+                q.unwrap_or_default()
+            ),
+            // The documented fallback, said aloud: without it the scope the
+            // user typed looked applied, over an unscoped list.
+            (None, Some(q)) if !pattern => crate::status!(
+                "no type named {q:?} — matching {query:?} against every type's members"
+            ),
+            _ => {}
         }
 
         // Wrappers come off the flag the way they come off the schema: the
         // type as the schema writes it (`[Card!]!`) is what gets pasted back,
         // and it matched nothing. A wildcard has none to peel.
         let returns = cli.returns.as_deref().map(crate::model::base_of);
-        // A field path isn't a type, so it matched nothing and read as a fact
-        // about the schema. What the user wants is how to query the field.
-        if let Some(field) = returns.and_then(|t| {
-            records
-                .iter()
-                .find(|r| r.type_ref.is_some() && r.path.eq_ignore_ascii_case(t))
-        }) {
-            anyhow::bail!(
-                "{} is a field, not a type — it returns {}. --returns takes a type; \
-                 `gqls {} -e` drafts a query that fetches it",
-                field.path,
-                field.type_ref.as_deref().unwrap_or_default(),
-                field.path
-            );
+        if let Some(why) = returns.and_then(|t| not_a_type(t, &records)) {
+            anyhow::bail!("{why}");
         }
         // A `--returns` that nothing satisfies outright is widened to what
         // narrows to the type, rather than dead-ending on a precise "no".
@@ -775,6 +775,53 @@ fn schema_names<'a>(records: impl Iterator<Item = &'a SchemaRecord>) -> Vec<&'a 
         .flat_map(|r| std::iter::once(r.name.as_str()).chain(r.parent.as_deref()))
         .collect()
 }
+/// Why `--returns` can't use `name`, when it names something other than a
+/// type — a field, an enum value, a directive. Matching nothing, it read as
+/// "nothing returns X", a claim about the schema; the record is right there,
+/// so say what it is and where the question it was asking gets answered.
+fn not_a_type(name: &str, records: &[SchemaRecord]) -> Option<String> {
+    let bare = name.trim_start_matches('@');
+    let is =
+        |r: &&SchemaRecord| r.path.eq_ignore_ascii_case(name) || r.name.eq_ignore_ascii_case(bare);
+    if search::glob::is_pattern(name)
+        || records.iter().any(|r| {
+            r.parent.is_none() && r.kind != Kind::Directive && r.name.eq_ignore_ascii_case(name)
+        })
+    {
+        return None;
+    }
+    if let Some(field) = records
+        .iter()
+        .find(|r| r.type_ref.is_some() && r.path.eq_ignore_ascii_case(name))
+    {
+        return Some(format!(
+            "{} is a field, not a type — it returns {}. --returns takes a type; \
+             `gqls {} -e` drafts an operation that uses it",
+            field.path,
+            field.type_ref.as_deref().unwrap_or_default(),
+            field.path
+        ));
+    }
+    let enums: Vec<&str> = records
+        .iter()
+        .filter(|r| r.kind == Kind::EnumValue && is(r))
+        .filter_map(|r| r.parent.as_deref())
+        .collect();
+    if !enums.is_empty() {
+        let (noun, try_) = match enums.as_slice() {
+            [one] => (format!("enum {one}"), format!("`--returns {one}`")),
+            many => (format!("enums {}", many.join(", ")), "one of those".into()),
+        };
+        return Some(format!(
+            "{name} is a value of {noun}, not a type — --returns takes a type; try {try_}"
+        ));
+    }
+    records
+        .iter()
+        .any(|r| r.kind == Kind::Directive && is(&r))
+        .then(|| format!("{name} is a directive, not a type — --returns takes a type"))
+}
+
 /// Why an empty answer was empty.
 ///
 /// A miss is about the filters as much as the query. "nothing returns Issue"
@@ -1180,6 +1227,18 @@ fn leading_kind(query: &str) -> Option<(Kind, &str)> {
         return None;
     }
     first.parse::<Kind>().ok().map(|k| (k, rest))
+}
+
+/// A positional that can only be a path yet isn't a schema source — one with a
+/// `/` (no GraphQL name or pattern has one), or a `name.ext` file that exists.
+/// It used to join the query, and discovery then answered from some other
+/// schema. A missing `name.ext` with no `/` stays a query: it reads exactly like
+/// `Type.field`.
+fn misread_path<'a>(args: &'a [String], source: Option<&str>) -> Option<&'a str> {
+    args.iter()
+        .map(String::as_str)
+        .filter(|a| Some(*a) != source && !looks_like_source(a))
+        .find(|a| a.contains('/') || (a.contains('.') && std::path::Path::new(a).is_file()))
 }
 
 /// Whether a positional argument is a schema source rather than a query.

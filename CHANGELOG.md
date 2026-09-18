@@ -9,6 +9,19 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **A path that isn't a schema source is refused.** `gqls user
+  ./schema.grapqhl` folded the typo into the query and answered from whatever
+  schema discovery found, exit 0. A positional containing `/`, or naming an
+  existing file, that isn't a schema source now exits 1 saying what a source
+  looks like.
+- **`--returns` given an enum value or a directive says what it is**
+  (`ADMIN is a value of enum Role, not a type`), as it already did for a field;
+  the field message no longer says an input field is "fetched".
+- **A qualifier naming no type says the search went unscoped.** `gqls
+  Repo.name` fell back to matching every type's members — documented, but
+  silent, so the scope looked applied.
+- **`--fuzzy=x` is dropped with the same warning as `--fuzzy`**, rather than
+  clap's tip to search for the flag's own text.
 - **0.26.0's schema-word rule refused names it should have drafted.** It
   stopped a correction whenever the typed word was a word of *any* name —
   including the target's own, so `binary -e` stopped drafting `isBinary`, and
