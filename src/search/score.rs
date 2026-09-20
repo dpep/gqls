@@ -45,6 +45,13 @@ pub(crate) struct Match {
     /// like the query, and no constant sits under every name match, so a weak
     /// one can score below a path accident on a long path.
     pub(crate) named: bool,
+    /// The query matched only in a weaker reading of itself — its singular,
+    /// where the word as typed named nothing. Such a match counts toward how
+    /// much of a phrase a record covers, but never toward the bar the others
+    /// have to clear, the same way a description word doesn't: `comments`
+    /// reaching `IssueComment` is a real match, and it shouldn't evict the
+    /// record that matched `locked` outright.
+    pub(crate) weak: bool,
     /// What the tail cut compares: the quality, on the 0..[`SCALE`] scale. The
     /// qualifier boost is left out because it can't tell two candidates apart —
     /// every member of the named type is handed the same one — so including it
@@ -87,6 +94,13 @@ const PATH: f64 = 0.25;
 const QUALIFIED: f64 = 0.30;
 const QUALIFIED_PREFIX: f64 = 0.15;
 
+/// What matching a word's singular is worth against matching the word itself.
+/// Below every direct tier, so `users` can't outrank `user` on `Query.user`,
+/// and well above the path tier, since the word did name the record — a schema
+/// that calls a table `pokemon_v2_type` is answering "types" whether or not it
+/// spells it that way.
+const PLURAL: f64 = 0.85;
+
 /// A quality of 1.0, as the integer the rest of gqls reports and sorts on.
 /// Large enough that the differences that matter — a character of name length,
 /// a word of it — survive rounding.
@@ -100,6 +114,7 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
     let (leaf, qualifier) = parse_qualified(query);
     let q = leaf.to_ascii_lowercase();
     let name_lower = rec.name.to_ascii_lowercase();
+    let mut weak = false;
 
     if name_lower == q {
         return Some(Match {
@@ -120,12 +135,26 @@ pub(crate) fn score(query: &str, rec: &SchemaRecord) -> Option<Match> {
         // measure is how much of it survived the correction — an edit costs
         // less of a long name than of a short one, which is the point.
         TYPO * (1.0 - d as f64 / q.len().max(name_lower.len()) as f64)
+    } else if let Some(m) = singular(&q).and_then(|one| {
+        // Only the query is singularized: the other direction already works,
+        // since a shorter `type` lands inside a longer `types` as a
+        // subsequence. Tried only here, where the word was about to match
+        // nothing at all, so no query that matches today can move.
+        match_quality(&one, &rec.name, &name_lower)
+            .map(|m| ANCHOR * m)
+            .or_else(|| (name_lower == one).then_some(EXACT))
+    }) {
+        weak = true;
+        PLURAL * m
     } else {
         // Nothing of the name matched, by either reading of it.
         return score_path(query, qualifier, rec);
     };
 
-    Some(finish(quality, qualifier, rec))
+    Some(Match {
+        weak,
+        ..finish(quality, qualifier, rec)
+    })
 }
 
 /// The name pass's last resort: the query against the record's qualified path
@@ -221,6 +250,7 @@ fn finish(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
     Match {
         exact: false,
         named: true,
+        weak: false,
         merit: (quality * SCALE).round() as i64,
         score: ((quality + boost) * SCALE).round() as i64,
     }
@@ -329,12 +359,13 @@ pub(crate) fn score_phrase(
     let mut sum = Match {
         exact: true,
         named: false,
+        weak: false,
         merit: 0,
         score: 0,
     };
     for token in tokens {
         if let Some(m) = scorer(token, rec) {
-            named += 1;
+            named += usize::from(!m.weak);
             matched += 1;
             // Exact only if every word it matched was; named if any was.
             sum.exact &= m.exact;
@@ -357,6 +388,31 @@ pub(crate) fn score_phrase(
         matched,
         score: sum,
     })
+}
+
+/// A word's singular, when it plausibly has one: `types` -> `type`,
+/// `categories` -> `category`. Length-guarded, since a two-letter stem is a
+/// fragment rather than a word — and wrong guesses are harmless here, because
+/// this is only ever consulted after the word itself matched nothing.
+fn singular(word: &str) -> Option<String> {
+    const MIN: usize = 3;
+    if let Some(stem) = word.strip_suffix("ies") {
+        return (stem.len() >= MIN).then(|| format!("{stem}y"));
+    }
+    // `-es` only follows a sibilant (`boxes`, `dishes`); elsewhere the plural
+    // is a bare `-s` and stripping two letters eats the word (`types` -> `typ`).
+    let stem = word.strip_suffix('s')?;
+    let stem = match stem.strip_suffix('e') {
+        Some(inner)
+            if inner.ends_with(['s', 'x', 'z'])
+                || inner.ends_with("ch")
+                || inner.ends_with("sh") =>
+        {
+            inner
+        }
+        _ => stem,
+    };
+    (stem.len() >= MIN).then(|| stem.to_string())
 }
 
 /// Split a query into its leaf name and the optional enclosing type typed
@@ -837,6 +893,36 @@ mod tests {
         assert_eq!(both.unwrap().matched, 2);
         assert_eq!(one.unwrap().matched, 1);
         assert!(score_phrase(&phrase, &rec("id", "T.id", Kind::Field), score).is_none());
+    }
+
+    #[test]
+    fn a_plural_query_reaches_the_name_the_schema_spells_singular() {
+        // Hasura names a table for one row and a developer asks for many.
+        let table = rec("pokemon_v2_type", "query_root.pokemon_v2_type", Kind::Query);
+        let m = score("types", &table).expect("the singular is tried when the word isn't");
+        assert!(m.weak, "a singular match can't raise the bar it met");
+        assert!(!m.exact);
+
+        // Below the word itself, so `users` can't outrank `user` on `Query.user`.
+        let user = rec("user", "Query.user", Kind::Query);
+        let direct = score("user", &user).expect("an exact match");
+        let plural = score("users", &user).expect("its plural, one tier down");
+        assert!(plural.score < direct.score);
+        assert!(!direct.weak);
+    }
+
+    #[test]
+    fn a_singular_is_only_guessed_where_the_word_itself_matched_nothing() {
+        // `status` must not be read as `statu`: the word matches outright.
+        let status = rec("status", "Query.status", Kind::Query);
+        assert!(score("status", &status).expect("exact").exact);
+        assert_eq!(singular("types").as_deref(), Some("type"));
+        assert_eq!(singular("categories").as_deref(), Some("category"));
+        assert_eq!(singular("boxes").as_deref(), Some("box"));
+        // A stem too short to be a word is no guess at all.
+        assert_eq!(singular("is"), None);
+        assert_eq!(singular("ies"), None);
+        assert_eq!(singular("name"), None);
     }
 
     #[test]

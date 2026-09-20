@@ -9,6 +9,14 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
+- **A plural query reaches a name the schema spells singular.** `types` never
+  matched `pokemon_v2_type`: the trailing `s` has nowhere to land in a
+  subsequence, and a prefixed name is far outside the typo budget, so the word
+  matched *nothing* rather than matching weakly. A word that matches nothing is
+  now retried as its singular, one tier below a direct match — the other
+  direction already worked, since `type` lands inside `types` on its own. On
+  PokeAPI's Hasura schema, four of six sampled root fields went from
+  unreachable to found; on the held-out set, MRR 0.22 -> 0.27.
 - **A question asked as a sentence narrows better.** The words a question is
   built from — `who`, `what`, `does`, `has`, `this`, `my` — named nothing in
   any schema, so each one a record happened to echo lifted its word count and
