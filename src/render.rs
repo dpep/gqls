@@ -480,7 +480,9 @@ pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, d
         let more = total - fields.len();
         let note = match owner {
             Some(owner) => {
-                format!("… and {more} more — `gqls '{owner}.' -l {total}` lists them all")
+                // No quotes: a trailing dot is no shell metacharacter, and quoting it
+                // here taught the habit everywhere else.
+                format!("… and {more} more — `gqls {owner}. -l {total}` lists them all")
             }
             None => format!("… and {more} more"),
         };

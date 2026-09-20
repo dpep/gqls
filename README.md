@@ -55,9 +55,9 @@ Several words are one query, so `gqls cancel a subscription` needs no quotes, an
 
 Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality — how cleanly your query's characters sit in the name, times how much of the name they account for — and kind breaks the tie, which is what floats a root `Query`/`Mutation` field above the type it returns when both match equally well. Weak long-tail matches are cut relative to the best hit, and a query that names a record exactly cuts everything weaker outright. When the limit drops matches, the total is reported on stderr so a truncated list can't pass for the whole answer.
 
-**A phrase is the thing to type when you don't know the name.** Describe what you're after in your own words — `gqls 'cancel a subscription'`, `gqls 'what is the default branch of a repo'` — and gqls works to put the record you meant on top, reading the schema's documentation as well as its names. Fewer words still narrow better than more, but you no longer have to strip a question down to keywords first.
+**A phrase is what to type when you don't know the name.** `gqls cancel a subscription`, `gqls what is the default branch of a repo` — no quotes needed. Each word is matched against the names, and against the schema's own descriptions where a name doesn't carry it, which is often enough to land the record you meant near the top. Fewer words still narrow better than more.
 
-**What it won't do is invent a word the schema never uses.** Nothing reaches GitHub's `Mutation.removeStar` from `unstar`, because the schema doesn't say `unstar` anywhere — `gqls 'remove a star'` finds it first. So when you're guessing at a name rather than recalling one, search a word you're sure of.
+**It matches what the schema wrote down — it can't invent a word.** Nothing reaches GitHub's `Mutation.removeStar` from `unstar`, because the schema doesn't say `unstar` anywhere; `gqls remove a star` finds it first. So when you're guessing at a name rather than recalling one, search a word you're sure of, and read past the first row.
 
 Only whitespace makes a query a phrase: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` says `no matches for "Post.role"` — it doesn't retry as a phrase, though `gqls role` alone finds four records. Drop the type word. Quoting won't help, since the qualifier is recognised either way.
 
@@ -68,7 +68,7 @@ A miss says what made it one. The filters in play, and what dropping them would 
 ```sh
 gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
-gqls 'cancel a subscription'     # a phrase — when you don't know the name
+gqls cancel a subscription       # a phrase — when you don't know the name
 ```
 
 ### Name one thing and gqls explains it
@@ -90,7 +90,7 @@ Role  [enum]
     OWNER   (deprecated: collapsed into ADMIN)
 ```
 
-Every kind that has fields lists them, which for an object or an interface is most of what it is — reaching them through `User.` instead is a ranked search that stops at `-l`. A field taking arguments is marked `posts(…)` rather than given a column of signatures; naming the field spells them out. A type with more fields than fit is elided with the command that lists the rest (`… and 121 more — `gqls 'Repository.' -l 145` lists them all`); `--json` is never elided.
+Every kind that has fields lists them, which for an object or an interface is most of what it is — reaching them through `User.` instead is a ranked search that stops at `-l`. A field taking arguments is marked `posts(…)` rather than given a column of signatures; naming the field spells them out. A type with more fields than fit is elided with the command that lists the rest (`… and 121 more — `gqls Repository. -l 145` lists them all`); `--json` is never elided.
 
 Each field carries its own applied directives, in the description's cell after any `(deprecated: …)` marker. On a federated supergraph that makes "which subgraph owns what" one command:
 
@@ -121,7 +121,7 @@ Product  [object]
 
 That's the supergraph's own text, printed, not federation semantics interpreted. A schema whose fields apply no directives renders exactly as it always did — which is every schema read by introspection, since the protocol can't report them.
 
-On a schema small enough to read whole, `gqls User` and `gqls 'User.'` look like the same answer. The difference is what happens when the type is big: `gqls 'Repository.'` is a ranked search that hands you 20 of GitHub's 145 fields in alphabetical order, with each description clipped to whatever the columns leave; `gqls Repository` lists them in schema order with their types and docs, and names the command for the rest. Keep `User.` for searching *within* a type — `gqls 'User.*email*'`.
+On a schema small enough to read whole, `gqls User` and `gqls User.` look like the same answer. The difference is what happens when the type is big: `gqls Repository.` is a ranked search that hands you 20 of GitHub's 145 fields in alphabetical order, with each description clipped to whatever the columns leave; `gqls Repository` lists them in schema order with their types and docs, and names the command for the rest. Keep `User.` for searching *within* a type — `gqls 'User.*email*'`.
 
 ```sh
 $ gqls UpdateUserInput
@@ -152,7 +152,7 @@ Commentable  [interface]
 
 Capitalisation decides when it's the only thing separating candidates: `Role` names the enum and not `User.role`, so it explains; `role` names all three and stays a search. `--no-explain` forces the list back, and `-D` collapses an enum's values to their names and empties the description column of an input object's fields. In `--json`/`--ndjson` the record carries `match` (`"exact"` or `"corrected"`) plus `values`, `fields`, `arguments` and `referenced_by`, so a consumer gets the same facts — and each entry in `fields` carries its own `directives`.
 
-**An exact name wins even when it's a coincidence.** Explaining is triggered by the letters, not by what you meant, so `gqls 'update address'` against a schema with a `SupportTicketDispositionLink.UPDATE_ADDRESS` enum value explains that — confidently, in full — while `UserMutation.update_user_address` sits in the matches it didn't show. The tell is the `N other matches` line above the answer: when the record you got isn't the one you were after, `--no-explain` lists what else matched.
+**An exact name wins even when it's a coincidence.** Explaining is triggered by the letters, not by what you meant, so `gqls update address` against a schema with a `SupportTicketDispositionLink.UPDATE_ADDRESS` enum value explains that — confidently, in full — while `UserMutation.update_user_address` sits in the matches it didn't show. The tell is the `N other matches` line above the answer: when the record you got isn't the one you were after, `--no-explain` lists what else matched.
 
 ### Many queries at once
 Pipe queries on stdin, one per line, and a single run answers them all — the schema loads once instead of once per query. Against GitHub's 11,496-record schema, 20 queries drop from 0.39s to 0.18s — about twice as fast:

@@ -587,7 +587,7 @@ fn too_many_fields_are_elided_with_the_command_that_lists_them() {
     let out = run_against("tests/fixtures/wide_type.graphql", &["Wide"]);
     // the count is the fixture's, and the command is spelled with it
     assert!(
-        out.contains("… and 6 more — `gqls 'Wide.' -l 30` lists them all"),
+        out.contains("… and 6 more — `gqls Wide. -l 30` lists them all"),
         "{out}"
     );
     assert!(out.contains("field01"), "{out}");
