@@ -204,15 +204,20 @@ fn ms(d: Duration) -> String {
 mod tests {
     use super::*;
 
-    /// `ENABLED` and `PHASES` are process-wide, so these two tests can't run at
-    /// the same time — without this the enabled one flips the flag under the
-    /// other, which then fails on a machine-speed coincidence.
     #[test]
     fn json_milliseconds_carry_two_decimals_not_float_noise() {
         assert_eq!(ms_f64(Duration::from_nanos(105_792)), 0.11);
         assert_eq!(ms_f64(Duration::from_micros(5_823)), 5.82);
     }
 
+    /// `ENABLED` and `PHASES` are process-wide, so the tests that flip them
+    /// can't run at the same time — without this the enabled one flips the
+    /// flag under the other, which then fails on a machine-speed coincidence.
+    ///
+    /// The guard is not enough on its own: `rank` opens a span, so every
+    /// search test records one too while profiling is on, and it holds no
+    /// guard. So these assert on the span they opened by name rather than on
+    /// the length of a list anyone can append to.
     static SERIAL: Mutex<()> = Mutex::new(());
 
     fn serialize() -> std::sync::MutexGuard<'static, ()> {
@@ -222,11 +227,12 @@ mod tests {
     #[test]
     fn a_span_is_inert_when_profiling_is_off() {
         let _guard = serialize();
-        // the default; nothing is recorded and no clock is read
+        let _ = phases(); // drain whatever an earlier test left
+                          // the default; nothing is recorded and no clock is read
         let mut s = span("off");
         s.note(|| panic!("the note closure must not run when disabled"));
         drop(s);
-        assert!(phases().is_empty());
+        assert!(!phases().iter().any(|p| p.name == "off"));
     }
 
     #[test]
@@ -262,13 +268,18 @@ mod tests {
     #[test]
     fn a_nested_span_knows_it_is_nested() {
         let _guard = serialize();
+        let _ = phases();
         enable();
         {
             let _outer = span("outer");
             let _inner = span("inner");
         }
         let recorded = phases();
-        let depths: Vec<usize> = recorded.iter().map(|p| p.depth).collect();
+        let depths: Vec<usize> = recorded
+            .iter()
+            .filter(|p| p.name == "inner" || p.name == "outer")
+            .map(|p| p.depth)
+            .collect();
         // inner finishes first, so it's recorded first
         assert_eq!(depths, [1, 0]);
         ENABLED.store(false, Ordering::Relaxed);
@@ -277,15 +288,18 @@ mod tests {
     #[test]
     fn an_enabled_span_records_its_name_and_note() {
         let _guard = serialize();
+        let _ = phases();
         enable();
         {
             let mut s = span("on");
             s.note(|| "42 records".to_string());
         }
         let recorded = phases();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].name, "on");
-        assert_eq!(recorded[0].note.as_deref(), Some("42 records"));
+        let mine = recorded
+            .iter()
+            .find(|p| p.name == "on")
+            .expect("the span this test opened");
+        assert_eq!(mine.note.as_deref(), Some("42 records"));
         // phases() drains, so a second call sees nothing
         assert!(phases().is_empty());
         ENABLED.store(false, Ordering::Relaxed);
