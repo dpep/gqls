@@ -196,11 +196,11 @@ A name search can't answer this: `Query.myEmployer: Company` doesn't contain the
 When nothing returns the type outright, the filter widens to what does reach it rather than dead-ending on a precise "no": nothing returns the `Commentable` interface, yet every field returning a `Post` hands you one, so those are what you get, with a line on stderr saying so. A wildcard is left alone — it says what it means — and so is a type something already returns.
 
 ### Wildcards
-A wildcard in the query switches from fuzzy search to enumeration — every match is exact, ordered by kind then alphabetically. **Quote the pattern** so your shell doesn't expand it against local filenames:
+A wildcard in the query switches from fuzzy search to enumeration — every match is exact, ordered by kind then alphabetically. **A trailing `.` is the form to remember**: `gqls User.` lists a type's fields and needs no quoting. The general patterns do need quotes, or your shell expands them against local filenames first:
 
 ```sh
-gqls User.                     # shorthand for 'User.*' — no quoting needed
-gqls 'User.*'                  # every field on User (nested paths included)
+gqls User.                     # a type's fields — the common case
+gqls 'User.*'                  # the same, spelled out (nested paths included)
 gqls '*.email'                 # the email field on every type that has one
 gqls 'get*'                    # every name starting with "get"
 gqls '*Payment*'               # every name containing "Payment"
@@ -213,7 +213,7 @@ A trailing `.` is shorthand for `.*`, which is the form worth remembering: no sh
 
 Combine wildcards with `-k` to narrow further (`gqls '*.email' -k input_field`).
 
-In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". Members means fields *or* enum values, so `gqls Role.ADMIN` reaches one value and its documentation, and `gqls 'Role.*'` lists the lot. A misspelled qualifier snaps to the unique closest type (`Compnay.employe` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching, and says so on stderr. That correction applies to fuzzy queries, not to wildcards — patterns match literally, so `Compnay.` finds nothing rather than guessing.
+In a qualified query, a `Type` that names a schema type (any case) becomes a hard filter — `Company.employe` searches only `Company`'s members, not every type starting with "Company". Members means fields *or* enum values, so `gqls Role.ADMIN` reaches one value and its documentation, and `gqls Role.` lists the lot. A misspelled qualifier snaps to the unique closest type (`Compnay.employe` → `Company`, announced on stderr); one that matches nothing falls back to plain fuzzy matching, and says so on stderr. That correction applies to fuzzy queries, not to wildcards — patterns match literally, so `Compnay.` finds nothing rather than guessing.
 
 ### Draft an example operation (`-e`)
 Find a field, then get something you can paste into a client:

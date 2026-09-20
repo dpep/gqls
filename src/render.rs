@@ -384,7 +384,7 @@ pub(crate) fn print_values(values: &[EnumValue]) {
 ///
 /// `owner` is the type whose `.` query enumerates these, when one exists. A
 /// field's *arguments* have no such query — the owner is the field, and
-/// `gqls 'field.'` returns this same elided block — so the elision there says
+/// `gqls field.` returns this same elided block — so the elision there says
 /// only how many are left.
 pub(crate) fn print_fields(fields: &[Field], label: &str, owner: Option<&str>, descriptions: bool) {
     println!("  {}", style::muted(label));
