@@ -1,0 +1,20 @@
+V	who is currently logged in	Query.Viewer
+V	add an anime to your favourites	Mutation.ToggleFavourite
+V	follow someone	Mutation.ToggleFollow
+V	list of people who follow you	Query.Follower
+V	people you follow	Query.Following
+V	next episode release date	Media.nextAiringEpisode
+V	how good is this anime rated	Media.averageScore
+V	remove an anime from your list	Mutation.DeleteMediaListEntry
+V	vote on someone's review helpfulness	Mutation.RateReview
+V	list of users who liked a status update	Mutation.ToggleLike
+V	site-wide stats	Query.SiteStatistics
+V	what genres exist	Query.GenreCollection
+V	list of tags for filtering	Query.MediaTagCollection
+V	is this show for adults only	Media.isAdult
+V	was this show licensed	Media.isLicensed
+V	official website link for a show	Media.externalLinks
+V	picture of a character	Character.image
+V	turn on notifications for new episodes	UserOptions.airingNotifications
+V	delete your own forum thread	Mutation.DeleteThread
+V	look up an anime or manga by its id	Query.Media
