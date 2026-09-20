@@ -151,3 +151,43 @@ fn a_cache_dir_that_is_a_symlink_is_cleared_like_any_other() {
     assert!(left.is_empty(), "left behind: {left:?}");
     assert!(stderr.contains("cleared 1 cached file(s)"), "{stderr}");
 }
+
+#[test]
+fn a_cache_home_that_cannot_be_used_is_said_aloud() {
+    // Ignoring a relative or empty XDG_CACHE_HOME is the spec's rule and the
+    // safe one — but the user named a directory and gqls used another.
+    let root = scratch("relative");
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).expect("a home");
+    let out = clear(
+        &[("XDG_CACHE_HOME", Path::new("relcache")), ("HOME", &home)],
+        &root,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("XDG_CACHE_HOME"), "{stderr}");
+    assert!(
+        stderr.contains("relcache"),
+        "should name what it ignored: {stderr}"
+    );
+}
+
+#[test]
+fn having_nowhere_to_cache_is_not_reported_as_an_empty_cache() {
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .arg("--clear-cache")
+        .env_remove("XDG_CACHE_HOME")
+        .env_remove("HOME")
+        .output()
+        .expect("gqls should be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        !stderr.contains("cleared 0"),
+        "reads as an empty cache: {stderr}"
+    );
+    assert!(stderr.contains("no cache directory"), "{stderr}");
+}

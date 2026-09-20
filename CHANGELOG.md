@@ -6,6 +6,20 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **A cache location gqls can't use is said aloud.** A relative or empty
+  `XDG_CACHE_HOME` is ignored (the XDG spec's rule, and what keeps
+  `--clear-cache` out of your cwd) — but silently, so a run cached somewhere
+  other than where you pointed it. It now says which variable it ignored.
+- **Having nowhere to cache no longer reports an empty cache.**
+  `--clear-cache` with neither `XDG_CACHE_HOME` nor `HOME` set said
+  `cleared 0 cached file(s)`, which reads as "the cache was already empty".
+- **A qualifier naming no type leads with what it searched.** The line read
+  `no type named "Repo" — matching …`, which looks like a failure above an
+  answer that is usually right (`Repo.owner` finds `Repository.owner`).
+
 ## 0.26.1 — 2026-09-19
 
 ### Fixed

@@ -276,7 +276,14 @@ pub fn run() -> Result<()> {
     }
 
     if cli.clear_cache {
-        crate::status!("cleared {} cached file(s)", crate::paths::clear_cache());
+        // "cleared 0" over no cache directory at all reads as "the cache was
+        // already empty", which is a different fact.
+        match crate::paths::cache_dir() {
+            Some(_) => crate::status!("cleared {} cached file(s)", crate::paths::clear_cache()),
+            None => {
+                crate::status!("no cache directory — set XDG_CACHE_HOME or HOME to cache anything")
+            }
+        }
         return Ok(());
     }
 
@@ -441,10 +448,12 @@ pub fn run() -> Result<()> {
                 q.unwrap_or_default()
             ),
             // The documented fallback, said aloud: without it the scope the
-            // user typed looked applied, over an unscoped list.
-            (None, Some(q)) if !pattern => crate::status!(
-                "no type named {q:?} — matching {query:?} against every type's members"
-            ),
+            // user typed looked applied, over an unscoped list. What it did
+            // leads, since the answer underneath is often the right one —
+            // `Repo.owner` finds `Repository.owner`.
+            (None, Some(q)) if !pattern => {
+                crate::status!("searching every type's members for {query:?} — no type named {q:?}")
+            }
             _ => {}
         }
 
