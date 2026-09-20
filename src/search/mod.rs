@@ -320,7 +320,7 @@ fn fuzzy_search<'a>(
     // exact cut draws. So a phrase's gate is the older one: did anything come
     // back at all.
     let answered = match score::phrase_tokens(query).is_empty() {
-        true => by_name.iter().any(|(m, _)| m.named),
+        true => by_name.iter().any(|(c, _)| c.score.named),
         false => !by_name.is_empty(),
     };
     let hits = match answered {
@@ -331,9 +331,9 @@ fn fuzzy_search<'a>(
         },
     };
     hits.into_iter()
-        .map(|(m, record)| Hit {
+        .map(|(c, record)| Hit {
             record,
-            score: m.score,
+            score: c.score.score,
         })
         .collect()
 }
@@ -346,7 +346,7 @@ fn rank<'a>(
     records: &'a [SchemaRecord],
     predicate: &Predicate<'_>,
     scorer: score::Scorer,
-) -> Vec<(score::Match, &'a SchemaRecord)> {
+) -> Vec<(score::Coverage, &'a SchemaRecord)> {
     use rayon::prelude::*;
     // A multi-word query is matched word by word: no single name contains
     // "cancel a subscription" as one subsequence, so scoring it whole is a
@@ -355,16 +355,19 @@ fn rank<'a>(
     // Records score independently, so scan them in parallel — the win shows
     // on large schemas (tens of thousands of records), and rayon's overhead
     // is microseconds on small ones.
-    let scored: Vec<(usize, score::Match, &SchemaRecord)> = records
+    let scored: Vec<(score::Coverage, &SchemaRecord)> = records
         .par_iter()
         .filter(|r| predicate.accepts(r))
         .filter_map(|r| {
-            let (matched, m) = if tokens.is_empty() {
-                (1, scorer(query, r)?)
-            } else {
-                score::score_phrase(&tokens, r, scorer)?
+            let c = match tokens.is_empty() {
+                true => score::Coverage {
+                    named: 1,
+                    matched: 1,
+                    score: scorer(query, r)?,
+                },
+                false => score::score_phrase(&tokens, r, scorer)?,
             };
-            Some((matched, m, r))
+            Some((c, r))
         })
         .collect();
 
@@ -374,11 +377,15 @@ fn rank<'a>(
     // that merely echo one of them; when nothing covers both, the single-word
     // matches are all there is and they all stand. (Single-word queries are one
     // uniform group, so this is a no-op for them.)
-    let words = scored.iter().map(|(m, ..)| *m).max().unwrap_or(0);
-    let mut hits: Vec<(score::Match, &SchemaRecord)> = scored
+    // The bar is the best *name* coverage: a description can reach it — which
+    // is how a phrase in the user's vocabulary finds a record named in the
+    // schema's ("current user" -> `viewer`, "The currently authenticated
+    // user") — but never raise it, or a record whose prose happens to mention
+    // the other word evicts the one actually named after the first.
+    let words = scored.iter().map(|(c, _)| c.named).max().unwrap_or(0);
+    let mut hits: Vec<(score::Coverage, &SchemaRecord)> = scored
         .into_iter()
-        .filter(|(m, ..)| *m == words)
-        .map(|(_, m, r)| (m, r))
+        .filter(|(c, _)| c.matched >= words)
         .collect();
 
     // Highest score first. Then kind: a root field and the type it returns
@@ -389,7 +396,8 @@ fn rank<'a>(
     // the more "central" definition (`User` before `AdminUserAuditLogEntry`).
     hits.sort_by(|(a, ar), (b, br)| {
         b.score
-            .cmp(&a.score)
+            .score
+            .cmp(&a.score.score)
             .then_with(|| br.kind.weight().cmp(&ar.kind.weight()))
             .then_with(|| ar.path.len().cmp(&br.path.len()))
     });
@@ -405,12 +413,17 @@ fn rank<'a>(
     // record; a phrase describes one, and the word-coverage filter above is its
     // equivalent.
     let names = tokens.is_empty();
-    if let Some(top) = hits.first().map(|(m, _)| *m) {
+    if let Some(top) = hits.first().map(|(c, _)| c.score) {
         match names && top.exact {
-            true => hits.retain(|(m, _)| m.exact),
+            true => hits.retain(|(c, _)| c.score.exact),
             false => {
                 let floor = (top.merit as f64 * TAIL_CUTOFF) as i64;
-                hits.retain(|(m, _)| m.merit >= floor);
+                // A record covering the whole phrase is never the weak tail,
+                // however little a description match scores: covering it is
+                // what earned its place. A single-word query has no phrase to
+                // cover, so the cut stands as it always did.
+                let covers_all = |c: &score::Coverage| !names && c.matched >= tokens.len();
+                hits.retain(|(c, _)| c.score.merit >= floor || covers_all(c));
             }
         }
     }
