@@ -119,17 +119,26 @@ const DERIVED_SUFFIXES: &[&str] = &[
     "_constraint",
     "_update_column",
     "_updates",
+    "_stream",
+    "_stream_cursor_input",
+    "_stream_cursor_value_input",
 ];
+
+/// The same idea in the other spelling: Relay's pagination wrappers. A schema
+/// with a `Repository` has a `RepositoryConnection` and a `RepositoryEdge`
+/// that carry its name and match everything it matches, and nobody searching
+/// for a repository means the edge.
+const WRAPPER_SUFFIXES: &[&str] = &["Connection", "Edge"];
 
 /// Whether a record belongs to a generated table's plumbing rather than to the
 /// table. Its own name for a type, its parent's for a field on one.
 fn derived(rec: &SchemaRecord) -> bool {
-    let name = rec
-        .parent
-        .as_deref()
-        .unwrap_or(&rec.name)
-        .to_ascii_lowercase();
-    DERIVED_SUFFIXES.iter().any(|s| name.ends_with(s))
+    let owner = rec.parent.as_deref().unwrap_or(&rec.name);
+    let lower = owner.to_ascii_lowercase();
+    DERIVED_SUFFIXES.iter().any(|s| lower.ends_with(s))
+        || WRAPPER_SUFFIXES
+            .iter()
+            .any(|s| owner.len() > s.len() && owner.ends_with(s))
 }
 
 /// What matching a word's singular is worth against matching the word itself.
@@ -958,6 +967,17 @@ mod tests {
         // A hand-written camelCase schema can't be caught by it: the
         // conventions are snake_case, and `CreateUserInput` is a type someone
         // meant to write.
+        // Relay's wrappers are the same shape in camelCase: the edge carries
+        // the type's name and matches everything it matches.
+        let repo = rec("Repository", "Repository", Kind::Object);
+        let edge = rec("RepositoryEdge", "RepositoryEdge", Kind::Object);
+        assert!(derived(&edge) && !derived(&repo));
+        assert!(
+            score("repository", &repo).unwrap().score > score("repository", &edge).unwrap().score
+        );
+        // ...but a type *called* `Edge` is a type, not a wrapper around one.
+        assert!(!derived(&rec("Edge", "Edge", Kind::Object)));
+
         let input = rec("CreateUserInput", "CreateUserInput", Kind::InputObject);
         let object = rec("CreateUserPayload", "CreateUserPayload", Kind::Object);
         assert!(!derived(&input));
