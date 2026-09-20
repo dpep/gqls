@@ -1,0 +1,30 @@
+O	was this repository forked from another one	Repository.isFork
+V	has this project been mothballed by its owners	Repository.isArchived
+V	does this pull request have any conflicts blocking it from going in	PullRequest.mergeable
+O	is this pull request still marked as a draft	PullRequest.isDraft
+V	how much space does this repository take up on GitHub's servers	Repository.diskUsage
+O	how many people have starred this repo	Repository.stargazerCount
+O	how many times has this repo been forked	Repository.forkCount
+V	under what terms am I allowed to reuse this code	Repository.licenseInfo
+O	what programming language is most of this codebase written in	Repository.primaryLanguage
+V	when was this repository last updated with new commits	Repository.pushedAt
+V	is this repository public or private	Repository.visibility
+O	when was this issue closed	Issue.closedAt
+O	has this issue's conversation been locked from further comments	Issue.locked
+O	what are the possible states for whether a pull request can be merged	MergeableState
+O	when is this milestone due	Milestone.dueOn
+V	what does this person's profile say about themselves	User.bio
+O	which company does this user list on their profile	User.company
+O	who is following this user	User.followers
+V	who belongs to this organization	Organization.membersWithRole
+O	which kinds of things on GitHub can be closed, like issues or pull requests	Closable
+V	is this version still in beta	Release.isPrerelease
+V	what picture appears when this repo's link gets shared online	Repository.openGraphImageUrl
+O	how do I star a repo	Mutation.addStar
+O	how do I unstar a repo I starred before	Mutation.removeStar
+O	how do I merge a pull request	Mutation.mergePullRequest
+V	how do I ask a teammate to look over my changes before merging	Mutation.requestReviews
+V	how do I move a bug report to a different repository	Mutation.transferIssue
+V	how do I stop people from adding new comments to a closed thread	Mutation.lockLockable
+V	how do I stop getting notified about an issue	Mutation.updateSubscription
+O	how do I pin an issue to the top of a repo	Mutation.pinIssue
