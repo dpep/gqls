@@ -8,6 +8,18 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Changed
+- **A phrase can now be answered by what a record's description says.** Where
+  a schema names something in its own vocabulary and describes it in the
+  user's, the description is what bridges them: `current user` finds
+  `Query.viewer` ("The currently authenticated user"). A description word
+  counts toward how much of the phrase a record covers, but the bar to clear
+  is still the best coverage by *name* — prose can reach it, never raise it,
+  so a record whose description happens to mention a word can't displace the
+  one named after it. Single-word queries are untouched. Measured on 49
+  labelled queries against GitHub's schema: MRR 0.43 -> 0.47, five queries
+  rescued, none lost.
+
 ### Fixed
 - **A truncated wildcard said so twice.** A query compiles its filters once to
   search and once to explain, and the warning lived in the matcher.

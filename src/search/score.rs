@@ -273,14 +273,55 @@ pub(crate) fn phrase_tokens(query: &str) -> Vec<&str> {
     }
 }
 
+/// How much of a phrase a record covers, and how well.
+pub(crate) struct Coverage {
+    /// Words the record's own name (or path, or argument) matched. The bar a
+    /// phrase has to clear is the best of these across the schema.
+    pub(crate) named: usize,
+    /// Those plus the words only its description carries.
+    pub(crate) matched: usize,
+    pub(crate) score: Match,
+}
+
+/// A word the description carries but the name doesn't. Worth counting and
+/// barely worth scoring: it decides coverage — `Query.viewer` covers both
+/// words of "current user" through "The currently authenticated user" — while
+/// staying far below the weakest name match, so within one coverage tier a
+/// name always wins.
+const DESCRIPTION_WORD: i64 = 1;
+
+/// Whether `word` appears whole in `text`, ignoring case. Prose, so the
+/// boundaries are non-alphanumerics rather than camelCase humps; `current`
+/// matches "currently", since English suffixes are how a description says the
+/// same thing a name does.
+fn described_by(word: &str, text: &str) -> bool {
+    // Byte-wise and allocation-free: this runs per unmatched word per record,
+    // so lowercasing a copy of every description was the whole added cost of
+    // consulting them.
+    let (word, text) = (word.as_bytes(), text.as_bytes());
+    if word.is_empty() || word.len() > text.len() {
+        return false;
+    }
+    (0..=text.len() - word.len())
+        .filter(|&i| i == 0 || !text[i - 1].is_ascii_alphanumeric())
+        .any(|i| text[i..i + word.len()].eq_ignore_ascii_case(word))
+}
+
 /// Score a phrase against a record word by word: how many words matched, and
 /// their summed quality. `None` when no word matches. Callers rank on the count
 /// first — a name covering the whole phrase beats one echoing a single word.
+///
+/// A word the name misses is looked for in the description, because that is
+/// where a schema says in the user's vocabulary what its names say in its own
+/// ("who is logged in" against `viewer`). Measured on GitHub's schema: of the
+/// phrase queries whose answer the name can't reach, three quarters name it in
+/// the description.
 pub(crate) fn score_phrase(
     tokens: &[&str],
     rec: &SchemaRecord,
     scorer: Scorer,
-) -> Option<(usize, Match)> {
+) -> Option<Coverage> {
+    let mut named = 0;
     let mut matched = 0;
     let mut sum = Match {
         exact: true,
@@ -290,15 +331,29 @@ pub(crate) fn score_phrase(
     };
     for token in tokens {
         if let Some(m) = scorer(token, rec) {
+            named += 1;
             matched += 1;
             // Exact only if every word it matched was; named if any was.
             sum.exact &= m.exact;
             sum.named |= m.named;
             sum.merit += m.merit;
             sum.score += m.score;
+        } else if rec
+            .description
+            .as_deref()
+            .is_some_and(|d| described_by(token, d))
+        {
+            matched += 1;
+            sum.exact = false;
+            sum.merit += DESCRIPTION_WORD;
+            sum.score += DESCRIPTION_WORD;
         }
     }
-    (matched > 0).then_some((matched, sum))
+    (matched > 0).then_some(Coverage {
+        named,
+        matched,
+        score: sum,
+    })
 }
 
 /// Split a query into its leaf name and the optional enclosing type typed
@@ -776,9 +831,40 @@ mod tests {
             &rec("subscriptionPlan", "T.subscriptionPlan", Kind::Field),
             score,
         );
-        assert_eq!(both.unwrap().0, 2);
-        assert_eq!(one.unwrap().0, 1);
+        assert_eq!(both.unwrap().matched, 2);
+        assert_eq!(one.unwrap().matched, 1);
         assert!(score_phrase(&phrase, &rec("id", "T.id", Kind::Field), score).is_none());
+    }
+
+    #[test]
+    fn a_word_only_the_description_carries_still_covers_it() {
+        // What a schema calls `viewer` a person calls the current user, and
+        // the description is where the schema says so.
+        let phrase = ["current", "user"];
+        let mut viewer = rec("viewer", "Query.viewer", Kind::Query);
+        viewer.description = Some("The currently authenticated user.".into());
+        let c = score_phrase(&phrase, &viewer, score).expect("described words count");
+        assert_eq!(c.matched, 2, "both words are covered");
+        assert_eq!(
+            c.named, 0,
+            "neither by the name — that's the bar it can't raise"
+        );
+
+        // A name match still outscores a described one by orders of magnitude,
+        // so within one coverage tier the named record leads.
+        let mut named = rec("currentUser", "Query.currentUser", Kind::Query);
+        named.description = Some("Unrelated prose.".into());
+        let n = score_phrase(&phrase, &named, score).expect("a name match");
+        assert_eq!((n.named, n.matched), (2, 2));
+        assert!(n.score.score > c.score.score * 100);
+    }
+
+    #[test]
+    fn a_description_word_is_whole_not_a_fragment() {
+        // `currently` says `current`; `recurrent` doesn't.
+        assert!(described_by("current", "The currently authenticated user."));
+        assert!(!described_by("current", "A recurrent billing cycle."));
+        assert!(described_by("fork", "The number of forks."));
     }
 
     #[test]
