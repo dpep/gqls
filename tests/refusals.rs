@@ -34,7 +34,7 @@ fn a_path_that_isnt_a_schema_source_is_refused_not_searched_for() {
 }
 
 #[test]
-fn an_unresolved_qualifier_says_the_search_went_unscoped() {
+fn an_unresolved_qualifier_reads_as_what_it_did_not_as_a_failure() {
     // A qualifier naming no type falls back to matching the whole path, which
     // is documented — and was silent, so the scope looked applied.
     let out = gqls(&["Zzzz.name", SCHEMA]);
@@ -42,6 +42,9 @@ fn an_unresolved_qualifier_says_the_search_went_unscoped() {
     assert!(out.status.success(), "{err}");
     assert!(err.contains("no type named \"Zzzz\""), "{err}");
     assert!(err.contains("every type"), "{err}");
+    // The line leads with what it searched, so a right answer underneath
+    // doesn't read as an error: `Repo.owner` finds `Repository.owner`.
+    assert!(err.starts_with("gqls: searching"), "{err}");
 }
 
 #[test]
