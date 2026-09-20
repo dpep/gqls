@@ -1,0 +1,49 @@
+V	star a repository	Mutation.addStar
+V	unstar a repo	Mutation.removeStar
+V	follow a person	Mutation.followUser
+V	stop watching a repo	Mutation.updateSubscription
+V	close a bug report	Mutation.closeIssue
+V	reopen a ticket	Mutation.reopenIssue
+V	approve a pull request	Mutation.submitPullRequestReview
+V	merge a PR	Mutation.mergePullRequest
+V	remove a git branch	Mutation.deleteRef
+V	archive a project	Mutation.archiveRepository
+V	who is logged in	Query.viewer
+V	current user	Query.viewer
+V	look up a repo by owner and name	Query.repository
+V	fetch anything by global id	Query.node
+V	api quota remaining	Query.rateLimit
+V	add a label to an issue	Mutation.addLabelsToLabelable
+V	thumbs up reaction	Mutation.addReaction
+V	emoji reaction on a comment	Mutation.addReaction
+V	lock a conversation	Mutation.lockLockable
+V	transfer an issue to another repo	Mutation.transferIssue
+V	fork a repo	Mutation.createRepository
+V	create a git branch	Mutation.createRef
+V	commit a file change	Mutation.createCommitOnBranch
+V	mark pr ready	Mutation.markPullRequestReadyForReview
+V	convert pr to draft	Mutation.convertPullRequestToDraft
+V	ask someone to review a pr	Mutation.requestReviews
+V	sponsor a developer	Mutation.createSponsorship
+V	pin an issue	Mutation.pinIssue
+V	resolve a review thread	Mutation.resolveReviewThread
+V	who can push to a branch	BranchProtectionRule
+V	security vulnerability alert	RepositoryVulnerabilityAlert
+V	list of people who starred	Repository.stargazers
+V	number of forks	Repository.forkCount
+V	default branch of a repo	Repository.defaultBranchRef
+V	programming languages used by a repo	Repository.languages
+V	user avatar image	User.avatarUrl
+V	email address of a user	User.email
+V	when was the issue closed	Issue.closedAt
+V	software license of a repo	Repository.licenseInfo
+O	add a comment	Mutation.addComment
+O	create an issue	Mutation.createIssue
+O	delete a branch protection rule	Mutation.deleteBranchProtectionRule
+O	update a pull request	Mutation.updatePullRequest
+O	pull request review comment	PullRequestReviewComment
+O	repository topics	Repository.repositoryTopics
+O	user followers	User.followers
+O	issue labels	Issue.labels
+O	create a discussion	Mutation.createDiscussion
+O	enterprise members	Enterprise.members

@@ -1,0 +1,12 @@
+N	Comment	Comment
+N	createUser	Mutation.createUser
+A	usr	Query.user
+A	crtUsr	Mutation.createUser
+T	commet	Comment
+T	emial	User.email
+Q	Post.author	Post.author
+Q	Comment.body	Comment.body
+P	archive a user	Mutation.archiveUser
+P	full text search	Query.search
+G	reason	Mutation.archiveUser
+G	orderBy	Query.posts
