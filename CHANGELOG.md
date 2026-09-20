@@ -9,6 +9,8 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **A truncated wildcard said so twice.** A query compiles its filters once to
+  search and once to explain, and the warning lived in the matcher.
 - **A cache location gqls can't use is said aloud.** A relative or empty
   `XDG_CACHE_HOME` is ignored (the XDG spec's rule, and what keeps
   `--clear-cache` out of your cwd) — but silently, so a run cached somewhere

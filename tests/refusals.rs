@@ -93,3 +93,16 @@ fn a_path_shaped_query_is_fine_once_a_source_is_named() {
     assert!(out.status.success(), "{err}");
     assert!(!err.contains("isn't a schema source"), "{err}");
 }
+
+#[test]
+fn a_truncated_pattern_is_reported_once() {
+    // `Filters::compile()` runs twice per query — once to search, once for the
+    // explain predicate — and the warning lived in the matcher, so it doubled.
+    let wide = "{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}";
+    for args in [vec!["*", SCHEMA, "--returns", wide], vec![wide, SCHEMA]] {
+        let out = gqls(&args);
+        let err = stderr(&out);
+        let said = err.lines().filter(|l| l.contains("expands past")).count();
+        assert_eq!(said, 1, "{args:?}: {err}");
+    }
+}
