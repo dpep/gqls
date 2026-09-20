@@ -1,0 +1,20 @@
+O	list of all types	query_root.pokemon_v2_type
+O	list of egg groups	query_root.pokemon_v2_egggroup
+O	list of abilities	query_root.pokemon_v2_ability
+O	list of berry flavors	query_root.pokemon_v2_berryflavor
+O	list of move targets	query_root.pokemon_v2_movetarget
+O	list of evolution chains	query_root.pokemon_v2_evolutionchain
+O	list of pokemon species	query_root.pokemon_v2_pokemonspecies
+O	list of encounter methods	query_root.pokemon_v2_encountermethod
+V	how heavy is a pokemon	pokemon_v2_pokemon.weight
+V	how tall is a pokemon	pokemon_v2_pokemon.height
+V	what moves can a pokemon learn	query_root.pokemon_v2_pokemonmove
+V	what abilities does a pokemon have	query_root.pokemon_v2_pokemonability
+V	a pokemon's base stats	query_root.pokemon_v2_pokemonstat
+V	leveling curve for a pokemon	query_root.pokemon_v2_growthrate
+V	type matchup effectiveness	query_root.pokemon_v2_typeefficacy
+V	gear a pokemon can carry	query_root.pokemon_v2_pokemonitem
+S	how many pokemon are there in total	query_root.pokemon_v2_pokemon_aggregate
+S	look up a single pokemon by its id	query_root.pokemon_v2_pokemon_by_pk
+S	how many moves exist	query_root.pokemon_v2_move_aggregate
+S	fetch one move by its primary key	query_root.pokemon_v2_move_by_pk
