@@ -38,7 +38,14 @@ cargo fmt --check
 step "clippy"
 cargo clippy --all-targets -- -D warnings
 
+# Most integration tests drive the real binary, which caches parsed records
+# under $XDG_CACHE_HOME. Left alone they read and write the developer's own
+# cache: a run can be answered from a file an older build wrote — the same
+# "green over code you didn't write" failure `cargo clean -p` exists to stop,
+# one layer down — and `cargo test` evicts real entries as it goes.
 step "tests"
-cargo test
+GQLS_TEST_CACHE="$(mktemp -d)"
+trap 'rm -rf "$GQLS_TEST_CACHE"' EXIT
+XDG_CACHE_HOME="$GQLS_TEST_CACHE" cargo test
 
 printf '\nall green\n'

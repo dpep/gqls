@@ -420,6 +420,20 @@ pub fn run() -> Result<()> {
         if pattern {
             crate::detail!("wildcard query — enumerating matches for {query:?}");
         }
+        // Said here, where the patterns a user typed are known: the matcher
+        // compiles each of them more than once per query.
+        for p in [pattern.then_some(query), cli.returns.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if search::glob::Pattern::new(p).truncated {
+                crate::status!(
+                    "pattern expands past {} alternatives — matching the first {}",
+                    search::glob::MAX_ALTERNATIVES,
+                    search::glob::MAX_ALTERNATIVES
+                );
+            }
+        }
 
         // `User name` — a two-word query whose first word exactly names a type —
         // is the qualified form typed with a space.

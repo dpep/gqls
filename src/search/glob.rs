@@ -11,12 +11,15 @@
 /// Cap on brace expansion, so a pathological pattern can't blow up. Real
 /// patterns produce a handful of alternatives; hitting this is reported, never
 /// silently truncated.
-const MAX_ALTERNATIVES: usize = 64;
+pub(crate) const MAX_ALTERNATIVES: usize = 64;
 
 /// A parsed wildcard pattern: brace groups expanded to their alternatives, any
 /// of which may match. Built once per query, then tested against every record.
 pub(crate) struct Pattern {
     alternatives: Vec<String>,
+    /// Whether the query asked for more alternatives than the cap allows —
+    /// for the caller that owns stderr to say, once.
+    pub(crate) truncated: bool,
 }
 
 impl Pattern {
@@ -31,15 +34,15 @@ impl Pattern {
         let mut alternatives = Vec::new();
         expand(pattern, &mut alternatives);
         // `expand` stops one past the cap, so this distinguishes "exactly at
-        // the cap" (fine) from "more were wanted" (reported, never silent).
-        if alternatives.len() > MAX_ALTERNATIVES {
-            alternatives.truncate(MAX_ALTERNATIVES);
-            crate::status!(
-                "pattern expands past {MAX_ALTERNATIVES} alternatives — \
-                 matching the first {MAX_ALTERNATIVES}"
-            );
+        // the cap" (fine) from "more were wanted". Reported as data, never
+        // silent: a matcher that printed said it twice, since a query compiles
+        // its filters once to search and once to explain.
+        let truncated = alternatives.len() > MAX_ALTERNATIVES;
+        alternatives.truncate(MAX_ALTERNATIVES);
+        Self {
+            alternatives,
+            truncated,
         }
-        Self { alternatives }
     }
 
     /// Whether any alternative matches `text`.

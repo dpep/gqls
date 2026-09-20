@@ -30,7 +30,10 @@ is why it's in the base case and not behind a flag.
 
 ## Scripts — use these, don't hand-run their steps
 
-- **`script/check.sh`** — the gate. Formatting, clippy, and tests. Run before
+- **`script/check.sh`** — the gate. Formatting, clippy, and tests, with the
+  tests pointed at a throwaway `XDG_CACHE_HOME`: they drive the real binary,
+  and left alone they read and write your own cache, so a run can be answered
+  by a file an older build wrote. Run before
   every commit or push. It cleans this crate first, because cargo's fingerprint
   wedges "fresh" here and will otherwise validate code you didn't write (`cargo clean -p gqls-cli` is the
   manual fix if a build reports an error that contradicts the source).
