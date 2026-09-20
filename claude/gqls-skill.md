@@ -1,6 +1,6 @@
 ---
 name: gqls
-description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or — when you don't know the name — a plain-English description of what you're after ("cancel a subscription", "what is the default branch of a repo"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first, sees through camelCase/snake_case and typos, and reads the schema's documentation as well as its names, so the user's wording can reach a record the schema names differently. It can't invent a word the schema never uses: pass a word you're sure of. Not for raw text search.
+description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or — when you don't know the name — a plain-English description of what you're after ("cancel a subscription", "what is the default branch of a repo"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks rather than lists, sees through camelCase/snake_case and typos, and matches a phrase against the schema's descriptions as well as its names. It matches only what the schema wrote down, so pass a word you're sure of and read past the first row. Not for raw text search.
 ---
 
 # gqls — search a GraphQL schema
@@ -133,7 +133,7 @@ first member as primary or the order as meaningful.
 
 **Explaining is triggered by the letters, not by what you meant.** A coincidental
 exact match wins and is then reported in full, which reads as authority: against
-one real schema `gqls 'update address'` explains the enum value
+one real schema `gqls update address` explains the enum value
 `SupportTicketDispositionLink.UPDATE_ADDRESS` while
 `UserMutation.update_user_address` sits in the matches it didn't show. The
 `N other matches` line above the answer is the tell — when the record you got
@@ -151,7 +151,7 @@ order with types, descriptions and deprecations. Keep `User.` for when you want
 to *search* within a type (`gqls 'User.*email*'`).
 
 On a toy schema the two look identical, which is how the habit goes wrong. The
-difference bites on a real one: `gqls 'Repository.'` returns 20 of GitHub's 145
+difference bites on a real one: `gqls Repository.` returns 20 of GitHub's 145
 fields, alphabetical, descriptions clipped — and 20 fields is a perfectly
 plausible-looking type. Never answer "what fields does X have" from the wildcard
 form.

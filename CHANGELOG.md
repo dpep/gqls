@@ -9,6 +9,9 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
+- **The `and N more` hint no longer quotes the command it suggests.** A
+  trailing dot is no shell metacharacter, and quoting it there taught the habit
+  everywhere else.
 - **A phrase in your own words finds more than it used to.** Three rules widen
   what counts as covering one of its words:
 
