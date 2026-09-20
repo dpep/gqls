@@ -9,46 +9,50 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
-- **Pagination wrappers rank below what they wrap.** A schema with a
-  `Repository` has a `RepositoryConnection` and a `RepositoryEdge` that carry
-  its name and match everything it matches — and `RepositoryRulesetEdge` was
-  the top answer for "programming languages used by a repo". Relay's `Edge`
-  and `Connection` suffixes now rank below the type they wrap, the same way a
-  generated table's plumbing does; a type actually *called* `Edge` is
-  untouched. Hasura's `_stream` subscriptions join that list too.
-- **A generated table's plumbing ranks below the table.** Hasura and
+- **A phrase in your own words finds more than it used to.** Three rules widen
+  what counts as covering one of its words:
+
+  Where a schema names something in its own vocabulary and describes it in the
+  user's, the **description** now bridges them — `current user` reaches
+  `Query.viewer` ("The currently authenticated user"), which its name alone
+  never did.
+
+  The words a **question** is built from (`who`, `what`, `does`, `has`, `this`,
+  `my`) named nothing in any schema, so each one a record happened to echo
+  lifted its word count and buried the records matching the words you meant.
+  They're dropped before scoring now, like the other stopwords, so a question
+  asked as a sentence narrows about as well as the keywords inside it.
+
+  A word matching *nothing at all* is retried as its **singular**, one tier
+  below a direct match: `types` never reached `pokemon_v2_type`, because the
+  trailing `s` has nowhere to land in a subsequence and a prefixed name is far
+  outside the typo budget. The other direction already worked, since `type`
+  lands inside `types` on its own.
+
+  A description word counts toward how much of a phrase a record covers, but
+  the bar to clear is still the best coverage by *name* — prose can reach it,
+  never raise it, so a record whose description happens to mention a word can't
+  displace the one named after it. Single-word queries are matched against
+  names only and are untouched by all three.
+
+  Measured, each against the labelled sets in `script/eval/`: the description
+  rule took MRR from 0.43 to 0.47 on 49 GitHub queries, rescuing five and
+  losing none; dropping question words took it from 0.06 to 0.13 on 30 queries
+  written as full questions by someone other than their author, leaving the
+  shorter-phrase sets unchanged; the singular retry took the held-out set from
+  0.22 to 0.27, and four of six sampled PokeAPI root fields from unreachable to
+  found.
+- **A generated schema's boilerplate ranks below what it wraps.** Hasura and
   PostGraphile surround every real table with a dozen derived types — filters,
-  aggregates, sort orders, insert shapes — and each carries the table's name,
-  so it matches everything the table matches. On PokeAPI's schema they are
-  22,667 of 26,218 records, and they filled the whole first page of every
-  answer: `list of egg groups` had 50 of them above the table it named. The
-  suffixes are snake_case conventions those generators own, so a hand-written
-  schema is untouched.
-- **A plural query reaches a name the schema spells singular.** `types` never
-  matched `pokemon_v2_type`: the trailing `s` has nowhere to land in a
-  subsequence, and a prefixed name is far outside the typo budget, so the word
-  matched *nothing* rather than matching weakly. A word that matches nothing is
-  now retried as its singular, one tier below a direct match — the other
-  direction already worked, since `type` lands inside `types` on its own. On
-  PokeAPI's Hasura schema, four of six sampled root fields went from
-  unreachable to found; on the held-out set, MRR 0.22 -> 0.27.
-- **A question asked as a sentence narrows better.** The words a question is
-  built from — `who`, `what`, `does`, `has`, `this`, `my` — named nothing in
-  any schema, so each one a record happened to echo lifted its word count and
-  buried the records that matched the words you meant. They're dropped before
-  scoring now, like the other stopwords. Measured on 30 queries written as
-  full questions by someone other than their author: MRR 0.06 -> 0.13, with
-  the shorter-phrase sets unchanged.
-- **A phrase can now be answered by what a record's description says.** Where
-  a schema names something in its own vocabulary and describes it in the
-  user's, the description is what bridges them: `current user` finds
-  `Query.viewer` ("The currently authenticated user"). A description word
-  counts toward how much of the phrase a record covers, but the bar to clear
-  is still the best coverage by *name* — prose can reach it, never raise it,
-  so a record whose description happens to mention a word can't displace the
-  one named after it. Single-word queries are untouched. Measured on 49
-  labelled queries against GitHub's schema: MRR 0.43 -> 0.47, five queries
-  rescued, none lost.
+  aggregates, sort orders, insert shapes, `_stream` subscriptions — each
+  carrying the table's name, so each matches everything the table matches. On
+  PokeAPI's schema they are 22,667 of 26,218 records, and they filled the whole
+  first page of every answer: `list of egg groups` had 50 of them above the
+  table it named. Relay's `Connection` and `Edge` are the same shape in the
+  other spelling — `RepositoryRulesetEdge` was the top answer for "programming
+  languages used by a repo" — and now rank below the type they wrap too. Both
+  lists are suffix conventions their generators own, so a hand-written schema
+  is untouched, and a type actually *called* `Edge` is left alone.
 
 ### Fixed
 - **A truncated wildcard said so twice.** A query compiles its filters once to

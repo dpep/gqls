@@ -1,6 +1,6 @@
 ---
 name: gqls
-description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or a phrase of the words a name is built from ("cancel subscription"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first and sees through camelCase/snake_case and typos (spelling, not vocabulary: a dropped word needs a phrase, a synonym needs you to try the other word). Not for raw text search.
+description: Search a GraphQL schema, and draft operations against it, with the `gqls` CLI. Use for "where is the X type/field", "what mutation does Y", "what returns Z", "what fields does Z have" (`gqls User`), or — when you don't know the name — a plain-English description of what you're after ("cancel a subscription", "what is the default branch of a repo"); `--example` drafts a query or mutation to paste, and `--resolve` jumps to a field's graphql-ruby resolver. Works against an SDL file, an introspection JSON dump, or a live endpoint. Prefer over grep/rg for anything schema-shaped — it ranks the intended match first, sees through camelCase/snake_case and typos, and reads the schema's documentation as well as its names, so the user's wording can reach a record the schema names differently. It can't invent a word the schema never uses: pass a word you're sure of. Not for raw text search.
 ---
 
 # gqls — search a GraphQL schema
@@ -159,13 +159,10 @@ form.
 ## Scope when you know more
 
 - Fuzzy / abbreviation / typo: `gqls usr`, `gqls usre`, `gqls createuser`.
-  This bridges **spelling, not vocabulary** — it matches names built from your
-  query's characters in order. A synonym or a dropped domain word is a different
-  name, not a mangled one: `currentUser` finds nothing when the field is `me`,
-  and `updateAddress` misses `updateUserAddress` once an unrelated
-  `UPDATE_ADDRESS` outranks it. When you're guessing at a name rather than
-  quoting one the user gave you, search the word you're sure of (`address`), or
-  try the synonyms yourself — gqls won't.
+  A single word is matched against names, so a misspelling lands and a synonym
+  doesn't — `currentUser` finds nothing where the field is `viewer`. When you
+  have the user's wording rather than a name, pass the whole phrase instead
+  (see **Phrases**); that's the form that reaches past the spelling.
 - Qualified: `gqls User.email` — when `User` names a schema type (any case,
   misspellings snap to the unique closest type), results are hard-filtered to
   that type's members; otherwise it falls back to fuzzy-matching the whole
@@ -198,9 +195,9 @@ form.
 - **DB-generated schema (Hasura, PostGraphile): name the type or use `-k`.**
   Every name shares a prefix — `pokemon_v2_pokemon`, `pokemon_v2_item`,
   `pokemon_v2_move` — so one bare word matches the entire table list. Ranking
-  puts the table you meant first, but the rest follows it closely enough that a
-  `-l 1` read is a coin flip on which table you report. Spell the type out, or
-  add `-k query` for entry points only.
+  puts the table you meant first and keeps the generated boilerplate out of the
+  way, but what's left still matches, so a `-l 1` read is not a settled answer.
+  Spell the type out, or add `-k query` for entry points only.
 - Kind: `gqls createUser -k mutation` — object, field, query, mutation, enum,
   scalar, input_object, interface, union, directive (plurals ok). A bad kind
   lists the valid ones.
@@ -223,15 +220,23 @@ that the token you just passed works.
 
 ## Phrases
 
-A multi-word query is matched word by word: noise words (`a`, `the`, `of`, …)
-are dropped, and the records covering the most words win outright —
-`cancelSubscription` beats the many that merely echo `subscription`.
+**When you don't know the name, pass the user's own words.** A multi-word query
+is the form that reaches past spelling: gqls reads the schema's documentation as
+well as its names, so `cancel a subscription` and `what is the default branch of
+a repo` both work, and you don't need to trim a question down to keywords first.
+Fewer words still narrow better than more, so drop what the user plainly didn't
+mean — but don't rewrite their question into your guess at a name.
 
-**Write the phrase as search terms, not as a question.** Noise words are dropped
-before scoring, but everything else you type is a word some record can cover, so
-a full sentence pulls the ranking toward whatever echoes its incidentals:
-`user credit score` finds the field that `where do we expose a users credit
-score` buries. Trim a user's question to its content words before passing it on.
+**Read past rank 1 on a phrase like this.** When the user's vocabulary and the
+schema's don't overlap, gqls will often place the right record several rows down
+rather than on top — `current user` reaches GitHub's `Query.viewer`, at rank 8,
+behind everything whose name literally carries `user`. Scan the page before
+reporting, and don't take `-l 1` as the answer.
+
+**gqls can't invent a word the schema never uses.** If neither a name nor a
+description says `unstar`, no query spelled that way reaches
+`Mutation.removeStar`; `remove a star` finds it first. A miss on a phrase is
+worth one retry in different words, not five.
 
 ## Many queries at once
 

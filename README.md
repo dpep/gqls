@@ -10,7 +10,7 @@ Point `gqls` at a schema and find the type, field or directive you're after by a
 ```sh
 gqls user schema.graphql              # fuzzy: usr, usre, User.email all match
 gqls repository https://api/graphql   # introspect a live endpoint
-gqls cancel a subscription            # a phrase, matched word by word
+gqls cancel a subscription            # a phrase, when you don't know the name
 gqls Query.user -R --code ./app       # jump to the graphql-ruby resolver
 ```
 
@@ -55,22 +55,20 @@ Several words are one query, so `gqls cancel a subscription` needs no quotes, an
 
 Handles abbreviations (`usr` → `User`), typos and transpositions (`usre` → `User`), and qualified `Type.field` queries. Results rank by match quality — how cleanly your query's characters sit in the name, times how much of the name they account for — and kind breaks the tie, which is what floats a root `Query`/`Mutation` field above the type it returns when both match equally well. Weak long-tail matches are cut relative to the best hit, and a query that names a record exactly cuts everything weaker outright. When the limit drops matches, the total is reported on stderr so a truncated list can't pass for the whole answer.
 
-**Fuzzy bridges spelling, not vocabulary.** It matches names built out of your query's characters in order, so a typo or a dropped vowel still lands — but a synonym or a missing domain word is a different name, not a mangled one. `currentUser` finds nothing when the field is `me`, and `updateAddress` misses `updateUserAddress` the moment an unrelated `UPDATE_ADDRESS` outranks it. When you're guessing at a name rather than recalling one, search the word you're sure of (`address`), or write a phrase of the words the name is likely built from.
+**A phrase is the thing to type when you don't know the name.** Describe what you're after in your own words — `gqls 'cancel a subscription'`, `gqls 'what is the default branch of a repo'` — and gqls works to put the record you meant on top, reading the schema's documentation as well as its names. Fewer words still narrow better than more, but you no longer have to strip a question down to keywords first.
 
-A multi-word query is matched one word at a time. Noise words (`a`, `the`, `of`, …) are dropped, and the records covering the most words win outright — `cancelSubscription` beats the many that merely echo `subscription`. When nothing covers the whole phrase, every single-word match stands.
+**What it won't do is invent a word the schema never uses.** Nothing reaches GitHub's `Mutation.removeStar` from `unstar`, because the schema doesn't say `unstar` anywhere — `gqls 'remove a star'` finds it first. So when you're guessing at a name rather than recalling one, search a word you're sure of.
 
-Which means a phrase works best trimmed to its content words, the way you'd type a search-engine query, not a question: `user credit score` finds the field where `where do we expose a users credit score` buries it. Dropping noise words keeps them from scoring, but every word you leave in is a word a record can cover, and the ones you didn't mean still count.
+Only whitespace makes a query a phrase: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` says `no matches for "Post.role"` — it doesn't retry as a phrase, though `gqls role` alone finds four records. Drop the type word. Quoting won't help, since the qualifier is recognised either way.
 
-Only whitespace opens this path: `User.email` is scored whole, and `User email` becomes the qualified form before the search runs. That rewrite has no fallback. If the first word names a type (any case) and the second names nothing on it, `gqls Post role` says `no matches for "Post.role"` — it doesn't retry as a phrase, though `gqls role` alone finds four records. Drop the type word. Quoting won't help, since the qualifier is recognised either way.
-
-**On a schema where every name starts the same way, name the type.** A Hasura or PostGraphile schema prefixes its whole table list — `pokemon_v2_pokemon`, `pokemon_v2_item`, `pokemon_v2_move` — so a bare word matches all of it. Ranking now puts the table you meant first — a name that repeats your query, or ends with it, beats a shorter one that merely starts with it — but the rest of the list is right behind it, because on a schema like that every name really does match. Spell the type out, or add `-k query` for entry points and nothing else. Guessing at a stem and scrolling is the slow path, and it's where a beginner loses an afternoon.
+**On a schema where every name starts the same way, name the type.** A Hasura or PostGraphile schema prefixes its whole table list — `pokemon_v2_pokemon`, `pokemon_v2_item`, `pokemon_v2_move` — so a bare word matches all of it. Ranking puts the table you meant first and keeps the generated boilerplate those tools surround it with out of the way, but what's left still matches: `gqls pokemon` is a page of `pokemon_v2_pokemon` in twenty positions. Spell the type out, or add `-k query` for entry points and nothing else. Guessing at a stem and scrolling is the slow path, and it's where a beginner loses an afternoon.
 
 A miss says what made it one. The filters in play, and what dropping them would find (`nothing returns Issue with -k query — 43 matches without it`); and the schema, when gqls discovered one rather than being handed it (`no matches for "country" in examples/schema.graphql`) — "not in this schema" and "you're searching the wrong schema" otherwise read identically.
 
 ```sh
 gqls createUser -k mutation      # restrict to a kind (plurals ok: mutations)
 gqls User.email                  # qualified — filters to fields on User
-gqls 'cancel a subscription'     # a phrase — matched word by word
+gqls 'cancel a subscription'     # a phrase — when you don't know the name
 ```
 
 ### Name one thing and gqls explains it
