@@ -9,10 +9,19 @@ use std::path::PathBuf;
 /// relative one resolves against the cwd, and `--clear-cache` would then
 /// sweep whatever project directory happens to be called `gqls`.
 pub(crate) fn cache_dir() -> Option<PathBuf> {
+    // Said once per run, not once per lookup: the caller asks several times.
+    static SAID: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let absolute = |var| {
-        std::env::var_os(var)
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
+        let set: Option<PathBuf> = std::env::var_os(var).map(PathBuf::from);
+        if let Some(p) = set.as_ref().filter(|p| !p.is_absolute()) {
+            if SAID.set(()).is_ok() {
+                crate::status!(
+                    "ignoring {var}={:?} — it isn't an absolute path",
+                    p.display()
+                );
+            }
+        }
+        set.filter(|p| p.is_absolute())
     };
     let base = absolute("XDG_CACHE_HOME").or_else(|| Some(absolute("HOME")?.join(".cache")))?;
     Some(base.join("gqls"))
