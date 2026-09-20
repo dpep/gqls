@@ -94,6 +94,44 @@ const PATH: f64 = 0.25;
 const QUALIFIED: f64 = 0.30;
 const QUALIFIED_PREFIX: f64 = 0.15;
 
+/// What a machine-generated table's plumbing is worth against the table it
+/// was generated from. A schema built by Hasura or PostGraphile surrounds
+/// every real table with a dozen derived ones — filters, aggregates, sort
+/// orders, insert shapes — and they carry the table's name, so they match
+/// everything it matches. On PokeAPI's schema they are 22,667 of 26,218
+/// records: whatever you ask for, they are the answer's own noise.
+const DERIVED: f64 = 0.5;
+
+/// Suffixes those generators give the types they derive. Deliberately a list
+/// of conventions rather than a rule like "a name that is another name plus a
+/// suffix": that shape also describes `RepositoryOwner` beside `Repository`,
+/// which is a type someone meant to write. All snake_case, so a hand-written
+/// camelCase schema cannot be touched by this.
+const DERIVED_SUFFIXES: &[&str] = &[
+    "_aggregate",
+    "_bool_exp",
+    "_order_by",
+    "_select_column",
+    "_fields",
+    "_input",
+    "_mutation_response",
+    "_on_conflict",
+    "_constraint",
+    "_update_column",
+    "_updates",
+];
+
+/// Whether a record belongs to a generated table's plumbing rather than to the
+/// table. Its own name for a type, its parent's for a field on one.
+fn derived(rec: &SchemaRecord) -> bool {
+    let name = rec
+        .parent
+        .as_deref()
+        .unwrap_or(&rec.name)
+        .to_ascii_lowercase();
+    DERIVED_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
 /// What matching a word's singular is worth against matching the word itself.
 /// Below every direct tier, so `users` can't outrank `user` on `Query.user`,
 /// and well above the path tier, since the word did name the record — a schema
@@ -247,6 +285,11 @@ fn finish(quality: f64, qualifier: Option<&str>, rec: &SchemaRecord) -> Match {
     let boost = qualifier
         .and_then(|q| parent_boost(q, rec.parent.as_deref()))
         .unwrap_or(0.0);
+    // Below the table it was generated from, wherever the two match alike.
+    let quality = match derived(rec) {
+        true => quality * DERIVED,
+        false => quality,
+    };
     Match {
         exact: false,
         named: true,
@@ -893,6 +936,33 @@ mod tests {
         assert_eq!(both.unwrap().matched, 2);
         assert_eq!(one.unwrap().matched, 1);
         assert!(score_phrase(&phrase, &rec("id", "T.id", Kind::Field), score).is_none());
+    }
+
+    #[test]
+    fn a_generated_tables_plumbing_ranks_below_the_table() {
+        // Hasura writes a dozen of these per table, and they carry the
+        // table's name, so they match everything it matches.
+        let table = rec(
+            "pokemon_v2_egggroup",
+            "query_root.pokemon_v2_egggroup",
+            Kind::Query,
+        );
+        let filter = rec(
+            "egg_group_id",
+            "pokemon_v2_egggroup_bool_exp.egg_group_id",
+            Kind::Field,
+        );
+        let q = "pokemon_v2_egggroup";
+        assert!(score(q, &table).unwrap().score > score(q, &filter).unwrap().score);
+
+        // A hand-written camelCase schema can't be caught by it: the
+        // conventions are snake_case, and `CreateUserInput` is a type someone
+        // meant to write.
+        let input = rec("CreateUserInput", "CreateUserInput", Kind::InputObject);
+        let object = rec("CreateUserPayload", "CreateUserPayload", Kind::Object);
+        assert!(!derived(&input));
+        assert!(!derived(&object));
+        assert!(derived(&filter));
     }
 
     #[test]
