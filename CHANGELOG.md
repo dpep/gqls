@@ -9,6 +9,14 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
+- **A generated table's plumbing ranks below the table.** Hasura and
+  PostGraphile surround every real table with a dozen derived types — filters,
+  aggregates, sort orders, insert shapes — and each carries the table's name,
+  so it matches everything the table matches. On PokeAPI's schema they are
+  22,667 of 26,218 records, and they filled the whole first page of every
+  answer: `list of egg groups` had 50 of them above the table it named. The
+  suffixes are snake_case conventions those generators own, so a hand-written
+  schema is untouched.
 - **A plural query reaches a name the schema spells singular.** `types` never
   matched `pokemon_v2_type`: the trailing `s` has nowhere to land in a
   subsequence, and a prefixed name is far outside the typo budget, so the word
