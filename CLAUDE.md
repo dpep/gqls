@@ -54,9 +54,19 @@ is why it's in the base case and not behind a flag.
 - **`script/eval.sh`** — the ranking-quality baseline: hit@1, hit@5 and MRR
   against labelled query → expected-record pairs, run before and after any
   change to ranking, fuzzy matching or the score combine. `--save NAME` /
-  `--diff NAME`, same as `bench.sh`. It's a measurement, not a gate — a low
-  score doesn't fail the script, and a handful of labelled queries supports
-  "this got worse", not a precise percentage.
+  `--diff NAME`, same as `bench.sh`; `--diff` also lists every query that was
+  rescued or lost, since an MRR delta can net out a change that helped nine
+  queries and broke four. Three sets: `script/eval/examples.tsv` (offline,
+  repo's own schema), `script/eval/github.tsv` (GitHub's schema, fetched on
+  demand), and `script/eval/holdout.tsv` (AniList's schema, fetched on
+  demand) — holdout is the one to never tune ranking against, since it shares
+  no vocabulary or authorship with the other two, and the report labels it
+  as such. It's a measurement, not a gate — a low score doesn't fail the
+  script, and a handful of labelled queries supports "this got worse", not a
+  precise percentage. `--selftest` checks the harness itself (correlation,
+  exit-status propagation) rather than ranking quality — run it after
+  touching `run_set` or the report logic; it's what would have caught two
+  bugs this harness already shipped.
 
 ## Two things that have burned this repo
 
