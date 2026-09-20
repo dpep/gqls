@@ -91,3 +91,41 @@ fn snake_and_screaming_case_words_count_as_schema_words() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(!stderr.contains("Did you mean Query.start?"), "{stderr}");
 }
+
+#[test]
+fn a_non_ascii_name_doesnt_panic_the_word_check() {
+    // `match_indices` yields byte offsets; the boundary table is char-indexed,
+    // so a multi-byte name used to index past the end and abort.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args(["abcd", "tests/fixtures/unicode_names.json"])
+        .output()
+        .expect("gqls should be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(101), "panicked: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn the_plural_of_a_schema_word_is_not_corrected_either() {
+    // `star` is protected by `star_count`; `stars` was one keystroke around it.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args(["stars", "-e", "tests/fixtures/snake_words.graphql"])
+        .output()
+        .expect("gqls should be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("Did you mean Query.start?"), "{stderr}");
+}
+
+#[test]
+fn a_plural_the_schema_really_has_still_corrects() {
+    // `starts` isn't a lookalike of `start` — it's the name, typed plural.
+    common::assert_binary_is_current(env!("CARGO_BIN_EXE_gqls"));
+    let out = Command::new(env!("CARGO_BIN_EXE_gqls"))
+        .args(["starts", "-e", "tests/fixtures/snake_words.graphql"])
+        .output()
+        .expect("gqls should be runnable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Did you mean Query.start?"), "{stderr}");
+}

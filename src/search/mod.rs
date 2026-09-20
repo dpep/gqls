@@ -135,6 +135,7 @@ pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
     if leaf.is_empty() {
         return false;
     }
+    let leaf: Vec<char> = leaf.chars().collect();
     names.iter().any(|name| {
         let chars: Vec<char> = name.chars().collect();
         let boundary = score::boundaries(&chars);
@@ -143,9 +144,12 @@ pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
         let at = |i: usize| {
             i == 0 || i == chars.len() || boundary[i] || chars[i] == '_' || chars[i - 1] == '_'
         };
-        name.to_ascii_lowercase()
-            .match_indices(&leaf)
-            .any(|(i, _)| at(i) && at(i + leaf.len()))
+        // Char offsets throughout: a byte offset from `match_indices` indexes
+        // the boundary table wrongly the moment a name isn't ASCII, and past
+        // its end for a long enough one.
+        let lower: Vec<char> = name.to_ascii_lowercase().chars().collect();
+        (0..lower.len().saturating_sub(leaf.len()) + 1)
+            .any(|i| lower[i..].starts_with(&leaf) && at(i) && at(i + leaf.len()))
     })
 }
 

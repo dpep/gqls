@@ -114,3 +114,40 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+#[test]
+fn only_gqls_shaped_temp_files_are_cleared() {
+    // gqls writes `<name>.tmp<pid>`. "anything starting with tmp" also took
+    // `.tmpl` templates with it.
+    let root = scratch("tmpl");
+    let dir = root.join("gqls");
+    for f in ["index.tmpl", "data.tmpx", "0123.tmp42"] {
+        write(&dir.join(f));
+    }
+    let out = clear(&[("XDG_CACHE_HOME", &root)], &root);
+    let left: Vec<_> = walk(&dir);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(out.status.success());
+    assert_eq!(left.len(), 2, "took files it didn't write: {left:?}");
+}
+
+#[test]
+fn a_cache_dir_that_is_a_symlink_is_cleared_like_any_other() {
+    // Writes follow it, so clearing must too — it said "cleared 0" over a full
+    // cache, which reads exactly like "there was nothing there".
+    let root = scratch("symlinked");
+    let real = root.join("real");
+    write(&real.join("0123.rcds"));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real, root.join("gqls")).expect("a symlink");
+
+    let out = clear(&[("XDG_CACHE_HOME", &root)], &root);
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let left = walk(&real);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(out.status.success(), "{stderr}");
+    assert!(left.is_empty(), "left behind: {left:?}");
+    assert!(stderr.contains("cleared 1 cached file(s)"), "{stderr}");
+}

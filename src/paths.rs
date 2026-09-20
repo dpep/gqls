@@ -20,21 +20,23 @@ pub(crate) fn cache_dir() -> Option<PathBuf> {
 
 /// Delete gqls's cache files — every kind it writes, and the embedding vectors
 /// releases before 0.26 wrote — returning how many were removed. Only regular
-/// files are touched and no symlink is followed, so nothing outside the cache,
-/// and nothing gqls didn't write, can go.
+/// files of those kinds go, and a symlinked *file* is never followed, so
+/// nothing gqls didn't write can be deleted. A symlinked cache *directory* is
+/// followed, because that's where the writes went; `introspect/` is not.
 pub(crate) fn clear_cache() -> usize {
     fn clear(dir: &std::path::Path, kinds: &[&str]) -> usize {
-        // A symlinked dir is left alone, like a symlinked file.
-        if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) {
-            return 0;
-        }
         let Ok(rd) = std::fs::read_dir(dir) else {
             return 0;
         };
+        // `<name>.tmp<pid>` is what an interrupted write leaves. Anything
+        // starting with `tmp` also matched `.tmpl` templates.
         let ours = |p: &std::path::Path| {
-            p.extension()
-                .and_then(|x| x.to_str())
-                .is_some_and(|x| kinds.contains(&x) || x.starts_with("tmp"))
+            p.extension().and_then(|x| x.to_str()).is_some_and(|x| {
+                kinds.contains(&x)
+                    || x.strip_prefix("tmp").is_some_and(|pid| {
+                        !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+                    })
+            })
         };
         rd.flatten()
             .filter(|e| e.file_type().is_ok_and(|t| t.is_file()) && ours(&e.path()))
@@ -42,7 +44,15 @@ pub(crate) fn clear_cache() -> usize {
             .count()
     }
     cache_dir().map_or(0, |d| {
-        clear(&d, &["rcds", "disc", "vecs"]) + clear(&d.join("introspect"), &["json"])
+        // The cache dir itself is followed when it's a symlink, since that's
+        // where the writes went; a symlink *inside* it is not ours to chase.
+        let introspect = d.join("introspect");
+        let nested = std::fs::symlink_metadata(&introspect).is_ok_and(|m| m.is_dir());
+        clear(&d, &["rcds", "disc", "vecs"])
+            + match nested {
+                true => clear(&introspect, &["json"]),
+                false => 0,
+            }
     })
 }
 
