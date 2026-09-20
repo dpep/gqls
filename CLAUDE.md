@@ -51,6 +51,12 @@ is why it's in the base case and not behind a flag.
   the bugs in it were duplicated into rq's copy verbatim. `release --audit`
   reports anything out of sync across all of them.
 - **`script/bench.sh`** — the performance baseline. `--save NAME` / `--diff NAME`.
+- **`script/eval.sh`** — the ranking-quality baseline: hit@1, hit@5 and MRR
+  against labelled query → expected-record pairs, run before and after any
+  change to ranking, fuzzy matching or the score combine. `--save NAME` /
+  `--diff NAME`, same as `bench.sh`. It's a measurement, not a gate — a low
+  score doesn't fail the script, and a handful of labelled queries supports
+  "this got worse", not a precise percentage.
 
 ## Two things that have burned this repo
 
