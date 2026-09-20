@@ -9,6 +9,23 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Fixed
+- **`--clear-cache` took any `*.tmp*` file, including `.tmpl` templates.** It
+  now takes only gqls's own shape, `<name>.tmp<pid>` — the same data-loss class
+  as the bug above, narrowed but not closed.
+- **A cache directory that is a symlink is cleared rather than skipped.**
+  Writes follow it, so `--clear-cache` said `cleared 0 cached file(s)` over a
+  full cache — indistinguishable from an empty one. A symlink *inside* the
+  cache is still never followed.
+- **A non-ASCII type name no longer aborts a search.** The word check indexed a
+  char table with a byte offset, so an introspection dump carrying one panicked
+  (`index out of bounds`) instead of answering.
+- **The plural of a schema word isn't corrected into a lookalike either.**
+  `star` was protected by `star_count` but `stars` still became `start`; a
+  plural the schema really has (`starts` → `start`) still corrects. `-e` and
+  `-R` now judge that against the whole schema, as explaining already did.
+- **A path-shaped query is fine once the source is named.** `gqls schema.graphql
+  'read/write access'` was refused as a bad source, though a second positional
+  can't be one; the same query on stdin was answered.
 - **A path that isn't a schema source is refused.** `gqls user
   ./schema.grapqhl` folded the typo into the query and answered from whatever
   schema discovery found, exit 0. A positional containing `/`, or naming an

@@ -307,7 +307,9 @@ pub fn run() -> Result<()> {
     };
     let (positional_query, positional_source) =
         split_positionals(&cli.args, cli.returns.is_some() || piped);
-    if let Some(path) = misread_path(&cli.args, positional_source.as_deref()) {
+    if let Some(path) = misread_path(&cli.args, positional_source.as_deref())
+        .filter(|_| positional_source.is_none())
+    {
         anyhow::bail!(
             "{path} isn't a schema source — give a .graphql, .graphqls, .gql or \
              introspection .json file, or an http(s) URL"
@@ -752,17 +754,42 @@ fn explained_match<'a>(
 fn naming(query: &str, record: &SchemaRecord, names: &[&str]) -> Option<search::NameMatch> {
     let m = search::names_the_record(query, record)?;
     let (leaf, qualifier) = search::score::parse_qualified(query);
-    // A word of the target's own name, or its plural, is the name's core
-    // word rather than a lookalike: `binary` → `isBinary`, `stargazer` →
-    // `stargazers`.
-    let own = |typed: &str, actual: &str| {
-        [typed.to_string(), format!("{typed}s"), format!("{typed}es")]
+    // Singular and plural are one word typed two ways. Naming the target
+    // takes either (`starts` is `start` pluralised, `stargazer` is
+    // `stargazers` singular); being a word of the schema takes the typed word
+    // or its singular, so `stars` is blocked exactly as `star` is — and a typo
+    // like `vies` isn't blocked by a `vie` nobody wrote.
+    let singular = |w: &str| {
+        w.strip_suffix("es")
+            .or_else(|| w.strip_suffix('s'))
+            .map(str::to_string)
+    };
+    let names_it = |typed: &str, actual: &str| {
+        let forms = [
+            Some(typed.to_string()),
+            singular(typed),
+            Some(format!("{typed}s")),
+            Some(format!("{typed}es")),
+        ];
+        forms
             .iter()
+            .flatten()
             .any(|w| search::is_a_schema_word(w, &[actual]))
     };
+    let a_schema_word = |typed: &str| {
+        // A singular under three characters is a fragment, not a word: `vies`
+        // is a typo of `views`, not the plural of the country code `VI`. Three
+        // is the scorer's own floor for a correction.
+        search::is_a_schema_word(typed, names)
+            || singular(typed)
+                .filter(|s| s.len() >= 3)
+                .is_some_and(|s| search::is_a_schema_word(&s, names))
+    };
+    // A word of the target's own name is the name's core word rather than a
+    // lookalike: `binary` → `isBinary`, `stargazer` → `stargazers`.
     let fixed = |typed: &str, actual: Option<&str>| match actual {
-        Some(a) if a.eq_ignore_ascii_case(typed) || own(typed, a) => false,
-        _ => search::is_a_schema_word(typed, names),
+        Some(a) if a.eq_ignore_ascii_case(typed) || names_it(typed, a) => false,
+        _ => a_schema_word(typed),
     };
     let word_corrected = fixed(leaf, Some(&record.name))
         || qualifier.is_some_and(|q| fixed(q, record.parent.as_deref()));
@@ -909,6 +936,7 @@ fn no_matches(
 fn one_named_record<'a>(
     query: &str,
     hits: &[search::Hit<'a>],
+    records: &[SchemaRecord],
     action: &str,
     limit: usize,
     output: Output,
@@ -924,7 +952,9 @@ fn one_named_record<'a>(
         anyhow::bail!("no schema entity matches {query:?} to {action}");
     };
     let mut also = Vec::new();
-    let names = schema_names(hits.iter().map(|h| h.record));
+    // The schema's whole vocabulary, not just what ranked: `star_count` tells
+    // `stars` apart from a misspelling of `start` whether or not it matched.
+    let names = schema_names(records.iter());
     // Both messages are part of the answer rather than commentary on it, so
     // they print unprefixed, above what they introduce.
     match naming(query, top.record, &names) {
@@ -1034,7 +1064,7 @@ fn run_example(
     output: Output,
 ) -> Result<()> {
     let hits = search::search(query, records, filters);
-    let (target, also_named) = one_named_record(query, &hits, "draft", limit, output)?;
+    let (target, also_named) = one_named_record(query, &hits, records, "draft", limit, output)?;
     crate::detail!("drafting an operation for {}", target.path);
     // Said out loud rather than clamped quietly: the draft that comes back is
     // not the one that was asked for, and a silent cap reads as a bug in the
@@ -1139,7 +1169,7 @@ fn run_resolve(
     let hits = search::search(query, records, filters);
     // `-R`'s JSON is the resolver hits themselves, with no envelope to carry
     // the runners-up — the status line above is the whole disclosure here.
-    let (target, _) = one_named_record(query, &hits, "resolve", limit, output)?;
+    let (target, _) = one_named_record(query, &hits, records, "resolve", limit, output)?;
     crate::status!("resolving {} …", target.path);
     // a local file schema (not a URL) enables package-proximity ranking
     let schema_path = (!source.starts_with("http://") && !source.starts_with("https://"))
@@ -1231,6 +1261,9 @@ fn leading_kind(query: &str) -> Option<(Kind, &str)> {
 
 /// A positional that can only be a path yet isn't a schema source — one with a
 /// `/` (no GraphQL name or pattern has one), or a `name.ext` file that exists.
+/// Only asked when no source was named: with one on the command line, a second
+/// positional can't be a source, so `gqls schema.graphql 'read/write'` is a
+/// query however it's spelled.
 /// It used to join the query, and discovery then answered from some other
 /// schema. A missing `name.ext` with no `/` stays a query: it reads exactly like
 /// `Type.field`.

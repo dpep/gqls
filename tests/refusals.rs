@@ -80,3 +80,13 @@ fn fuzzy_with_a_value_is_dropped_like_bare_fuzzy() {
     assert!(out.status.success(), "{err}");
     assert!(err.contains("--fuzzy does nothing"), "{err}");
 }
+
+#[test]
+fn a_path_shaped_query_is_fine_once_a_source_is_named() {
+    // With the source already given, a second positional can't be one — and a
+    // query may legitimately hold a `/` or match a file in the cwd.
+    let out = gqls(&[SCHEMA, "read/write access"]);
+    let err = stderr(&out);
+    assert!(out.status.success(), "{err}");
+    assert!(!err.contains("isn't a schema source"), "{err}");
+}
