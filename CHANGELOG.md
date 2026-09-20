@@ -9,6 +9,13 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
+- **Pagination wrappers rank below what they wrap.** A schema with a
+  `Repository` has a `RepositoryConnection` and a `RepositoryEdge` that carry
+  its name and match everything it matches — and `RepositoryRulesetEdge` was
+  the top answer for "programming languages used by a repo". Relay's `Edge`
+  and `Connection` suffixes now rank below the type they wrap, the same way a
+  generated table's plumbing does; a type actually *called* `Edge` is
+  untouched. Hasura's `_stream` subscriptions join that list too.
 - **A generated table's plumbing ranks below the table.** Hasura and
   PostGraphile surround every real table with a dozen derived types — filters,
   aggregates, sort orders, insert shapes — and each carries the table's name,
