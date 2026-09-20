@@ -81,14 +81,25 @@ run_set() {
 import json, sys
 name, tsv, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
 rows = [l.rstrip("\n").split("\t") for l in open(tsv) if l.strip()]
-matches = {}
+
+# Correlate by order, not by the echoed `query`: gqls echoes the query as
+# searched, so `user followers` comes back as `user.followers` (the two-word
+# form rewritten to the qualified one) and matching on the string scores
+# every rewritten query as a miss. Each query's rows are contiguous and every
+# query emits at least one row — a miss emits `status: no_matches` — so the
+# groups line up with the input lines one for one.
+groups, current = [], None
 for line in open(out_path):
     if not line.strip():
         continue
     d = json.loads(line)
-    matches.setdefault(d["query"], []).append(d.get("path"))
-for cat, q, target in rows:
-    paths = matches.get(q, [])
+    if d["query"] != current:
+        current = d["query"]
+        groups.append([])
+    groups[-1].append(d.get("path"))
+if len(groups) != len(rows):
+    sys.exit(f"eval: {len(groups)} answered groups for {len(rows)} queries in {tsv}")
+for (cat, q, target), paths in zip(rows, groups):
     rank = paths.index(target) + 1 if target in paths else None
     print(json.dumps({"set": name, "category": cat, "query": q, "target": target, "rank": rank}))
 PY
