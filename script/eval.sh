@@ -265,6 +265,7 @@ fi
 SETS="examples script/eval/examples.tsv examples/schema.graphql"$'\n'
 if [ -f "$GITHUB_SCHEMA" ]; then
   SETS+="github script/eval/github.tsv $GITHUB_SCHEMA"$'\n'
+  SETS+="independent script/eval/independent.tsv $GITHUB_SCHEMA"$'\n'
 fi
 if [ -f "$HOLDOUT_SCHEMA" ]; then
   SETS+="holdout script/eval/holdout.tsv $HOLDOUT_SCHEMA"$'\n'

@@ -9,6 +9,13 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Changed
+- **A question asked as a sentence narrows better.** The words a question is
+  built from — `who`, `what`, `does`, `has`, `this`, `my` — named nothing in
+  any schema, so each one a record happened to echo lifted its word count and
+  buried the records that matched the words you meant. They're dropped before
+  scoring now, like the other stopwords. Measured on 30 queries written as
+  full questions by someone other than their author: MRR 0.06 -> 0.13, with
+  the shorter-phrase sets unchanged.
 - **A phrase can now be answered by what a record's description says.** Where
   a schema names something in its own vocabulary and describes it in the
   user's, the description is what bridges them: `current user` finds

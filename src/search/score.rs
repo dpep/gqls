@@ -249,7 +249,10 @@ fn best_arg_match(query: &str, rec: &SchemaRecord) -> Option<f64> {
 /// name, so they'd lift every record's word count by one and tell us nothing.
 const STOPWORDS: &[&str] = &[
     "a", "an", "the", "of", "for", "to", "in", "on", "at", "and", "or", "by", "with", "is", "that",
-    "from", "as", "into",
+    "from", "as", "into", "was", "were", "are", "be", "been", "has", "have", "had", "does", "do",
+    "did", "can", "could", "should", "would", "will", "this", "these", "those", "it", "its", "my",
+    "our", "their", "any", "some", "much", "many", "me", "we", "you", "i", "what", "when", "where",
+    "who", "which", "whose", "why", "how", "still", "up", "about",
 ];
 
 /// Split a phrase query into the words worth matching on their own, or empty
