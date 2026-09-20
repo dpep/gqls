@@ -104,6 +104,18 @@ is why it's in the base case and not behind a flag.
   it back needs a better model *and* a better fusion, shown on a measured query
   set — not a new flag over the same pipeline.
 
+- **Stemming past tenses and gerunds isn't worth it.** `forked` -> `fork`,
+  `following` -> `follow`, `merged` -> `merge`: plausible, and the plural
+  machinery already there made it a dozen lines. Measured across the labelled
+  sets, the ceiling was 7 queries of 99, and it delivered independent MRR
+  0.103 -> 0.106 with github 0.470 -> 0.469 — the two it rescued landed at
+  ranks 19 and 11, too deep for anyone to see, while a query that ranked 4th
+  slipped to 5th. The gap those queries have is vocabulary (`starred` vs
+  `stargazer`, `unstar` vs `removeStar`), which a tense doesn't bridge. The
+  plural case is different and stayed: a schema names a table for one row and
+  a person asks for many, which is a naming convention rather than a guess
+  about English.
+
 ## Changelog
 
 Add the entry under `## Unreleased` in the same change that earns it — the
