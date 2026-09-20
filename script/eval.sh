@@ -15,7 +15,7 @@
 # measured diff instead of a memory. Run it before and after any change to
 # ranking, fuzzy matching or the score combine.
 #
-# Three labelled sets, same TSV format (category<TAB>query<TAB>expected path):
+# Four labelled sets, same TSV format (category<TAB>query<TAB>expected path):
 #   script/eval/examples.tsv - ~12 queries against the repo's own
 #     examples/schema.graphql, no network needed. Categories: N (exact name),
 #     A (abbreviation), T (typo), Q (qualified Type.field), P (phrase),
@@ -33,6 +33,22 @@
 #     here as flat while the tuning sets improve. The report labels it
 #     accordingly - read its numbers as "did this generalize", not as a
 #     target to chase.
+#   script/eval/hasura.tsv   - 20 queries against PokeAPI's public Hasura
+#     schema (https://beta.pokeapi.co/graphql/v1beta), introspected on demand
+#     into the same cache dir and never checked in. Unlike holdout, this one
+#     is ADVERSARIAL, not held out - it's fair game for tuning, since it
+#     targets a known-weak surface on purpose: every record shares the
+#     `pokemon_v2_` prefix, and every description that exists at all (7062 of
+#     26218 records) is a machine-generated template ("fetch data from the
+#     table: X") that just echoes the record's own name, carrying no
+#     vocabulary a name doesn't already have. Categories: O (word overlap -
+#     the query reads as the record's name in English word order), V
+#     (vocabulary mismatch - a content word has no counterpart in the name,
+#     and the boilerplate description can't supply one either), S
+#     (suffix-sibling disambiguation - the base table, `_aggregate` and
+#     `_by_pk` variants share one identical stem, so only the query's intent,
+#     not its words, picks the right sibling). Skipped with a clear message
+#     when absent and unreachable, same as the other two live sets.
 #
 # This is a measurement, not a gate: it exits nonzero only on a harness
 # failure (missing binary, no set could run, a self-check trips), never for a
@@ -55,6 +71,8 @@ GITHUB_SCHEMA="$EVAL_DIR/github.graphql"
 GITHUB_SCHEMA_URL="https://raw.githubusercontent.com/octokit/graphql-schema/main/schema.graphql"
 HOLDOUT_SCHEMA="$EVAL_DIR/anilist.json"
 HOLDOUT_URL="https://graphql.anilist.co"
+HASURA_SCHEMA="$EVAL_DIR/hasura.json"
+HASURA_URL="https://beta.pokeapi.co/graphql/v1beta"
 GQLS="target/release/gqls"
 # Comfortably past the CLI's own default of 20: a rank the eval can't see is
 # indistinguishable from "never matched", so the cutoff should be one nobody
@@ -229,12 +247,30 @@ if [ ! -f "$HOLDOUT_SCHEMA" ]; then
   fi
 fi
 
+if [ ! -f "$HASURA_SCHEMA" ]; then
+  echo "fetching PokeAPI's schema (cached after this, at $HASURA_SCHEMA)…" >&2
+  # Same standard introspection query as the holdout fetch above, POSTed to a
+  # public Hasura endpoint instead - PokeAPI's is the README's own example of
+  # the "every name shares a prefix" weak case, so it's the natural target
+  # for the adversarial set.
+  HASURA_QUERY='query IntrospectionQuery { __schema { queryType { name } mutationType { name } subscriptionType { name } types { ...FullType } directives { name description locations args { ...InputValue } } } } fragment FullType on __Type { kind name description fields(includeDeprecated: true) { name description args { ...InputValue } type { ...TypeRef } isDeprecated deprecationReason } inputFields { ...InputValue } interfaces { ...TypeRef } enumValues(includeDeprecated: true) { name description isDeprecated deprecationReason } possibleTypes { ...TypeRef } } fragment InputValue on __InputValue { name description type { ...TypeRef } defaultValue } fragment TypeRef on __Type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } } }'
+  if curl -fsSL -X POST "$HASURA_URL" -H 'Content-Type: application/json' -d "{\"query\": \"$HASURA_QUERY\"}" -o "$HASURA_SCHEMA.tmp"; then
+    mv "$HASURA_SCHEMA.tmp" "$HASURA_SCHEMA"
+  else
+    rm -f "$HASURA_SCHEMA.tmp"
+    echo "no network and no cached schema - skipping script/eval/hasura.tsv" >&2
+  fi
+fi
+
 SETS="examples script/eval/examples.tsv examples/schema.graphql"$'\n'
 if [ -f "$GITHUB_SCHEMA" ]; then
   SETS+="github script/eval/github.tsv $GITHUB_SCHEMA"$'\n'
 fi
 if [ -f "$HOLDOUT_SCHEMA" ]; then
   SETS+="holdout script/eval/holdout.tsv $HOLDOUT_SCHEMA"$'\n'
+fi
+if [ -f "$HASURA_SCHEMA" ]; then
+  SETS+="hasura script/eval/hasura.tsv $HASURA_SCHEMA"$'\n'
 fi
 
 RAW_FILE="$EVAL_DIR/last_run.jsonl"
@@ -311,6 +347,8 @@ for key in now:
     label = "/".join(key)
     if key[0] == "holdout":
         label += " (HELD-OUT)"
+    elif key[0] == "hasura":
+        label += " (ADVERSARIAL)"
     if b is None:
         cells = [f"{'—':>9}->{fmt(v):<9}" for v in n]
     else:
@@ -367,6 +405,8 @@ for set_name, set_rows in by_set.items():
     label = f"{set_name} (n={len(set_rows)})"
     if set_name == "holdout":
         label += "  — HELD-OUT: do not tune ranking against these numbers"
+    elif set_name == "hasura":
+        label += "  — ADVERSARIAL: a known-weak surface, fair game for tuning"
     print(f"\n=== {label} ===")
     by_cat = defaultdict(list)
     for r in set_rows:

@@ -56,12 +56,17 @@ is why it's in the base case and not behind a flag.
   change to ranking, fuzzy matching or the score combine. `--save NAME` /
   `--diff NAME`, same as `bench.sh`; `--diff` also lists every query that was
   rescued or lost, since an MRR delta can net out a change that helped nine
-  queries and broke four. Three sets: `script/eval/examples.tsv` (offline,
+  queries and broke four. Four sets: `script/eval/examples.tsv` (offline,
   repo's own schema), `script/eval/github.tsv` (GitHub's schema, fetched on
-  demand), and `script/eval/holdout.tsv` (AniList's schema, fetched on
-  demand) — holdout is the one to never tune ranking against, since it shares
-  no vocabulary or authorship with the other two, and the report labels it
-  as such. It's a measurement, not a gate — a low score doesn't fail the
+  demand), `script/eval/holdout.tsv` (AniList's schema, fetched on demand),
+  and `script/eval/hasura.tsv` (PokeAPI's Hasura schema, fetched on demand)
+  — holdout is the one to never tune ranking against, since it shares no
+  vocabulary or authorship with the other two, and the report labels it as
+  such; hasura is ADVERSARIAL rather than held-out, on purpose targeting the
+  README's documented weak case (every name shares the `pokemon_v2_` prefix,
+  and every description is a machine-template that echoes the name rather
+  than adding vocabulary) — it's fair game for tuning. It's a measurement,
+  not a gate — a low score doesn't fail the
   script, and a handful of labelled queries supports "this got worse", not a
   precise percentage. `--selftest` checks the harness itself (correlation,
   exit-status propagation) rather than ranking quality — run it after
