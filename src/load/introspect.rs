@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 use super::LoadOptions;
@@ -74,7 +74,10 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
     // is usually most of the wall clock and the least controllable part of it —
     // one undifferentiated `load` span can't tell a slow endpoint from slow gqls.
     let mut fetch_span = crate::profile::span("introspect: fetch");
-    let bytes = fetch(url, &opts.headers)?;
+    let waiting = progress(url);
+    let bytes = fetch(url, &opts.headers);
+    drop(waiting);
+    let bytes = bytes?;
     fetch_span.note(|| format!("{:.1} KB", bytes.len() as f64 / 1024.0));
     drop(fetch_span);
     // Parse and validate *before* caching. Servers answer 200 with an `errors`
@@ -228,22 +231,170 @@ fn prune(dir: &Path, keep: usize, max_bytes: u64) {
     }
 }
 
-fn fetch(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
+/// How many times a request is tried in all, and the waits between tries. A
+/// transient failure — a refused or dropped connection, a 502/503/504, a 429 —
+/// often clears in a second; one that doesn't is worth reporting promptly.
+const ATTEMPTS: usize = 3;
+const BACKOFF: [Duration; 2] = [Duration::from_millis(250), Duration::from_secs(1)];
+
+/// Every try together stays inside this: a retry is only started with time
+/// left to finish it, so a hung endpoint costs one timeout, not three.
+const FETCH_BUDGET: Duration = Duration::from_secs(40);
+
+/// The longest a 429's `Retry-After` is honoured; past it, the backoff applies.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// A fetch that failed, said once: ureq's own text repeats the URL and the
+/// error kind (`URL: Network Error: Network Error: …`).
+#[derive(Debug)]
+pub(crate) struct FetchError {
+    pub message: String,
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for FetchError {}
+
+/// What one try came to: the body, or why not and whether (and when) to retry.
+enum Attempt {
+    Body(Vec<u8>),
+    Failed {
+        why: String,
+        retry_after: Option<Duration>,
+    },
+}
+
+fn fetch(url: &str, headers: &[(String, String)]) -> std::result::Result<Vec<u8>, FetchError> {
+    let started = std::time::Instant::now();
+    let mut attempt = 0;
+    loop {
+        let left = FETCH_BUDGET.saturating_sub(started.elapsed());
+        let timeout = left.min(Duration::from_secs(TIMEOUT_SECS));
+        let (why, retry_after) = match try_fetch(url, headers, timeout) {
+            Attempt::Body(bytes) => return Ok(bytes),
+            Attempt::Failed { why, retry_after } => (why, retry_after),
+        };
+        let wait = retry_after.map(|ra| match ra <= MAX_RETRY_AFTER {
+            true => ra,
+            false => BACKOFF[attempt.min(BACKOFF.len() - 1)],
+        });
+        attempt += 1;
+        let left = FETCH_BUDGET.saturating_sub(started.elapsed());
+        match wait {
+            // worth another try, and there's time to make one
+            Some(wait) if attempt < ATTEMPTS && left > wait + Duration::from_secs(1) => {
+                crate::detail!(
+                    "introspecting {url}: {why} — retrying in {wait:.1?} (try {} of {ATTEMPTS})",
+                    attempt + 1
+                );
+                std::thread::sleep(wait);
+            }
+            _ => {
+                return Err(FetchError {
+                    message: format!("introspecting {url}: {why}"),
+                })
+            }
+        }
+    }
+}
+
+/// How long a fetch runs before gqls says it's still waiting — past the point a
+/// healthy endpoint has answered, well short of the timeout.
+const PROGRESS_AFTER: Duration = Duration::from_secs(2);
+
+/// Say once, after [`PROGRESS_AFTER`], that the fetch is still going; dropping
+/// the returned handle before then says nothing. A 30-second wait on a hung
+/// endpoint was otherwise silent.
+fn progress(url: &str) -> std::sync::mpsc::Sender<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(PROGRESS_AFTER) {
+            crate::status!(
+                "still waiting on {url} (gives up after {}s)",
+                FETCH_BUDGET.as_secs()
+            );
+        }
+    });
+    tx
+}
+
+/// One POST. `retry_after` is `Some` exactly when the failure is transient.
+fn try_fetch(url: &str, headers: &[(String, String)], timeout: Duration) -> Attempt {
     let mut req = ureq::post(url)
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .timeout(timeout)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json");
     for (name, value) in headers {
         req = req.set(name, value);
     }
-    let resp = req
-        .send_json(serde_json::json!({ "query": INTROSPECTION_QUERY }))
-        .map_err(|e| anyhow!("introspecting {url}: {e}"))?;
-    let mut buf = Vec::new();
-    resp.into_reader()
-        .read_to_end(&mut buf)
-        .with_context(|| format!("reading introspection response from {url}"))?;
-    Ok(buf)
+    let backoff = Some(BACKOFF[0]);
+    match req.send_json(serde_json::json!({ "query": INTROSPECTION_QUERY })) {
+        Ok(resp) => {
+            let mut buf = Vec::new();
+            match resp.into_reader().read_to_end(&mut buf) {
+                Ok(_) => Attempt::Body(buf),
+                Err(e) => Attempt::Failed {
+                    why: format!("the connection dropped mid-response ({e})"),
+                    retry_after: backoff,
+                },
+            }
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let retry_after = match code {
+                429 => Some(
+                    resp.header("Retry-After")
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .map_or(BACKOFF[0], Duration::from_secs),
+                ),
+                502..=504 => backoff,
+                _ => None,
+            };
+            let reason = resp.status_text().to_string();
+            let said = resp
+                .into_string()
+                .ok()
+                .and_then(|body| graphql_error(&body))
+                .map(|m| format!(": {m}"))
+                .unwrap_or_default();
+            Attempt::Failed {
+                why: format!("HTTP {code} {reason}{said}"),
+                retry_after,
+            }
+        }
+        Err(ureq::Error::Transport(t)) => {
+            use ureq::ErrorKind as K;
+            let detail = std::error::Error::source(&t)
+                .map(ToString::to_string)
+                .or_else(|| t.message().map(str::to_string));
+            let (what, transient) = match t.kind() {
+                K::ConnectionFailed => ("couldn't connect", true),
+                K::Io => ("the connection failed", true),
+                K::Dns => ("couldn't resolve the host", false),
+                K::TooManyRedirects => ("too many redirects", false),
+                K::InvalidUrl | K::UnknownScheme => ("not a URL gqls can fetch", false),
+                _ => ("the request failed", false),
+            };
+            Attempt::Failed {
+                why: match detail {
+                    Some(d) => format!("{what} ({d})"),
+                    None => what.to_string(),
+                },
+                retry_after: transient.then_some(BACKOFF[0]),
+            }
+        }
+    }
+}
+
+/// The first message of a GraphQL `errors` body, which says more than the
+/// status line does — `bad token`, `introspection is disabled`.
+fn graphql_error(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    v.pointer("/errors/0/message")?.as_str().map(str::to_string)
 }
 
 /// Cache file for a URL's introspection response, keyed by the URL *and* the

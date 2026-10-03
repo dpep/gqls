@@ -9,6 +9,13 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **A live fetch retries a transient failure.** A refused or dropped
+  connection, a 502/503/504, or a 429 (honouring `Retry-After` up to 5 s) is
+  tried up to three times in all, with a short backoff, inside a 40 s budget —
+  so a hung endpoint costs one timeout, not three. A 4xx refusal and a GraphQL
+  `errors` body are never retried. `-v` says what was retried and why.
+- **A fetch still running after 2 s says so** (`still waiting on <url>`); a
+  hung endpoint was silent for 30.
 - **`-R` passes rq's hedges through.** A class declared in several places shows
   `also in <file:line>` and carries `declarations`/`also_in` in JSON. A hit
   from a checkout rq is still indexing says `rq still indexing: N of M files`
@@ -32,6 +39,10 @@ early entries are terser than what follows.
   exit code — rather than the first stderr line beside `exit Some(64)`.
 
 ### Fixed
+- **A failed fetch says what happened once.** `introspecting URL: URL:
+  Network Error: Network Error: …` reads `introspecting URL: couldn't connect
+  (Connection refused)`, and an HTTP failure names its status and the
+  server's GraphQL error message (`HTTP 401 Unauthorized: bad token`).
 - **A query correcting to a common field name no longer takes a minute.**
   Deciding whether a query *names* one record re-scanned every name in the
   schema once per record it corrected to: on a 48k-record schema, `emial`
