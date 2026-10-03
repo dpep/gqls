@@ -1,5 +1,7 @@
 //! clap CLI, dispatch, and output formatting (text / json / ndjson).
 
+use std::cell::OnceCell;
+
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use clap_complete::{generate, Shell};
@@ -522,7 +524,6 @@ pub fn run() -> Result<()> {
         matches.truncate(cli.limit);
 
         crate::detail!("ranked in {:.1?}", t_rank.elapsed());
-        let out_span = crate::profile::span("output");
 
         // Explain mode: the query named exactly one of the records it matched,
         // so the user has found the thing rather than narrowed toward it.
@@ -537,9 +538,11 @@ pub fn run() -> Result<()> {
         // nothing — `SearchHit.` on a union has no members to list, and the
         // union is the answer that does exist.
         let predicate = filters.compile();
+        let explain_span = crate::profile::span("explain check");
         let explained = (!cli.no_explain && (!pattern || matches.is_empty()))
             .then(|| explained_match(query, records.iter().filter(|r| predicate.accepts(r))))
             .flatten();
+        drop(explain_span);
         if let Some((record, _)) = explained {
             // Everything else matched the letters without being what was asked
             // for. Say how many rather than dropping them silently — out of
@@ -568,6 +571,7 @@ pub fn run() -> Result<()> {
         // gqls's own wildcard, not anything the caller typed — so that case
         // reports the filter they actually gave.
         if total == 0 && explained.is_none() {
+            let _span = crate::profile::span("miss diagnosis");
             crate::status!(
                 "{}",
                 no_matches(
@@ -581,6 +585,7 @@ pub fn run() -> Result<()> {
             );
         }
         let explained = explained.map(|(_, m)| m);
+        let out_span = crate::profile::span("output");
         output.write_matches(&matches, batch.then_some(query), explained, &records)?;
         drop(out_span);
         // Status, not a -v diagnostic: matches were dropped, and a list that
@@ -752,11 +757,23 @@ fn explained_match<'a>(
     query: &str,
     records: impl Iterator<Item = &'a SchemaRecord>,
 ) -> Option<(&'a SchemaRecord, search::NameMatch)> {
+    use rayon::prelude::*;
     let records: Vec<&SchemaRecord> = records.collect();
-    let names = schema_names(records.iter().copied());
+    // Every record is checked, so this is the scan's cost again: in parallel,
+    // like `rank`, and the cheap name test first — the schema's vocabulary is
+    // only gathered for the handful of records a query names at all.
     let named: Vec<&SchemaRecord> = records
+        .par_iter()
+        .copied()
+        .filter(|r| search::names_the_record(query, r).is_some())
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+    let words = SchemaWords::new(schema_names(records.iter().copied()));
+    let named: Vec<&SchemaRecord> = named
         .into_iter()
-        .filter(|r| naming(query, r, &names).is_some())
+        .filter(|r| naming(query, r, &words).is_some())
         .collect();
     let cased: Vec<&SchemaRecord> = named
         .iter()
@@ -765,7 +782,7 @@ fn explained_match<'a>(
         .collect();
     let candidates = if cased.is_empty() { named } else { cased };
     match candidates.as_slice() {
-        [only] => naming(query, only, &names).map(|m| (*only, m)),
+        [only] => naming(query, only, &words).map(|m| (*only, m)),
         _ => None,
     }
 }
@@ -774,7 +791,7 @@ fn explained_match<'a>(
 /// it corrected isn't itself a word of the schema's `names` — `star` sits whole
 /// in `addStar`, so it names nothing rather than `start`. `Usr.email` still
 /// corrects: `email` is a word, but `Usr` is what was misspelled.
-fn naming(query: &str, record: &SchemaRecord, names: &[&str]) -> Option<search::NameMatch> {
+fn naming(query: &str, record: &SchemaRecord, words: &SchemaWords) -> Option<search::NameMatch> {
     let m = search::names_the_record(query, record)?;
     let (leaf, qualifier) = search::score::parse_qualified(query);
     // Singular and plural are one word typed two ways. Naming the target
@@ -803,20 +820,41 @@ fn naming(query: &str, record: &SchemaRecord, names: &[&str]) -> Option<search::
         // A singular under three characters is a fragment, not a word: `vies`
         // is a typo of `views`, not the plural of the country code `VI`. Three
         // is the scorer's own floor for a correction.
-        search::is_a_schema_word(typed, names)
+        search::is_a_schema_word(typed, &words.names)
             || singular(typed)
                 .filter(|s| s.len() >= 3)
-                .is_some_and(|s| search::is_a_schema_word(&s, names))
+                .is_some_and(|s| search::is_a_schema_word(&s, &words.names))
     };
     // A word of the target's own name is the name's core word rather than a
     // lookalike: `binary` → `isBinary`, `stargazer` → `stargazers`.
-    let fixed = |typed: &str, actual: Option<&str>| match actual {
+    let fixed = |typed: &str, actual: Option<&str>, memo: &OnceCell<bool>| match actual {
         Some(a) if a.eq_ignore_ascii_case(typed) || names_it(typed, a) => false,
-        _ => a_schema_word(typed),
+        _ => *memo.get_or_init(|| a_schema_word(typed)),
     };
-    let word_corrected = fixed(leaf, Some(&record.name))
-        || qualifier.is_some_and(|q| fixed(q, record.parent.as_deref()));
+    let word_corrected = fixed(leaf, Some(&record.name), &words.leaf)
+        || qualifier.is_some_and(|q| fixed(q, record.parent.as_deref(), &words.qualifier));
     (!word_corrected).then_some(m)
+}
+
+/// The schema's vocabulary, for [`naming`]'s word check — and that check's
+/// answers. Whether the query's leaf (or qualifier) is a word of the schema is
+/// the same for every record it names, so it's asked once, and only if asked:
+/// re-asked per record it scanned every name in the schema thousands of times
+/// (`ñame` corrects to each of 2,809 `name` fields).
+struct SchemaWords<'a> {
+    names: Vec<&'a str>,
+    leaf: OnceCell<bool>,
+    qualifier: OnceCell<bool>,
+}
+
+impl<'a> SchemaWords<'a> {
+    fn new(names: Vec<&'a str>) -> Self {
+        Self {
+            names,
+            leaf: OnceCell::new(),
+            qualifier: OnceCell::new(),
+        }
+    }
 }
 
 /// Every name and parent in `records`, for [`naming`]'s word check.
@@ -977,10 +1015,10 @@ fn one_named_record<'a>(
     let mut also = Vec::new();
     // The schema's whole vocabulary, not just what ranked: `star_count` tells
     // `stars` apart from a misspelling of `start` whether or not it matched.
-    let names = schema_names(records.iter());
+    let words = SchemaWords::new(schema_names(records.iter()));
     // Both messages are part of the answer rather than commentary on it, so
     // they print unprefixed, above what they introduce.
-    match naming(query, top.record, &names) {
+    match naming(query, top.record, &words) {
         Some(search::NameMatch::Exact) => {
             also = named_peers(query, hits, top.record);
             // A caveat on an answer still being given, so it goes where the

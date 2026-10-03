@@ -494,48 +494,80 @@ fn parent_boost(qualifier: &str, parent: Option<&str>) -> Option<f64> {
     }
 }
 
-/// Edit distance between the (lowercased) query and name for the typo tier, or
-/// `None` if it exceeds a small budget. Catches transposed/typo'd queries
-/// (`usre` → `user`) that aren't a clean subsequence. Skipped for very short
-/// queries, where a tiny edit distance would match almost anything.
-pub(crate) fn typo_distance(q: &str, name_lower: &str) -> Option<usize> {
-    let a: Vec<char> = q.chars().collect();
-    if a.len() < 3 {
+/// Edit distance between the query and name for the typo tier, ASCII case
+/// folded, or `None` if it exceeds a small budget. Catches transposed/typo'd
+/// queries (`usre` → `user`) that aren't a clean subsequence. Skipped for very
+/// short queries, where a tiny edit distance would match almost anything.
+///
+/// Called once per record per query, and nearly every call is a length
+/// mismatch — so that's settled before anything is allocated, and an ASCII
+/// pair (every GraphQL name, by spec) never allocates at all.
+pub(crate) fn typo_distance(q: &str, name: &str) -> Option<usize> {
+    let fold = |a: char, b: char| a.eq_ignore_ascii_case(&b);
+    if q.is_ascii() && name.is_ascii() {
+        let max = typo_budget(q.len())?;
+        return osa_within(q.as_bytes(), name.as_bytes(), max, |a, b| {
+            a.eq_ignore_ascii_case(&b)
+        });
+    }
+    let (n, m) = (q.chars().count(), name.chars().count());
+    let max = typo_budget(n)?;
+    if n.abs_diff(m) > max {
         return None;
     }
-    let b: Vec<char> = name_lower.chars().collect();
-    let max = if a.len() <= 5 { 1 } else { 2 };
-    osa_within(&a, &b, max)
+    let a: Vec<char> = q.chars().collect();
+    let b: Vec<char> = name.chars().collect();
+    osa_within(&a, &b, max, fold)
+}
+
+/// Edits a query of `len` chars may absorb, or `None` for one too short to
+/// correct at all.
+fn typo_budget(len: usize) -> Option<usize> {
+    match len {
+        0..=2 => None,
+        3..=5 => Some(1),
+        _ => Some(2),
+    }
 }
 
 /// Bounded Optimal String Alignment distance (Levenshtein plus adjacent
-/// transpositions): `None` if it exceeds `max`. Full matrix — names are short.
-/// Inputs are already lowercased, so char equality suffices.
-fn osa_within(a: &[char], b: &[char], max: usize) -> Option<usize> {
+/// transpositions): `None` if it exceeds `max`. Three rolling rows, on the
+/// stack for any name of realistic length.
+fn osa_within<T: Copy>(a: &[T], b: &[T], max: usize, eq: impl Fn(T, T) -> bool) -> Option<usize> {
+    const STACK: usize = 64;
     let (n, m) = (a.len(), b.len());
     if n.abs_diff(m) > max {
         return None;
     }
-    let mut d = vec![vec![0usize; m + 1]; n + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in d[0].iter_mut().enumerate() {
+    let w = m + 1;
+    let mut stack = [0usize; 3 * STACK];
+    let mut heap = Vec::new();
+    let rows: &mut [usize] = if w <= STACK {
+        &mut stack[..3 * w]
+    } else {
+        heap.resize(3 * w, 0);
+        &mut heap
+    };
+    for (j, cell) in rows[..w].iter_mut().enumerate() {
         *cell = j;
     }
     for i in 1..=n {
+        // row i lives at (i % 3); i-1 and i-2 are the other two
+        let (cur, prev, prev2) = ((i % 3) * w, ((i - 1) % 3) * w, ((i + 1) % 3) * w);
+        rows[cur] = i;
         for j in 1..=m {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut v = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                v = v.min(d[i - 2][j - 2] + 1); // adjacent transposition
+            let cost = usize::from(!eq(a[i - 1], b[j - 1]));
+            let mut v = (rows[prev + j] + 1)
+                .min(rows[cur + j - 1] + 1)
+                .min(rows[prev + j - 1] + cost);
+            if i > 1 && j > 1 && eq(a[i - 1], b[j - 2]) && eq(a[i - 2], b[j - 1]) {
+                v = v.min(rows[prev2 + j - 2] + 1); // adjacent transposition
             }
-            d[i][j] = v;
+            rows[cur + j] = v;
         }
     }
-    (d[n][m] <= max).then_some(d[n][m])
+    let d = rows[(n % 3) * w + m];
+    (d <= max).then_some(d)
 }
 
 // --- the aligner, ported verbatim from rq ---
@@ -720,6 +752,77 @@ mod tests {
             directives: vec![],
             default: None,
             possible_types: vec![],
+        }
+    }
+
+    /// The full-matrix OSA this module used before the rolling-row one, kept as
+    /// the reference the faster version has to agree with.
+    fn reference_typo_distance(q: &str, name: &str) -> Option<usize> {
+        let a: Vec<char> = q.to_ascii_lowercase().chars().collect();
+        if a.len() < 3 {
+            return None;
+        }
+        let b: Vec<char> = name.to_ascii_lowercase().chars().collect();
+        let max = if a.len() <= 5 { 1 } else { 2 };
+        let (n, m) = (a.len(), b.len());
+        if n.abs_diff(m) > max {
+            return None;
+        }
+        let mut d = vec![vec![0usize; m + 1]; n + 1];
+        for (i, row) in d.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for (j, cell) in d[0].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=n {
+            for j in 1..=m {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut v = (d[i - 1][j] + 1)
+                    .min(d[i][j - 1] + 1)
+                    .min(d[i - 1][j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    v = v.min(d[i - 2][j - 2] + 1);
+                }
+                d[i][j] = v;
+            }
+        }
+        (d[n][m] <= max).then_some(d[n][m])
+    }
+
+    #[test]
+    fn typo_distance_agrees_with_the_full_matrix_everywhere() {
+        // Every string up to four chars over an alphabet with case, a
+        // transposable pair and a non-ASCII char, against every other — the
+        // cases a hand-picked table would miss — plus names past the stack rows.
+        let alphabet = ['a', 'b', 'A', 'é'];
+        let mut words = vec![String::new()];
+        let mut frontier = words.clone();
+        for _ in 0..4 {
+            frontier = frontier
+                .iter()
+                .flat_map(|w| alphabet.iter().map(move |c| format!("{w}{c}")))
+                .collect();
+            words.extend(frontier.iter().cloned());
+        }
+        // six and seven chars, where the budget becomes two edits
+        for len in [6u32, 7] {
+            words.extend((0..1u32 << len).map(|bits| {
+                (0..len)
+                    .map(|i| if bits >> i & 1 == 1 { 'B' } else { 'a' })
+                    .collect::<String>()
+            }));
+        }
+        let long = "x".repeat(70);
+        words.extend([long.clone(), format!("{long}y"), format!("y{long}z")]);
+        for q in words.iter().filter(|w| w.chars().count() >= 3) {
+            for n in &words {
+                assert_eq!(
+                    typo_distance(q, n),
+                    reference_typo_distance(q, n),
+                    "{q:?} vs {n:?}"
+                );
+            }
         }
     }
 

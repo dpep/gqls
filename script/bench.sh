@@ -27,7 +27,8 @@ GQLS="target/release/gqls"
 # a query plus a source, while the flags are meant to word-split.
 #
 # Wildcards, qualified forms and phrases take different paths through search —
-# cover each.
+# cover each. `emial` corrects to thousands of fields, which is what the explain
+# check pays for; `zqxjkw` matches nothing, which is the miss diagnosis.
 QUERIES=(
   "|user"
   "|usre"
@@ -35,6 +36,8 @@ QUERIES=(
   "|AdminUserAdmin."
   "|*.employees"
   "|employee data"
+  "|emial"
+  "|zqxjkw"
 )
 
 mkdir -p "$BENCH_DIR" "$BASELINES"

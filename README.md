@@ -333,14 +333,17 @@ Exit codes, for a caller that branches on them. `0` when gqls answered — inclu
 
 ```sh
 $ gqls user big.graphql --profile
-  cache: read       0.8ms  4.3 MB
-  cache: decode     5.3ms  48501 records
-  load              6.7ms  48501 records
-  fuzzy scan       10.4ms  184 of 48501 records matched
-  output           18.9ms
+  cache: read       0.5ms  4.3 MB
+  cache: decode     4.3ms  48501 records
+  load              5.3ms  48501 records
+  fuzzy scan        5.3ms  184 of 48501 records matched
+  explain check     0.8ms
+  output            0.0ms
   ─────────────
-  total            36.3ms
+  total            11.5ms
 ```
+
+`explain check` is deciding whether the query names one record outright (and so gets explained rather than listed); a query that matched nothing adds `miss diagnosis`, the work behind the line saying why.
 
 For a URL source, `introspect: fetch` is timed apart from `introspect: parse`,
 so a slow run against a live endpoint says which half was slow — on one

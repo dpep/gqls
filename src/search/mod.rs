@@ -135,8 +135,19 @@ pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
     if leaf.is_empty() {
         return false;
     }
+    let leaf_bytes = leaf.as_bytes();
     let leaf: Vec<char> = leaf.chars().collect();
     names.iter().any(|name| {
+        // Most names don't contain the word at all; say so without allocating.
+        // (A char-level match is a byte-level one, so this rejects nothing the
+        // check below would accept.)
+        if !name
+            .as_bytes()
+            .windows(leaf_bytes.len())
+            .any(|w| w.eq_ignore_ascii_case(leaf_bytes))
+        {
+            return false;
+        }
         let chars: Vec<char> = name.chars().collect();
         let boundary = score::boundaries(&chars);
         // `_` separates words too (`star_count`, `STAR_COUNT`), and the
@@ -154,12 +165,14 @@ pub(crate) fn is_a_schema_word(word: &str, names: &[&str]) -> bool {
 }
 
 /// Case-insensitively equal, or within the scorer's typo budget of it.
+///
+/// Runs on every record a query could explain, so it allocates nothing:
+/// [`score::typo_distance`] folds ASCII case itself.
 fn near_exact(query: &str, name: &str) -> Option<NameMatch> {
-    let (q, n) = (query.to_ascii_lowercase(), name.to_ascii_lowercase());
-    if q == n {
+    if query.eq_ignore_ascii_case(name) {
         return Some(NameMatch::Exact);
     }
-    score::typo_distance(&q, &n).map(|_| NameMatch::Corrected)
+    score::typo_distance(query, name).map(|_| NameMatch::Corrected)
 }
 
 /// A `--returns` filter widened to what actually reaches the type, as a brace

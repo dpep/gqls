@@ -17,6 +17,9 @@ early entries are terser than what follows.
   `"provisional": true` on every JSON row. Exit `0` — it's an answer.
 
 ### Changed
+- **`--profile` times the explain check and the miss diagnosis as their own
+  phases** (`explain check`, `miss diagnosis`); `output` is now just writing
+  the results, which it was always presumed to be.
 - **`-R -j` renames `confidence` to `rq_confidence`.** It was rq's confidence
   in the name match, so a `(guess)` rq matched exactly read as
   `"confidence": 1.0`. gqls's own verdict is `loose`. A script reading
@@ -29,6 +32,12 @@ early entries are terser than what follows.
   exit code — rather than the first stderr line beside `exit Some(64)`.
 
 ### Fixed
+- **A query correcting to a common field name no longer takes a minute.**
+  Deciding whether a query *names* one record re-scanned every name in the
+  schema once per record it corrected to: on a 48k-record schema, `emial`
+  (→ 2,811 `email` fields) took about 60 s and `ñame` 77 s. It is asked once
+  per query now, and the check allocates nothing for ASCII names and runs in
+  parallel — `emial` takes about 16 ms. Every result is unchanged.
 - **`-R` works again.** It passed rq `--no-record`, which rq removed in 0.52.0,
   so every resolve against a current rq failed with `unexpected argument`.
   gqls now passes rq only `--ndjson --limit 10` (and `--verbose` under `-v`),
