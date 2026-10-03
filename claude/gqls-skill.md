@@ -218,6 +218,12 @@ well as the URL, so changing a token fetches a fresh schema rather than
 replaying the one the previous credentials got — a cache hit is never evidence
 that the token you just passed works.
 
+An answer from a cached copy says its age on stderr (`from a copy of <url>
+cached 41m ago`) and in JSON (`"source": {"cached": true, "age_secs": …}` on
+every row and on a `-J` miss). A schema that changed in the last hour may not
+be in it — if the field you expected is missing, `--refresh` before
+concluding it doesn't exist.
+
 ## Phrases
 
 **When you don't know the name, pass the user's own words.** A multi-word query

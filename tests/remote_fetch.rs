@@ -119,3 +119,39 @@ fn a_slow_fetch_says_it_is_still_waiting() {
     let out = gqls(&ep.url, &cache_dir("prompt"), &["widget"]);
     assert!(!text(&out.stderr).contains("still waiting"));
 }
+
+fn ndjson(out: &Output) -> Vec<serde_json::Value> {
+    text(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
+}
+
+#[test]
+fn an_answer_from_a_cached_copy_says_how_old_it_is() {
+    let ep = Endpoint::start(&[Reply::Schema("widget")]);
+    let cache = cache_dir("age");
+
+    // fetched live: nothing to disclose
+    let out = gqls(&ep.url, &cache, &["widget", "-J"]);
+    assert!(
+        !text(&out.stderr).contains("cached"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(ndjson(&out)[0].get("source").is_none());
+
+    // from the cache: the answer and the miss both carry their age
+    for query in ["widget", "zzzz"] {
+        let out = gqls(&ep.url, &cache, &[query, "-J"]);
+        let err = text(&out.stderr);
+        assert!(out.status.success(), "{err}");
+        assert!(err.contains("cached") && err.contains("--refresh"), "{err}");
+        let rows = ndjson(&out);
+        let source = &rows[0]["source"];
+        assert_eq!(source["url"], ep.url.as_str(), "{query}: {rows:?}");
+        assert_eq!(source["cached"], true, "{query}: {rows:?}");
+        assert!(source["age_secs"].is_u64(), "{query}: {rows:?}");
+    }
+    assert_eq!(ep.hits(), 1);
+}

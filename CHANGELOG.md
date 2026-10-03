@@ -9,6 +9,15 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **An answer from a cached copy of a live schema says how old it is**:
+  `from a copy of <url> cached 41m ago — --refresh to refetch` on stderr
+  (silenced by `-q`), and a `source` object (`url`, `cached: true`,
+  `age_secs`) on every JSON row and on the `-J` `no_matches` row. Rows from a
+  file or a fresh fetch are unchanged.
+- **A miss from a remembered discovery says so**: `no matches for "x" in
+  schema.graphql (remembered from an earlier walk — --refresh re-walks)`, and
+  the `-J` miss row carries `source: {path, discovered: true, remembered}`
+  whenever gqls picked the schema.
 - **A live fetch retries a transient failure.** A refused or dropped
   connection, a 502/503/504, or a 429 (honouring `Retry-After` up to 5 s) is
   tried up to three times in all, with a short backoff, inside a 40 s budget —

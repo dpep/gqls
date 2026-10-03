@@ -328,12 +328,14 @@ pub fn run() -> Result<()> {
     // Which schema answered is only worth saying when nobody chose it — see
     // [`no_matches`]. Named the way `-v` names it: the walk starts at the cwd,
     // so the discovered schema is always under it.
-    let discovered = positional_source.is_none();
-    let source = match positional_source {
-        Some(s) => s,
-        None => load::discover(cli.refresh)?,
+    let (source, remembered) = match positional_source {
+        Some(s) => (s, None),
+        None => {
+            let found = load::discover(cli.refresh)?;
+            (found.path, Some(found.remembered))
+        }
     };
-    let discovered_source = discovered.then(|| match std::env::current_dir() {
+    let discovered_source = remembered.map(|_| match std::env::current_dir() {
         Ok(cwd) => load::rel(&cwd, std::path::Path::new(&source)),
         Err(_) => source.clone(),
     });
@@ -342,12 +344,23 @@ pub fn run() -> Result<()> {
         refresh: cli.refresh,
     };
     let t_load = std::time::Instant::now();
-    let records = {
+    let load::Loaded { records, origin } = {
         let mut span = crate::profile::span("load");
-        let records = load::load(&source, &load_opts)?;
-        span.note(|| format!("{} records", records.len()));
-        records
+        let loaded = load::load_with_origin(&source, &load_opts)?;
+        span.note(|| format!("{} records", loaded.records.len()));
+        loaded
     };
+    // What the command line doesn't show about where the answer came from: a
+    // URL answered from a copy fetched earlier says so on every row, and a
+    // discovered schema says which one on a miss (see `no_matches`).
+    let sources = Sources::new(&source, origin, discovered_source.as_deref(), remembered);
+    if let load::Origin::Cached { age } = origin {
+        // A routine hit inside the TTL: status, so -q silences it.
+        crate::status!(
+            "from a copy of {source} cached {} ago — --refresh to refetch",
+            ago(age)
+        );
+    }
     crate::detail!(
         "loaded {} records in {:.1?}",
         records.len(),
@@ -580,13 +593,19 @@ pub fn run() -> Result<()> {
                     returns,
                     filters,
                     &records,
-                    discovered_source.as_deref(),
+                    sources.miss_text.as_deref(),
                 )
             );
         }
         let explained = explained.map(|(_, m)| m);
         let out_span = crate::profile::span("output");
-        output.write_matches(&matches, batch.then_some(query), explained, &records)?;
+        output.write_matches(
+            &matches,
+            batch.then_some(query),
+            explained,
+            &records,
+            &sources,
+        )?;
         drop(out_span);
         // Status, not a -v diagnostic: matches were dropped, and a list that
         // simply stops at -l reads as the whole answer. An explanation isn't a
@@ -668,6 +687,7 @@ impl Output {
         label: Option<&str>,
         explained: Option<search::NameMatch>,
         records: &[SchemaRecord],
+        sources: &Sources,
     ) -> Result<()> {
         #[derive(Serialize)]
         struct Row<'a> {
@@ -690,6 +710,10 @@ impl Output {
             /// fields, since to a consumer they're all just what gqls knows.
             #[serde(flatten)]
             extras: Extras<'a>,
+            /// Where the schema came from, when the command line doesn't say:
+            /// a copy cached earlier. Absent otherwise.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            source: Option<&'a serde_json::Value>,
         }
         let rows = || {
             matches.iter().map(|m| Row {
@@ -704,6 +728,7 @@ impl Output {
                     Some(_) => render::extras(m.record, records),
                     None => Extras::default(),
                 },
+                source: sources.rows.as_ref(),
             })
         };
         // A query that matched nothing would otherwise vanish from the stream,
@@ -717,10 +742,13 @@ impl Output {
         if matches.is_empty() && matches!(self, Output::Ndjson) {
             // `query` only in a batch, matching the rows, which carry it only
             // there — with one query there's nothing to tell apart.
-            let miss = match label {
+            let mut miss = match label {
                 Some(q) => serde_json::json!({ "query": q, "status": "no_matches" }),
                 None => serde_json::json!({ "status": "no_matches" }),
             };
+            if let Some(source) = &sources.miss {
+                miss["source"] = source.clone();
+            }
             println!("{}", serde_json::to_string(&miss)?);
             return Ok(());
         }
@@ -910,6 +938,64 @@ fn not_a_type(name: &str, records: &[SchemaRecord]) -> Option<String> {
         .then(|| format!("{name} is a directive, not a type — --returns takes a type"))
 }
 
+/// What gqls says about where a schema came from, worked out once per run.
+#[derive(Default)]
+struct Sources {
+    /// On every JSON search row: a copy cached earlier.
+    rows: Option<serde_json::Value>,
+    /// On the miss row: `rows`, else the discovered schema.
+    miss: Option<serde_json::Value>,
+    /// The schema a miss names in text, when gqls picked it.
+    miss_text: Option<String>,
+}
+
+impl Sources {
+    fn new(
+        source: &str,
+        origin: load::Origin,
+        discovered: Option<&str>,
+        remembered: Option<bool>,
+    ) -> Self {
+        let rows = match origin {
+            load::Origin::Direct => None,
+            load::Origin::Cached { age } => Some(serde_json::json!({
+                    "url": source,
+                    "cached": true,
+                    "age_secs": age.as_secs(),
+            })),
+        };
+        let miss = rows.clone().or_else(|| {
+            discovered.map(|path| {
+                serde_json::json!({
+                    "path": path,
+                    "discovered": true,
+                    "remembered": remembered.unwrap_or(false),
+                })
+            })
+        });
+        let miss_text = discovered.map(|path| match remembered {
+            Some(true) => format!("{path} (remembered from an earlier walk — --refresh re-walks)"),
+            _ => path.to_string(),
+        });
+        Self {
+            rows,
+            miss,
+            miss_text,
+        }
+    }
+}
+
+/// An age to the precision anyone reads it at: `41s`, `41m`, `3h`, `2d`.
+fn ago(age: std::time::Duration) -> String {
+    let s = age.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        3600..172_800 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86_400),
+    }
+}
+
 /// Why an empty answer was empty.
 ///
 /// A miss is about the filters as much as the query. "nothing returns Issue"
@@ -1052,7 +1138,7 @@ fn one_named_record<'a>(
                 .collect();
             // A candidate list by construction: this path exists because the
             // query did *not* name a record, so there's nothing to explain.
-            output.write_matches(&matches, None, None, &[])?;
+            output.write_matches(&matches, None, None, &[], &Sources::default())?;
             return Err(Handled.into());
         }
     }

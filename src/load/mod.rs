@@ -32,14 +32,44 @@ pub struct LoadOptions {
     pub refresh: bool,
 }
 
+/// Where loaded records came from, when that's more than the source names: a
+/// URL can be answered from a copy fetched earlier.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Origin {
+    /// Read or fetched just now.
+    #[default]
+    Direct,
+    /// From the introspection cache, fetched `age` ago.
+    Cached { age: std::time::Duration },
+}
+
+/// A loaded schema and where it came from.
+pub struct Loaded {
+    pub records: Vec<SchemaRecord>,
+    pub origin: Origin,
+}
+
 /// Load a schema from a file path or an http(s) URL and flatten it to records.
+pub fn load(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
+    load_with_origin(source, opts).map(|l| l.records)
+}
+
+/// [`load`], saying where the records came from.
 ///
 /// What a file holds picks the loader, not what it's called — `curl … >
 /// schema.graphql` saves a dump under an SDL name, and it is still a dump.
-pub fn load(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
+pub fn load_with_origin(source: &str, opts: &LoadOptions) -> Result<Loaded> {
     if source.starts_with("http://") || source.starts_with("https://") {
         return introspect::from_url(source, opts);
     }
+    let direct = |records| Loaded {
+        records,
+        origin: Origin::Direct,
+    };
+    load_file(source, opts).map(direct)
+}
+
+fn load_file(source: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
     let bytes = std::fs::read(source).map_err(|e| anyhow!("reading {source}: {e}"))?;
     if is_json(&bytes) {
         // A dump is a saved response, so it goes through the same gate a live
@@ -120,7 +150,7 @@ impl Reach {
 ///
 /// The walk is the most expensive thing a warm query does, so its answer is
 /// remembered per directory (see [`discover_cache`]); `refresh` re-walks.
-pub(crate) fn discover(refresh: bool) -> Result<String> {
+pub(crate) fn discover(refresh: bool) -> Result<Discovered> {
     let mut span = crate::profile::span("discover");
     let root = std::env::current_dir()?;
     if !refresh {
@@ -129,7 +159,10 @@ pub(crate) fn discover(refresh: bool) -> Result<String> {
             // Same line as the walk prints: which schema answered is worth
             // knowing whether or not it took a walk to work it out.
             crate::detail!("using schema {} (remembered)", rel(&root, &p));
-            return Ok(p.to_string_lossy().into_owned());
+            return Ok(Discovered {
+                path: p.to_string_lossy().into_owned(),
+                remembered: true,
+            });
         }
     }
     let (mut candidates, seen, searched) = locate(&root);
@@ -164,7 +197,17 @@ pub(crate) fn discover(refresh: bool) -> Result<String> {
     }
     discover_cache::store(&root, &chosen.path);
 
-    Ok(chosen.path.to_string_lossy().into_owned())
+    Ok(Discovered {
+        path: chosen.path.to_string_lossy().into_owned(),
+        remembered: false,
+    })
+}
+
+/// The schema discovery settled on, and whether that answer was remembered
+/// from an earlier walk rather than walked for now.
+pub(crate) struct Discovered {
+    pub path: String,
+    pub remembered: bool,
 }
 
 /// Search `dir` for schemas, best first, and say where the answer came from.

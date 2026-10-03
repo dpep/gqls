@@ -40,7 +40,7 @@ const MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// `opts.headers` (e.g. an `Authorization` token) and a TTL response cache
 /// (1h for remote endpoints, never for localhost) so repeated queries against a
 /// remote endpoint don't refetch all day.
-pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord>> {
+pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<super::Loaded> {
     let ttl = ttl(url);
     // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
     // neither read nor write, so a schema you're actively editing is never stale.
@@ -50,11 +50,14 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
 
     if !opts.refresh {
         if let Some(p) = path.as_deref() {
-            if let Some(bytes) = read_if_fresh(p, ttl) {
+            if let Some((bytes, age)) = read_if_fresh(p, ttl) {
                 match records_from(&bytes, url, opts.refresh) {
                     Ok(records) => {
                         crate::detail!("introspection cache hit: {}", crate::paths::display(p));
-                        return Ok(records);
+                        return Ok(super::Loaded {
+                            records,
+                            origin: super::Origin::Cached { age },
+                        });
                     }
                     // A cached body that no longer yields a schema is a miss, not
                     // a failure: bailing here would make one bad file poison every
@@ -87,7 +90,10 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<Vec<SchemaRecord
     if let Some(p) = path.as_deref() {
         store_response(p, &bytes);
     }
-    Ok(records)
+    Ok(super::Loaded {
+        records,
+        origin: super::Origin::Direct,
+    })
 }
 
 /// Records from a raw introspection payload, or an error if it isn't one.
@@ -439,15 +445,17 @@ fn cache_dir() -> Option<PathBuf> {
     Some(crate::paths::cache_dir()?.join("introspect"))
 }
 
-/// The cached bytes if the file is younger than `ttl`, else `None`.
-fn read_if_fresh(path: &Path, ttl: Duration) -> Option<Vec<u8>> {
+/// The cached bytes and their age if the file is younger than `ttl`.
+fn read_if_fresh(path: &Path, ttl: Duration) -> Option<(Vec<u8>, Duration)> {
     let age = std::fs::metadata(path)
         .ok()?
         .modified()
         .ok()?
         .elapsed()
         .ok()?;
-    (age <= ttl).then(|| std::fs::read(path).ok()).flatten()
+    (age <= ttl)
+        .then(|| std::fs::read(path).ok().map(|b| (b, age)))
+        .flatten()
 }
 
 /// Effective cache lifetime for `url`: `GQLS_INTROSPECT_TTL` (seconds) if set,

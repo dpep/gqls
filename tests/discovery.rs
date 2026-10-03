@@ -47,3 +47,32 @@ fn a_tie_between_two_schemas_is_reported() {
     assert!(!err.contains("other schema file"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_miss_from_a_remembered_schema_says_which_and_how_to_rewalk() {
+    let root = scratch("remembered");
+    let cache = root.join("cache");
+    std::fs::write(root.join("api.graphqls"), "type Query { a: Int }").unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_gqls"))
+            .args(args)
+            .current_dir(&root)
+            .env("XDG_CACHE_HOME", &cache)
+            .output()
+            .expect("gqls should be runnable")
+    };
+    run(&["a"]); // walks, and remembers
+    let out = run(&["zzzz", "-J"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("api.graphqls"), "{err}");
+    assert!(
+        err.contains("remembered") && err.contains("--refresh"),
+        "{err}"
+    );
+    let row: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a miss row");
+    assert_eq!(row["status"], "no_matches");
+    assert_eq!(row["source"]["path"], "api.graphqls", "{row}");
+    assert_eq!(row["source"]["discovered"], true, "{row}");
+    assert_eq!(row["source"]["remembered"], true, "{row}");
+    let _ = std::fs::remove_dir_all(&root);
+}
