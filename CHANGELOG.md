@@ -6,6 +6,14 @@ is the public API; the crate is not intended to be used as a library.
 Versions before 0.18.0 are reconstructed from release commits and tags, so the
 early entries are terser than what follows.
 
+## Unreleased
+
+### Fixed
+- **`-R` works again.** It passed rq `--no-record`, which rq removed in 0.52.0,
+  so every resolve against a current rq failed with `unexpected argument`.
+  gqls now passes rq only `--ndjson --limit 10` (and `--verbose` under `-v`),
+  and a test drives the installed rq when there is one.
+
 ## 0.26.2 — 2026-09-20
 
 ### Changed

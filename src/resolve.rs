@@ -343,13 +343,14 @@ fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<HashMap<String, Vec<RqH
     use std::io::Write;
     let verbose = crate::logging::is_verbose();
     let mut cmd = Command::new("rq");
+    // Every flag here is a dependency on rq's CLI, which has removed one before
+    // (`--no-record`, in 0.52.0 — and every -R failed as a usage error). Keep
+    // the list to what the batch can't do without; tests/resolve_rq.rs pins it.
+    //
     // Ten, not five: the correct definition was being cut inside rq before
     // gqls could rank it — two structurally identical fields differed only in
     // where they fell in one noisy list. The final `limit` still applies.
     cmd.arg("--ndjson").arg("--limit").arg("10");
-    // Ranking is gqls's job here, and a batch is machine input by definition:
-    // don't let these probes teach rq's learned boosts.
-    cmd.arg("--no-record");
     // Mirror `gqls -v` into rq: it traces its own decisions (root, coverage,
     // warming) to stderr, which we let stream straight to the terminal. Without
     // -v we keep capturing rq's stderr so a failure can surface its message.
