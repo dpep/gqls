@@ -1198,7 +1198,36 @@ fn run_resolve(
     let schema_path = (!source.starts_with("http://") && !source.starts_with("https://"))
         .then(|| std::path::Path::new(source))
         .filter(|p| p.exists());
-    let hits = crate::resolve::resolve(target, code, schema_path, limit.min(10))?;
+    let crate::resolve::Resolution {
+        hits,
+        warming,
+        unsettled,
+    } = crate::resolve::resolve(target, code, schema_path, limit.min(10))?;
+
+    // "Nothing yet" isn't "nothing": with rq still indexing, an empty answer
+    // can't be reported as one, so it's a failure to deliver — with rq's hint.
+    if hits.is_empty() && unsettled {
+        let progress = warming
+            .as_ref()
+            .map(|w| {
+                let hint = crate::resolve::warming_hint(w)
+                    .map(|h| format!(" ({h})"))
+                    .unwrap_or_default();
+                format!(" — {}{hint}", crate::resolve::describe_warming(w))
+            })
+            .unwrap_or_default();
+        anyhow::bail!(
+            "no code definition of {} found yet{progress}; run again once rq has finished indexing",
+            target.path
+        );
+    }
+    // A hedge on every hit below, said once. The rows carry it in JSON.
+    if let Some(w) = warming.as_ref().filter(|_| !hits.is_empty()) {
+        crate::status!(
+            "{} — a file not read yet could hold a better match; run again to settle",
+            crate::resolve::describe_warming(w)
+        );
+    }
 
     match output {
         Output::Json => println!("{}", serde_json::to_string_pretty(&hits)?),
@@ -1225,8 +1254,16 @@ fn run_resolve(
                 );
             }
             for h in &hits {
-                let flag = if h.loose { "  (guess)" } else { "" };
-                println!("{}:{}  {}  (via {}){flag}", h.file, h.line, h.name, h.via);
+                let guess = if h.loose { "  (guess)" } else { "" };
+                let provisional = if h.provisional { "  (provisional)" } else { "" };
+                let also = match h.also_in.as_slice() {
+                    [] => String::new(),
+                    other => format!("  also in {}", other.join(", ")),
+                };
+                println!(
+                    "{}:{}  {}  (via {}){guess}{provisional}{also}",
+                    h.file, h.line, h.name, h.via
+                );
             }
         }
     }

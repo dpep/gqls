@@ -405,11 +405,18 @@ own `Query` class), fields with a custom method, and fields declared only as
 That last case needs `rq` 0.35.2 or newer, which indexes `field` declarations
 as the methods they define. On an older `rq` those fields silently find nothing.
 
-**`no code definition found` can mean the index isn't ready.** `rq` builds it in
-the background, and while it does, every candidate comes back with zero hits —
-which reads exactly like a field that has no resolver. On a repo `rq` hasn't
-seen before, let it finish (`rq --index <dir>`) and re-run before concluding
-anything; check `rq --version` too.
+**rq's hedges come through; pass them on.** A hit rq read from a checkout it is
+still indexing says so on stderr (`rq still indexing: 40 of 900 files`) and in
+JSON as rq's own `warming` object; one rq held back because an unread file
+could still beat it is marked `(provisional)` (`"provisional": true`). Both are
+answers, exit `0`, and both can change — say "probably", or re-run once rq has
+finished. `also in lib/x.rb:4` (`also_in`) means the class is reopened
+elsewhere; the method you want may be in the other file.
+
+**`no code definition found` is definitive; "not found yet" is exit `1`.** When
+rq is still indexing and has nothing at all, gqls fails with rq's progress and
+hint rather than reporting an absence — re-run, or `rq --index <dir>` first.
+Check `rq --version` too: `-R` needs an rq that accepts the flags gqls passes.
 
 ## Installing / updating the binary
 

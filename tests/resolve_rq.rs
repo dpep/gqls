@@ -86,6 +86,8 @@ fn json(out: &Output) -> serde_json::Value {
 
 const HIT: &str = r#"{"query":"Resolvers::Widget","name":"Widget","kind":"class","language":"ruby","file":"app/graphql/resolvers/widget.rb","line":2,"end_line":4,"parent":"Resolvers","repo":"local:/r","source":"index","confidence":1.0,"features":["exact"],"signature":"class Widget","declarations":2,"also_in":["lib/widget_ext.rb:2"],"total":1}"#;
 const MISS: &str = r#"{"query":"Queries::Widget","status":"no_match"}"#;
+const WARMING: &str =
+    r#"{"read":0,"of":3,"interrupted":false,"hint":"rq is still indexing this checkout"}"#;
 
 #[test]
 fn gqls_passes_rq_only_flags_rq_takes() {
@@ -103,6 +105,89 @@ fn gqls_passes_rq_only_flags_rq_takes() {
 }
 
 #[test]
+fn a_hit_declared_in_several_places_says_where_else() {
+    let dir = scratch("also");
+    let bin = stub_rq(&dir, &format!("{HIT}\n{MISS}\n"), 0);
+
+    let out = resolve(&dir, &bin, &[]);
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains("app/graphql/resolvers/widget.rb:2"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("also in lib/widget_ext.rb:2"), "{stdout}");
+
+    let out = resolve(&dir, &bin, &["-j"]);
+    let hit = &json(&out)[0];
+    assert_eq!(hit["also_in"], serde_json::json!(["lib/widget_ext.rb:2"]));
+    assert_eq!(hit["declarations"], 2);
+    assert_eq!(hit["provisional"], false);
+}
+
+#[test]
+fn a_hit_from_a_checkout_still_being_indexed_says_so() {
+    let dir = scratch("warmhit");
+    let hit = HIT.replace(
+        r#""confidence":1.0"#,
+        &format!(r#""confidence":0.0,"warming":{WARMING}"#),
+    );
+    let bin = stub_rq(&dir, &format!("{hit}\n{MISS}\n"), 0);
+
+    let out = resolve(&dir, &bin, &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let err = text(&out.stderr);
+    assert!(err.contains("rq still indexing: 0 of 3 files"), "{err}");
+
+    let out = resolve(&dir, &bin, &["-j"]);
+    let hit = &json(&out)[0];
+    assert_eq!(hit["warming"]["of"], 3, "{hit}");
+    assert_eq!(hit["warming"]["hint"], "rq is still indexing this checkout");
+}
+
+#[test]
+fn a_provisional_answer_is_an_answer_marked_provisional() {
+    // rq exits 2 when a file it hasn't read could still beat what it found,
+    // and hands back what it has as `provisional`. Not a failure.
+    let dir = scratch("provisional");
+    let inner = HIT.replace(r#""query":"Resolvers::Widget","#, "");
+    let row = format!(
+        r#"{{"provisional":[{inner}],"query":"Resolvers::Widget","status":"warming","warming":{WARMING}}}"#
+    );
+    let bin = stub_rq(&dir, &format!("{row}\n{MISS}\n"), 2);
+
+    let out = resolve(&dir, &bin, &[]);
+    let (stdout, err) = (text(&out.stdout), text(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(
+        stdout.contains("app/graphql/resolvers/widget.rb:2") && stdout.contains("(provisional)"),
+        "{stdout}"
+    );
+    assert!(err.contains("rq still indexing: 0 of 3 files"), "{err}");
+    assert!(!err.contains("rq failed"), "{err}");
+
+    let out = resolve(&dir, &bin, &["-j"]);
+    let hit = &json(&out)[0];
+    assert_eq!(hit["provisional"], true, "{hit}");
+    assert_eq!(hit["warming"]["read"], 0, "{hit}");
+}
+
+#[test]
+fn a_miss_while_rq_is_still_indexing_is_not_an_answer() {
+    // "nothing yet" isn't "nothing": exit 1 with rq's hint, not exit 0 under a
+    // "no code definition found" that reads as definitive.
+    let dir = scratch("warmmiss");
+    let row = format!(r#"{{"query":"Resolvers::Widget","status":"warming","warming":{WARMING}}}"#);
+    let bin = stub_rq(&dir, &format!("{row}\n{MISS}\n"), 2);
+
+    let out = resolve(&dir, &bin, &[]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("0 of 3 files"), "{err}");
+    assert!(err.contains("rq is still indexing this checkout"), "{err}");
+    assert!(!err.contains("no code definition found"), "{err}");
+}
+
+#[test]
 fn a_plain_miss_is_still_an_answer() {
     let dir = scratch("miss");
     let rows = format!(
@@ -114,6 +199,22 @@ fn a_plain_miss_is_still_an_answer() {
     let err = text(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{err}");
     assert!(err.contains("no code definition found"), "{err}");
+}
+
+#[test]
+fn an_rq_error_says_what_rq_said() {
+    let dir = scratch("error");
+    let bin = stub_rq(
+        &dir,
+        r#"{"code":74,"error":"rq: can't open the index at /x/rq.db","kind":"database"}"#,
+        74,
+    );
+    let out = resolve(&dir, &bin, &[]);
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("can't open the index at /x/rq.db"), "{err}");
+    assert!(err.contains("exit 74"), "{err}");
+    assert!(!err.contains("Some("), "{err}");
 }
 
 /// The real `rq` on PATH, if there is one.
@@ -194,5 +295,6 @@ fn the_installed_rq_answers_a_resolve() {
     let top = &hits[0];
     assert_eq!(top["file"], "app/graphql/resolvers/widget.rb", "{hits}");
     assert_eq!(top["via"], "Resolvers::Widget", "{hits}");
+    assert_eq!(top["also_in"], serde_json::json!(["lib/widget_ext.rb:2"]));
     let _ = std::fs::remove_dir_all(&dir);
 }

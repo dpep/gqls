@@ -30,6 +30,20 @@ pub(crate) struct RqHit {
     /// sits where the candidate said it would.
     #[serde(default)]
     pub parent: Option<String>,
+    /// How many places declare this name, when rq folded several into one hit
+    /// (a reopened class) — and where the others are, as `file:line`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declarations: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_in: Vec<String>,
+    /// rq's `warming` object, verbatim, when the hit came from a checkout rq is
+    /// still indexing: a better match may sit in a file it hasn't read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warming: Option<serde_json::Value>,
+    /// rq held this back as `provisional` (its exit 2): the best it has, which
+    /// a file not read yet could still beat.
+    #[serde(default, skip_deserializing)]
+    pub provisional: bool,
     /// The graphql-ruby candidate query that surfaced this hit — set by gqls,
     /// not read from rq, but included in serialized output.
     #[serde(default, skip_deserializing)]
@@ -54,6 +68,17 @@ pub(crate) struct RqHit {
     named: bool,
 }
 
+/// A resolve's answer: the hits, best first, and how settled rq was about them.
+pub(crate) struct Resolution {
+    pub hits: Vec<RqHit>,
+    /// rq's `warming` object from any row, when a checkout it searched is still
+    /// being indexed.
+    pub warming: Option<serde_json::Value>,
+    /// Some candidate got no definitive answer (rq's `warming`/`interrupted`):
+    /// an empty `hits` means "not yet", not "nowhere".
+    pub unsettled: bool,
+}
+
 /// Resolve `rec` to its code definition(s) via rq, best first. `schema_path`,
 /// when a local file, ranks hits by package proximity to the schema — the
 /// resolver in the schema's own subgraph wins over a same-named one elsewhere.
@@ -62,7 +87,7 @@ pub(crate) fn resolve(
     code_dir: Option<&str>,
     schema_path: Option<&Path>,
     limit: usize,
-) -> Result<Vec<RqHit>> {
+) -> Result<Resolution> {
     // Every candidate's hits first, then rank as a whole: proximity can only
     // reorder across candidates once they're all in. The same location often
     // turns up under several, so keep the best account of it rather than the
@@ -73,11 +98,15 @@ pub(crate) fn resolve(
     // See `run_rq` for why they go in one call.
     let cands = candidates(rec);
     let queries: Vec<&str> = cands.iter().map(|c| c.query.as_str()).collect();
-    let found = run_rq(&queries, code_dir)?;
+    let RqAnswer {
+        mut by_query,
+        warming,
+        unsettled,
+    } = run_rq(&queries, code_dir)?;
 
     let mut best: HashMap<String, RqHit> = HashMap::new();
     for (idx, cand) in cands.iter().enumerate() {
-        let found = found.get(cand.query.as_str()).cloned().unwrap_or_default();
+        let found = by_query.remove(cand.query.as_str()).unwrap_or_default();
         crate::detail!("rq candidate {:?} -> {} hit(s)", cand.query, found.len());
         for mut hit in found {
             hit.via = cand.query.clone();
@@ -118,7 +147,34 @@ pub(crate) fn resolve(
 
     hits.sort_by(better);
     hits.truncate(limit);
-    Ok(hits)
+    Ok(Resolution {
+        hits,
+        warming,
+        unsettled,
+    })
+}
+
+/// rq's `warming` object as a phrase: `rq still indexing: 0 of 3 files`.
+pub(crate) fn describe_warming(w: &serde_json::Value) -> String {
+    let read = w
+        .get("read")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let files = match w.get("of").and_then(serde_json::Value::as_i64) {
+        Some(of) => format!("{read} of {of} files"),
+        None => format!("{read} files read"),
+    };
+    match w.get("interrupted").and_then(serde_json::Value::as_bool) {
+        Some(true) => format!("rq's index stopped part-way: {files}"),
+        _ => format!("rq still indexing: {files}"),
+    }
+}
+
+/// rq's own advice in a `warming` object, if it gave any.
+pub(crate) fn warming_hint(w: &serde_json::Value) -> Option<&str> {
+    w.get("hint")
+        .and_then(serde_json::Value::as_str)
+        .filter(|h| !h.is_empty())
 }
 
 /// Order two hits, best first.
@@ -339,7 +395,7 @@ pub(crate) fn candidates(rec: &SchemaRecord) -> Vec<Candidate> {
 /// run, so its setup (opening the store, resolving the repo, checking whether
 /// the worktree moved) is paid once for the whole lookup instead of once per
 /// naming convention. Rows come back tagged with the query that produced them.
-fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<HashMap<String, Vec<RqHit>>> {
+fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<RqAnswer> {
     use std::io::Write;
     let verbose = crate::logging::is_verbose();
     let mut cmd = Command::new("rq");
@@ -386,19 +442,27 @@ fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<HashMap<String, Vec<RqH
     let output = child
         .wait_with_output()
         .map_err(|e| anyhow!("running rq: {e}"))?;
-    // rq: exit 0 = hits, 1 = nothing matched (both normal for a batch of
-    // speculative convention probes). Any other code is a real failure.
-    if !matches!(output.status.code(), Some(0) | Some(1)) {
-        let msg = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "rq failed (exit {:?}): {}",
-            output.status.code(),
-            msg.lines().next().unwrap_or("").trim()
-        );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // rq: 0 = hits, 1 = nothing matched, 2 = not settled yet (an index still
+    // being built) — all normal for a batch of speculative probes. Anything
+    // else is a failure, and rq says which as a JSON `error` object.
+    if !matches!(output.status.code(), Some(0..=2)) {
+        let said = stdout
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find_map(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+            .unwrap_or_else(|| {
+                let err = String::from_utf8_lossy(&output.stderr);
+                err.lines().next().unwrap_or("").trim().to_string()
+            });
+        let how = match output.status.code() {
+            Some(code) => format!("exit {code}"),
+            None => "killed by a signal".to_string(),
+        };
+        bail!("rq failed ({how}): {said}");
     }
 
-    let mut by_query: HashMap<String, Vec<RqHit>> = HashMap::new();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut answer = RqAnswer::default();
     for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -406,17 +470,42 @@ fn run_rq(queries: &[&str], dir: Option<&str>) -> Result<HashMap<String, Vec<RqH
         let Some(query) = value.get("query").and_then(|q| q.as_str()) else {
             continue;
         };
-        // `{"query": …, "status": …}` marks a query that matched nothing (or an
-        // index still warming) — no hit to record, and not an error.
-        if value.get("status").is_some() {
-            by_query.entry(query.to_string()).or_default();
-            continue;
+        let hits = answer.by_query.entry(query.to_string()).or_default();
+        if let Some(w) = value.get("warming") {
+            answer.warming.get_or_insert_with(|| w.clone());
         }
-        if let Ok(hit) = serde_json::from_value::<RqHit>(value.clone()) {
-            by_query.entry(query.to_string()).or_default().push(hit);
+        // `{"query": …, "status": …}` is a miss row. `no_match` is definitive;
+        // `warming`/`interrupted` mean "not yet", and may carry the matches so
+        // far as `provisional`.
+        match value.get("status").and_then(|s| s.as_str()) {
+            None => hits.extend(serde_json::from_value::<RqHit>(value).ok()),
+            Some("warming" | "interrupted") => {
+                answer.unsettled = true;
+                let held = value.get("provisional").and_then(|p| p.as_array());
+                for v in held.into_iter().flatten() {
+                    if let Ok(mut hit) = serde_json::from_value::<RqHit>(v.clone()) {
+                        hit.provisional = true;
+                        // the row's progress is this hit's, if it didn't carry its own
+                        if hit.warming.is_none() {
+                            hit.warming = value.get("warming").cloned();
+                        }
+                        hits.push(hit);
+                    }
+                }
+            }
+            Some(_) => {}
         }
     }
-    Ok(by_query)
+    Ok(answer)
+}
+
+/// Everything one rq batch said: each query's hits, plus whether any of it is
+/// unsettled.
+#[derive(Default)]
+struct RqAnswer {
+    by_query: HashMap<String, Vec<RqHit>>,
+    warming: Option<serde_json::Value>,
+    unsettled: bool,
 }
 
 /// GraphQL `nameWithOwner` → Ruby `name_with_owner`.
@@ -534,6 +623,10 @@ mod tests {
             kind: "method".into(),
             confidence: 0.5,
             parent: parent.map(Into::into),
+            declarations: None,
+            also_in: Vec::new(),
+            warming: None,
+            provisional: false,
             via: String::new(),
             loose: false,
             proximity: 0,

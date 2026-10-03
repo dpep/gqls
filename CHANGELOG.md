@@ -8,6 +8,21 @@ early entries are terser than what follows.
 
 ## Unreleased
 
+### Added
+- **`-R` passes rq's hedges through.** A class declared in several places shows
+  `also in <file:line>` and carries `declarations`/`also_in` in JSON. A hit
+  from a checkout rq is still indexing says `rq still indexing: N of M files`
+  on stderr and carries rq's `warming` object; a hit rq held back as
+  provisional (rq's exit 2) is kept, marked `(provisional)`, with
+  `"provisional": true` on every JSON row. Exit `0` — it's an answer.
+
+### Changed
+- **`-R` exits `1` when rq is still indexing and found nothing**, with rq's
+  progress and hint, instead of exiting `0` under a `no code definition found`
+  that read as definitive. A miss on a finished index still exits `0`.
+- **A failing rq is reported in its own words** — its JSON `error` and its
+  exit code — rather than the first stderr line beside `exit Some(64)`.
+
 ### Fixed
 - **`-R` works again.** It passed rq `--no-record`, which rq removed in 0.52.0,
   so every resolve against a current rq failed with `unexpected argument`.
