@@ -122,6 +122,9 @@ fn a_hit_declared_in_several_places_says_where_else() {
     assert_eq!(hit["also_in"], serde_json::json!(["lib/widget_ext.rb:2"]));
     assert_eq!(hit["declarations"], 2);
     assert_eq!(hit["provisional"], false);
+    // rq's number, named as rq's: gqls's own verdict is `loose`
+    assert_eq!(hit["rq_confidence"], 1.0);
+    assert!(hit.get("confidence").is_none(), "{hit}");
 }
 
 #[test]

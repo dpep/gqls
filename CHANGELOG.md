@@ -17,6 +17,11 @@ early entries are terser than what follows.
   `"provisional": true` on every JSON row. Exit `0` — it's an answer.
 
 ### Changed
+- **`-R -j` renames `confidence` to `rq_confidence`.** It was rq's confidence
+  in the name match, so a `(guess)` rq matched exactly read as
+  `"confidence": 1.0`. gqls's own verdict is `loose`. A script reading
+  `confidence` must read `rq_confidence` — though against rq 0.52.0 or newer
+  `-R` failed outright, so no current setup was producing the old field.
 - **`-R` exits `1` when rq is still indexing and found nothing**, with rq's
   progress and hint, instead of exiting `0` under a `no code definition found`
   that read as definitive. A miss on a finished index still exits `0`.

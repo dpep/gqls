@@ -411,7 +411,9 @@ JSON as rq's own `warming` object; one rq held back because an unread file
 could still beat it is marked `(provisional)` (`"provisional": true`). Both are
 answers, exit `0`, and both can change — say "probably", or re-run once rq has
 finished. `also in lib/x.rb:4` (`also_in`) means the class is reopened
-elsewhere; the method you want may be in the other file.
+elsewhere; the method you want may be in the other file. `-j`'s
+`rq_confidence` is rq's confidence in the *name match*, not in the resolver —
+a `(guess)` (`"loose": true`) can carry 1.0.
 
 **`no code definition found` is definitive; "not found yet" is exit `1`.** When
 rq is still indexing and has nothing at all, gqls fails with rq's progress and

@@ -24,7 +24,13 @@ pub(crate) struct RqHit {
     pub line: u64,
     #[serde(default)]
     pub kind: String,
-    #[serde(default)]
+    /// rq's confidence in the *name match* — not gqls's in the resolver, which
+    /// is `loose`. Renamed on the way out so a guess rq matched exactly doesn't
+    /// read as `confidence: 1.0`.
+    #[serde(
+        default,
+        rename(serialize = "rq_confidence", deserialize = "confidence")
+    )]
     pub confidence: f64,
     /// The enclosing module/class rq reports, used to check that a hit really
     /// sits where the candidate said it would.
