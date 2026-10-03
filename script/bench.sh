@@ -39,6 +39,13 @@ QUERIES=(
 
 mkdir -p "$BENCH_DIR" "$BASELINES"
 
+# gqls caches parsed records under $XDG_CACHE_HOME (else ~/.cache). Left alone
+# the bench writes a 4MB entry into your real cache, and can be answered by one
+# an older build wrote. A throwaway dir per run; the warm-up below fills it.
+XDG_CACHE_HOME="$(mktemp -d "${TMPDIR:-/tmp}/gqls-bench-cache.XXXXXX")"
+export XDG_CACHE_HOME
+trap 'rm -rf "$XDG_CACHE_HOME"' EXIT
+
 if [ ! -f "$SCHEMA" ]; then
   echo "generating corpus…" >&2
   python3 - "$SCHEMA" <<'PY'
