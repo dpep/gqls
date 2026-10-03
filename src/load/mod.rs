@@ -34,13 +34,18 @@ pub struct LoadOptions {
 
 /// Where loaded records came from, when that's more than the source names: a
 /// URL can be answered from a copy fetched earlier.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum Origin {
     /// Read or fetched just now.
     #[default]
     Direct,
     /// From the introspection cache, fetched `age` ago.
     Cached { age: std::time::Duration },
+    /// From a copy past its TTL, because refetching failed with `error`.
+    Stale {
+        age: std::time::Duration,
+        error: String,
+    },
 }
 
 /// A loaded schema and where it came from.

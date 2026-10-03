@@ -9,6 +9,13 @@ early entries are terser than what follows.
 ## Unreleased
 
 ### Added
+- **A live schema whose refetch fails is answered from the expired copy**
+  instead of failing — when the endpoint is down, times out, answers 5xx, or
+  answers with a GraphQL `errors` body, and a cached copy exists (also under
+  `--refresh`). stderr says what failed and how old the copy is, even under
+  `-q`; JSON `source` adds `"stale": true` and `error`. Exit `0`: an answer
+  was given. A 401/403 never falls back, and with no copy the fetch fails as
+  before.
 - **An answer from a cached copy of a live schema says how old it is**:
   `from a copy of <url> cached 41m ago — --refresh to refetch` on stderr
   (silenced by `-q`), and a `source` object (`url`, `cached: true`,

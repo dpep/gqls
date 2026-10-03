@@ -155,3 +155,69 @@ fn an_answer_from_a_cached_copy_says_how_old_it_is() {
     }
     assert_eq!(ep.hits(), 1);
 }
+
+/// Age every cached introspection response by `secs`, as if fetched that long
+/// ago.
+fn backdate(cache: &Path, secs: u64) {
+    let dir = cache.join("gqls/introspect");
+    for e in std::fs::read_dir(&dir).expect("a response cache").flatten() {
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(e.path())
+            .and_then(|f| f.set_modified(when))
+            .expect("backdating");
+    }
+}
+
+#[test]
+fn a_failed_refetch_answers_from_the_stale_copy_and_says_so() {
+    for failure in [
+        Reply::Status(500, "boom", &[]),
+        Reply::Status(
+            200,
+            r#"{"errors":[{"message":"introspection is disabled"}]}"#,
+            &[],
+        ),
+        Reply::Close,
+    ] {
+        let ep = Endpoint::start(&[Reply::Schema("widget")]);
+        let cache = cache_dir("stale");
+        assert!(gqls(&ep.url, &cache, &["widget"]).status.success());
+        backdate(&cache, 2 * 3600);
+        ep.set(&[failure]);
+
+        // said even under -q: the answer may be out of date, and the fetch failed
+        let out = gqls(&ep.url, &cache, &["widget", "-J", "-q"]);
+        let err = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{err}");
+        assert!(err.contains("cached 2h ago"), "{err}");
+        let source = &ndjson(&out)[0]["source"];
+        assert_eq!(source["stale"], true, "{source}");
+        assert_eq!(source["cached"], true, "{source}");
+        assert!(source["age_secs"].as_u64().unwrap_or(0) >= 7200, "{source}");
+        assert!(source["error"].is_string(), "{source}");
+
+        // --refresh asks for a refetch; failing it, the copy still answers
+        let out = gqls(&ep.url, &cache, &["widget", "--refresh"]);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+    }
+}
+
+#[test]
+fn a_refused_credential_is_never_answered_from_a_copy() {
+    // A revoked token stops working when it's revoked, not when the copy
+    // fetched with it ages out.
+    let ep = Endpoint::start(&[Reply::Schema("widget")]);
+    let cache = cache_dir("revoked");
+    assert!(gqls(&ep.url, &cache, &["widget"]).status.success());
+    backdate(&cache, 2 * 3600);
+    ep.set(&[Reply::Status(
+        401,
+        r#"{"errors":[{"message":"bad token"}]}"#,
+        &[],
+    )]);
+    let out = gqls(&ep.url, &cache, &["widget"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).is_empty());
+}

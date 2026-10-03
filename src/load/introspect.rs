@@ -41,6 +41,7 @@ const MAX_BYTES: u64 = 100 * 1024 * 1024;
 /// (1h for remote endpoints, never for localhost) so repeated queries against a
 /// remote endpoint don't refetch all day.
 pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<super::Loaded> {
+    use super::{Loaded, Origin};
     let ttl = ttl(url);
     // A zero TTL (localhost, or GQLS_INTROSPECT_TTL=0) means no caching at all —
     // neither read nor write, so a schema you're actively editing is never stale.
@@ -48,30 +49,65 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<super::Loaded> {
         .then(|| cache_path(url, &opts.headers))
         .flatten();
 
-    if !opts.refresh {
-        if let Some(p) = path.as_deref() {
-            if let Some((bytes, age)) = read_if_fresh(p, ttl) {
-                match records_from(&bytes, url, opts.refresh) {
-                    Ok(records) => {
-                        crate::detail!("introspection cache hit: {}", crate::paths::display(p));
-                        return Ok(super::Loaded {
-                            records,
-                            origin: super::Origin::Cached { age },
-                        });
-                    }
-                    // A cached body that no longer yields a schema is a miss, not
-                    // a failure: bailing here would make one bad file poison every
-                    // run for the rest of the TTL, with `--refresh` the only way
-                    // out and no hint that it's needed.
-                    Err(e) => {
-                        crate::detail!("cached response unusable ({e}) — refetching");
-                        let _ = std::fs::remove_file(p);
-                    }
+    // Read at any age: past the TTL it isn't served, but it's what answers if
+    // the refetch fails.
+    let mut cached = path.as_deref().and_then(read_cached);
+    if let (Some(p), Some((bytes, age))) = (path.as_deref(), &cached) {
+        if !opts.refresh && *age <= ttl {
+            match records_from(bytes, url, opts.refresh) {
+                Ok(records) => {
+                    crate::detail!("introspection cache hit: {}", crate::paths::display(p));
+                    return Ok(Loaded {
+                        records,
+                        origin: Origin::Cached { age: *age },
+                    });
+                }
+                // A cached body that no longer yields a schema is a miss, not
+                // a failure: bailing here would make one bad file poison every
+                // run for the rest of the TTL, with `--refresh` the only way
+                // out and no hint that it's needed.
+                Err(e) => {
+                    crate::detail!("cached response unusable ({e}) — refetching");
+                    let _ = std::fs::remove_file(p);
+                    cached = None;
                 }
             }
         }
     }
 
+    let failure = match fetch_records(url, opts) {
+        Ok((records, bytes)) => {
+            if let Some(p) = path.as_deref() {
+                store_response(p, &bytes);
+            }
+            return Ok(Loaded {
+                records,
+                origin: Origin::Direct,
+            });
+        }
+        Err(e) => e,
+    };
+    // A stale schema beats none — said loudly, by the caller. Not for a refused
+    // credential: a revoked token stops working when it's revoked.
+    let refused = failure
+        .downcast_ref::<FetchError>()
+        .is_some_and(|f| f.refused);
+    if let Some((bytes, age)) = cached.filter(|_| !refused) {
+        if let Ok(records) = records_from(&bytes, url, false) {
+            return Ok(Loaded {
+                records,
+                origin: Origin::Stale {
+                    age,
+                    error: format!("{failure:#}"),
+                },
+            });
+        }
+    }
+    Err(failure)
+}
+
+/// Fetch and validate, returning the records and the bytes worth caching.
+fn fetch_records(url: &str, opts: &LoadOptions) -> Result<(Vec<SchemaRecord>, Vec<u8>)> {
     crate::detail!("introspecting {url}");
     // Timed apart from the parse below, because for a remote source the network
     // is usually most of the wall clock and the least controllable part of it —
@@ -87,13 +123,7 @@ pub(crate) fn from_url(url: &str, opts: &LoadOptions) -> Result<super::Loaded> {
     // body for an expired token or disabled introspection; caching that would
     // turn a transient failure into an hour of them.
     let records = records_from(&bytes, url, opts.refresh)?;
-    if let Some(p) = path.as_deref() {
-        store_response(p, &bytes);
-    }
-    Ok(super::Loaded {
-        records,
-        origin: super::Origin::Direct,
-    })
+    Ok((records, bytes))
 }
 
 /// Records from a raw introspection payload, or an error if it isn't one.
@@ -255,6 +285,9 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 pub(crate) struct FetchError {
     pub message: String,
+    /// The endpoint refused these credentials (401/403): never retried, and
+    /// never answered from a cached copy.
+    pub refused: bool,
 }
 
 impl std::fmt::Display for FetchError {
@@ -270,6 +303,7 @@ enum Attempt {
     Body(Vec<u8>),
     Failed {
         why: String,
+        refused: bool,
         retry_after: Option<Duration>,
     },
 }
@@ -280,9 +314,13 @@ fn fetch(url: &str, headers: &[(String, String)]) -> std::result::Result<Vec<u8>
     loop {
         let left = FETCH_BUDGET.saturating_sub(started.elapsed());
         let timeout = left.min(Duration::from_secs(TIMEOUT_SECS));
-        let (why, retry_after) = match try_fetch(url, headers, timeout) {
+        let (why, refused, retry_after) = match try_fetch(url, headers, timeout) {
             Attempt::Body(bytes) => return Ok(bytes),
-            Attempt::Failed { why, retry_after } => (why, retry_after),
+            Attempt::Failed {
+                why,
+                refused,
+                retry_after,
+            } => (why, refused, retry_after),
         };
         let wait = retry_after.map(|ra| match ra <= MAX_RETRY_AFTER {
             true => ra,
@@ -302,6 +340,7 @@ fn fetch(url: &str, headers: &[(String, String)]) -> std::result::Result<Vec<u8>
             _ => {
                 return Err(FetchError {
                     message: format!("introspecting {url}: {why}"),
+                    refused,
                 })
             }
         }
@@ -346,6 +385,7 @@ fn try_fetch(url: &str, headers: &[(String, String)], timeout: Duration) -> Atte
                 Ok(_) => Attempt::Body(buf),
                 Err(e) => Attempt::Failed {
                     why: format!("the connection dropped mid-response ({e})"),
+                    refused: false,
                     retry_after: backoff,
                 },
             }
@@ -369,6 +409,7 @@ fn try_fetch(url: &str, headers: &[(String, String)], timeout: Duration) -> Atte
                 .unwrap_or_default();
             Attempt::Failed {
                 why: format!("HTTP {code} {reason}{said}"),
+                refused: matches!(code, 401 | 403),
                 retry_after,
             }
         }
@@ -390,6 +431,7 @@ fn try_fetch(url: &str, headers: &[(String, String)], timeout: Duration) -> Atte
                     Some(d) => format!("{what} ({d})"),
                     None => what.to_string(),
                 },
+                refused: false,
                 retry_after: transient.then_some(BACKOFF[0]),
             }
         }
@@ -445,17 +487,15 @@ fn cache_dir() -> Option<PathBuf> {
     Some(crate::paths::cache_dir()?.join("introspect"))
 }
 
-/// The cached bytes and their age if the file is younger than `ttl`.
-fn read_if_fresh(path: &Path, ttl: Duration) -> Option<(Vec<u8>, Duration)> {
+/// The cached bytes and how long ago they were fetched.
+fn read_cached(path: &Path) -> Option<(Vec<u8>, Duration)> {
     let age = std::fs::metadata(path)
         .ok()?
         .modified()
         .ok()?
         .elapsed()
         .ok()?;
-    (age <= ttl)
-        .then(|| std::fs::read(path).ok().map(|b| (b, age)))
-        .flatten()
+    Some((std::fs::read(path).ok()?, age))
 }
 
 /// Effective cache lifetime for `url`: `GQLS_INTROSPECT_TTL` (seconds) if set,

@@ -353,14 +353,21 @@ pub fn run() -> Result<()> {
     // What the command line doesn't show about where the answer came from: a
     // URL answered from a copy fetched earlier says so on every row, and a
     // discovered schema says which one on a miss (see `no_matches`).
-    let sources = Sources::new(&source, origin, discovered_source.as_deref(), remembered);
-    if let load::Origin::Cached { age } = origin {
+    match &origin {
+        load::Origin::Direct => {}
         // A routine hit inside the TTL: status, so -q silences it.
-        crate::status!(
+        load::Origin::Cached { age } => crate::status!(
             "from a copy of {source} cached {} ago — --refresh to refetch",
-            ago(age)
-        );
+            ago(*age)
+        ),
+        // Not routine: the fetch failed and the answer may be out of date, so
+        // it's said even under -q — the way an error would be.
+        load::Origin::Stale { age, error } => eprintln!(
+            "gqls: {error} — answering from a copy cached {} ago, which may be out of date",
+            ago(*age)
+        ),
     }
+    let sources = Sources::new(&source, &origin, discovered_source.as_deref(), remembered);
     crate::detail!(
         "loaded {} records in {:.1?}",
         records.len(),
@@ -952,7 +959,7 @@ struct Sources {
 impl Sources {
     fn new(
         source: &str,
-        origin: load::Origin,
+        origin: &load::Origin,
         discovered: Option<&str>,
         remembered: Option<bool>,
     ) -> Self {
@@ -962,6 +969,13 @@ impl Sources {
                     "url": source,
                     "cached": true,
                     "age_secs": age.as_secs(),
+            })),
+            load::Origin::Stale { age, error } => Some(serde_json::json!({
+                "url": source,
+                "cached": true,
+                "age_secs": age.as_secs(),
+                "stale": true,
+                "error": error,
             })),
         };
         let miss = rows.clone().or_else(|| {

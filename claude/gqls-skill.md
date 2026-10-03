@@ -222,7 +222,10 @@ An answer from a cached copy says its age on stderr (`from a copy of <url>
 cached 41m ago`) and in JSON (`"source": {"cached": true, "age_secs": …}` on
 every row and on a `-J` miss). A schema that changed in the last hour may not
 be in it — if the field you expected is missing, `--refresh` before
-concluding it doesn't exist.
+concluding it doesn't exist. If a refetch failed, gqls answers from the
+expired copy, says so on stderr even under `-q`, adds `"stale": true` and the
+fetch `error` to `source`, and still exits `0` — tell the user the schema may
+be out of date and why.
 
 ## Phrases
 

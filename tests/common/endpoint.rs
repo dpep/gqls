@@ -57,6 +57,11 @@ impl Endpoint {
         ep
     }
 
+    /// Replace what the endpoint answers from now on.
+    pub(crate) fn set(&self, script: &[Reply]) {
+        *self.script.lock().expect("script") = script.iter().cloned().collect();
+    }
+
     pub(crate) fn hits(&self) -> usize {
         *self.hits.lock().expect("hits")
     }
